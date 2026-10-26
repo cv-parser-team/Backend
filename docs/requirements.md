@@ -101,11 +101,11 @@ and design decisions where useful.
 | ID | Requirement |
 | --- | --- |
 | `FR-AA-01` | Allow candidates to register and sign in using email and password, with email verification and password recovery. |
-| `FR-AA-02` | Use short-lived access tokens and rotating refresh tokens; support logout and session revocation. |
+| `FR-AA-02` | Use signed JWT access tokens that expire after 15 minutes and include the user's current token version. Validate the stored version on every authenticated request, and increment it on logout or a security-sensitive account change to invalidate all previously issued tokens. |
 | `FR-AA-03` | Enforce Candidate, Reviewer, and Admin roles with role-specific permissions. |
 | `FR-AA-04` | Restrict candidates to accessing and managing their own profiles, uploaded sources, and evidence. |
 | `FR-AA-05` | Allow reviewers to approve or reject normalization proposals without accessing private candidate data. |
-| `FR-AA-06` | Allow candidates to permanently delete their accounts and associated personal data, including uploaded documents, evidence, sessions, and API credentials; invalidate access immediately. |
+| `FR-AA-06` | Allow candidates to permanently delete their accounts and associated personal data, including uploaded documents, evidence, token-version state, and API credentials; invalidate access immediately. |
 
 ## 09 — Profile management
 

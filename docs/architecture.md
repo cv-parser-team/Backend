@@ -14,6 +14,7 @@ src/
 │   ├── database/             # Pool, Drizzle, schema exports, DB errors
 │   └── http/                 # Global HTTP error handling
 ├── modules/
+│   ├── auth/                 # JWT authentication, token versions, guards
 │   └── users/                # Table, schemas, repository, service, routes
 └── shared/                   # Module-independent contracts and errors
 ```
@@ -61,6 +62,12 @@ the repository layer.
 The HTTP error-handler plugin produces one error envelope for application,
 validation, and not-found errors. Feature routes should throw typed errors and
 must not duplicate global error formatting.
+
+The auth plugin verifies 15-minute JWT access tokens, reloads current role and
+account status, and compares the token-version claim with PostgreSQL on every
+protected request. It exposes typed authentication and authorization guards to
+feature modules. Logout increments the stored version, invalidating all older
+tokens without storing JWTs.
 
 ## Transactions
 

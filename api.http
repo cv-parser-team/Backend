@@ -1,0 +1,72 @@
+@baseUrl = http://localhost:4000
+@email = candidate2@example.com
+@password = secure-password
+
+### Register a candidate (201)
+# @name register
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Example Candidate",
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+### Sign in (200)
+# Run this after registration. It refreshes the captured variables.
+# @name signIn
+POST {{baseUrl}}/api/auth/sign-in
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+###
+# Captured variables from authentication (defaults to signIn response; change to register if running register only)
+@accessToken = {{signIn.response.body.data.accessToken}}
+@userId = {{signIn.response.body.data.userId}}
+
+### Get the authenticated user's record (200)
+GET {{baseUrl}}/api/users/{{userId}}
+Authorization: Bearer {{accessToken}}
+
+### List users as a candidate (403; admin only)
+GET {{baseUrl}}/api/users
+Authorization: Bearer {{accessToken}}
+
+### Read another user's record as a candidate (403)
+GET {{baseUrl}}/api/users/22222222-2222-4222-8222-222222222222
+Authorization: Bearer {{accessToken}}
+
+### Access a protected endpoint without a token (401)
+GET {{baseUrl}}/api/users
+
+### Sign in with an incorrect password (401)
+POST {{baseUrl}}/api/auth/sign-in
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "incorrect-password"
+}
+
+### Register with invalid input (400)
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Example Candidate",
+  "email": "not-an-email",
+  "password": "short"
+}
+
+### Logout and invalidate all previously issued tokens (204)
+POST {{baseUrl}}/api/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### Reuse the token after logout (401)
+GET {{baseUrl}}/api/users/{{userId}}
+Authorization: Bearer {{accessToken}}

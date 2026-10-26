@@ -7,5 +7,8 @@ export const usersModule: FastifyPluginAsync = async (fastify) => {
   const repository = createUsersRepository(fastify.database);
   const service = createUsersService(repository);
 
-  await fastify.register(usersRoutes, { service });
+  await fastify.register(usersRoutes, {
+    service,
+    guards: fastify.authGuards
+  });
 };

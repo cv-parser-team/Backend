@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { databasePlugin } from './infrastructure/database/database.plugin.js';
 import { AppDatabase } from './infrastructure/database/database.js';
 import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.js';
+import { authModule } from './modules/auth/index.js';
 import { usersModule } from './modules/users/index.js';
 
 export interface CreateAppOptions {
@@ -21,6 +22,7 @@ export async function createApp(
   });
   await app.register(databasePlugin, { database: options.database });
   await app.register(errorHandlerPlugin);
+  await app.register(authModule);
   await app.register(usersModule, { prefix: '/api/users' });
 
   return app;

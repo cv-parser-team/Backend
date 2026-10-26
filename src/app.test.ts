@@ -24,14 +24,14 @@ describe('application', () => {
     });
   });
 
-  it('POST /api/users validates missing required fields via Ajv JSON Schema', async () => {
+  it('POST /api/auth/register validates missing fields via Ajv JSON Schema', async () => {
     app = await createApp();
     const response = await app.inject({
       method: 'POST',
-      url: '/api/users',
+      url: '/api/auth/register',
       payload: {
         name: 'John Doe'
-        // missing email
+        // missing email and password
       }
     });
 
@@ -39,6 +39,34 @@ describe('application', () => {
     const body = response.json();
     expect(body.success).toBe(false);
     expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('does not expose the former public user-creation endpoint', async () => {
+    app = await createApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/users',
+      payload: {
+        name: 'Example User',
+        email: 'user@example.com'
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('requires authentication to list users', async () => {
+    app = await createApp();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/users'
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: { code: 'AUTHENTICATION_REQUIRED' }
+    });
   });
 
   it('GET /api/users/:id validates UUID parameter format via Ajv JSON Schema', async () => {

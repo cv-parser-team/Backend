@@ -26,10 +26,14 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
-```
+    AUTH_TOKEN_VERSIONS {
+        uuid user_id PK, FK
+        integer version
+        timestamptz updated_at
+    }
 
-The current schema contains one entity and therefore has no inter-entity
-relationships.
+    USERS ||--|| AUTH_TOKEN_VERSIONS : owns
+```
 
 ## Users
 
@@ -52,6 +56,24 @@ Owned by the `users` module and defined in
 
 - `user_role`: `candidate`, `reviewer`, `admin`
 - `account_status`: `active`, `suspended`, `disabled`
+
+## Authentication token versions
+
+Owned by the `auth` module and defined in
+`src/modules/auth/auth.table.ts`.
+
+`auth_token_versions` stores one nonnegative version per user. Each 15-minute
+access JWT includes the version that was current when it was issued. Guards
+compare the JWT claim with this table on every authenticated request. Logout,
+password changes, and security-sensitive account actions increment the stored
+version, invalidating every previously issued JWT. The row cascades on user
+deletion.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `user_id` | UUID | Primary key, user FK, cascade delete | Token owner |
+| `version` | Integer | Required, nonnegative, defaults to `0` | Current valid JWT version |
+| `updated_at` | Timestamp with time zone | Required, generated | Last invalidation time |
 
 ## Maintenance rules
 

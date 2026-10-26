@@ -8,6 +8,13 @@
       "when": 1793004523756,
       "tag": "0000_sturdy_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793018045903,
+      "tag": "0001_yielding_maggott",
+      "breakpoints": true
     }
   ]
 }

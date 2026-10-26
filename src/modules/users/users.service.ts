@@ -1,7 +1,17 @@
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { CreateUserInput, UserRecord, UsersRepository } from './users.repository.js';
 
-export type SafeUser = Omit<UserRecord, 'passwordHash'>;
+export type SafeUser = Pick<
+  UserRecord,
+  | 'userId'
+  | 'name'
+  | 'email'
+  | 'role'
+  | 'accountStatus'
+  | 'emailVerifiedAt'
+  | 'createdAt'
+  | 'updatedAt'
+>;
 export type CreateUserRequest = Pick<CreateUserInput, 'name' | 'email'>;
 
 export interface UsersService {
@@ -11,8 +21,16 @@ export interface UsersService {
 }
 
 function sanitizeUser(user: UserRecord): SafeUser {
-  const { passwordHash: _passwordHash, ...safeUser } = user;
-  return safeUser;
+  return {
+    userId: user.userId,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    accountStatus: user.accountStatus,
+    emailVerifiedAt: user.emailVerifiedAt,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt
+  };
 }
 
 export function createUsersService(usersRepository: UsersRepository): UsersService {

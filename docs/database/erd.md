@@ -19,6 +19,11 @@ erDiagram
         timestamptz email_verified_at
         timestamptz created_at
     }
+    AuthTokenVersion {
+        uuid user_id PK, FK
+        integer version
+        timestamptz updated_at
+    }
     AuditLog {
         uuid audit_id PK
         uuid user_id FK "nullable"
@@ -184,6 +189,7 @@ erDiagram
         timestamptz decided_at
     }
 
+    User ||--|| AuthTokenVersion : "owns"
     User ||--o{ AuditLog : "performs"
     User o|--o| Candidate : "has profile"
     Candidate ||--o{ SourceDocument : "has"

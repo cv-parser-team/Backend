@@ -1,15 +1,42 @@
 import { FastifyPluginAsync } from 'fastify';
-import { authRoutes } from './auth.routes.js';
+import fastifyPlugin from 'fastify-plugin';
+import { AuthGuards, createAuthGuards } from './auth.guards.js';
 import { createAuthRepository } from './auth.repository.js';
+import { authRoutes } from './auth.routes.js';
 import { createAuthService } from './auth.service.js';
 import { createJwtService } from './jwt-service.js';
-import { createPasswordHasher } from './password-hasher.js';
+import {
+  createPasswordHasher,
+  DUMMY_PASSWORD_HASH
+} from './password-hasher.js';
 
-export const authModule: FastifyPluginAsync = async (fastify) => {
+declare module 'fastify' {
+  interface FastifyInstance {
+    authGuards: AuthGuards;
+  }
+}
+
+const registerAuth: FastifyPluginAsync = async (fastify) => {
   const repository = createAuthRepository(fastify.database);
   const passwordHasher = createPasswordHasher();
   const jwtService = createJwtService();
-  const service = createAuthService({ repository, passwordHasher, jwtService });
+  const service = createAuthService({
+    repository,
+    passwordHasher,
+    jwtService,
+    dummyPasswordHash: DUMMY_PASSWORD_HASH
+  });
+  const guards = createAuthGuards({ repository, jwtService });
 
-  await fastify.register(authRoutes, { service });
+  fastify.decorate('authGuards', guards);
+  await fastify.register(authRoutes, {
+    prefix: '/api/auth',
+    service,
+    guards
+  });
 };
+
+export const authModule = fastifyPlugin(registerAuth, {
+  name: 'auth',
+  dependencies: ['database']
+});

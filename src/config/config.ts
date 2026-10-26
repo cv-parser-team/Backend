@@ -1,23 +1,37 @@
-export function extractOrThrow<T>(
-  value: T | null | undefined,
-  name: string
-): T {
-  if (value === undefined || value === null || value === '') {
+try {
+  process.loadEnvFile();
+} catch {
+  // Ignore if .env is missing
+}
+
+export function extractOrThrow(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
     throw new Error(`Missing required environment variable: ${name}`);
   }
 
   return value;
 }
 
-const nodeEnv = extractOrThrow(process.env.NODE_ENV, 'NODE_ENV');
+const nodeEnv = extractOrThrow('NODE_ENV');
+const jwtSecret = extractOrThrow('JWT_SECRET');
+
+if (jwtSecret.length < 32) {
+  throw new Error('JWT_SECRET must contain at least 32 characters');
+}
 
 export const config = {
-  port: parseInt(extractOrThrow(process.env.PORT, 'PORT'), 10),
-  host: extractOrThrow(process.env.HOST, 'HOST'),
+  port: parseInt(extractOrThrow('PORT'), 10),
+  host: extractOrThrow('HOST'),
   nodeEnv,
   isDev: nodeEnv === 'development',
   isProd: nodeEnv === 'production',
   db: {
-    url: extractOrThrow(process.env.DATABASE_URL, 'DATABASE_URL')
+    url: extractOrThrow('DATABASE_URL')
+  },
+  auth: {
+    jwtSecret,
+    issuer: extractOrThrow('JWT_ISSUER'),
+    audience: extractOrThrow('JWT_AUDIENCE')
   }
 } as const;

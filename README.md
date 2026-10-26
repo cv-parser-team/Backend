@@ -42,13 +42,29 @@ does not load `.env` files itself.
 
 ## API
 
-The currently registered user routes are:
+The authentication routes are:
 
-- `GET /api/users`
-- `GET /api/users/:id`
-- `POST /api/users`
+- `POST /api/auth/register`
+- `POST /api/auth/sign-in`
+- `POST /api/auth/logout` (Bearer token required)
+
+The protected user routes are:
+
+- `GET /api/users` (admin only)
+- `GET /api/users/:id` (self or admin)
 
 There is intentionally no health endpoint.
+
+## Authentication
+
+Registration and sign-in return a signed JWT access token. Send it to protected
+routes with `Authorization: Bearer <token>`. Access tokens expire after 15
+minutes and are not refreshable; the user signs in again after expiry.
+
+Each JWT includes the user's token version. Logout increments the stored
+version and immediately invalidates all access tokens previously issued to that
+user. `JWT_SECRET` must contain at least 32 characters; configure the expected
+issuer and audience with `JWT_ISSUER` and `JWT_AUDIENCE`.
 
 ## Architecture
 
