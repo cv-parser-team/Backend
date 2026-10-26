@@ -1,8 +1,15 @@
 # Data model
 
-This document describes the conceptual database model. Drizzle table
+This document describes the implemented database model. Drizzle table
 definitions in `src/modules/` are the implementation source of truth; update
 this document whenever entities or relationships change.
+
+The readable [target domain ERD](erd.md) explores the broader model implied by
+the functional requirements, with an [editable diagrams.net source](erd.drawio).
+It is a design input, not a representation of the current database, and must be
+reconciled with this document as features are implemented. Its upstream
+diagrams.net file is available in
+[Google Drive](https://app.diagrams.net/#G1fQqzUKwOfsyoHleLbRbM1uaNwr-d5GiQ#%7B%22pageId%22%3A%22erd-v3-3%22%7D).
 
 ## Entity relationship diagram
 
@@ -51,5 +58,7 @@ Owned by the `users` module and defined in
 - Keep physical column details aligned with the owning Drizzle table.
 - Show foreign-key cardinality in the ER diagram when relationships are added.
 - Record the business meaning of relationships and important constraints here.
+- Update the target domain ERD when requirements change its entities or
+  relationships; update this document only when the implemented schema changes.
 - Use migrations for database evolution; do not treat this document as an
   executable schema.

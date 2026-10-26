@@ -54,7 +54,9 @@ There is intentionally no health endpoint.
 
 Features follow `routes -> services -> repositories -> database`. See
 [Architecture](docs/architecture.md) for the project structure and dependency
-rules, and [Adding a module](docs/adding-a-module.md) for the feature checklist.
+rules, [Adding a module](docs/adding-a-module.md) for the feature checklist, and
+[Functional requirements](docs/requirements.md) for the versioned product
+behavior.
 
 ## Database schema
 
@@ -63,8 +65,8 @@ Feature modules own their Drizzle tables. The central
 Drizzle Kit can discover them. Generated migrations belong in
 `src/infrastructure/database/migrations/`.
 
-See the [Data model](docs/database/data-model.md) for the conceptual schema and
-ER diagram.
+See the [Data model](docs/database/data-model.md) for the implemented schema and
+its relationship to the editable target domain ERD.
 
 The default local connection is:
 
