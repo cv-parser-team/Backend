@@ -14,10 +14,8 @@ export type GetUserParams = FromSchema<typeof getUserParamsSchema>;
 export const createUserBodySchema = {
   type: 'object',
   properties: {
-    name: { type: 'string', minLength: 1 },
-    email: { type: 'string', format: 'email' },
-    role: { type: 'string', enum: ['candidate', 'admin'] },
-    accountStatus: { type: 'string', enum: ['active', 'suspended', 'disabled'] }
+    name: { type: 'string', minLength: 1, pattern: '\\S' },
+    email: { type: 'string', format: 'email' }
   },
   required: ['name', 'email'],
   additionalProperties: false

@@ -2,11 +2,12 @@ import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { CreateUserInput, UserRecord, UsersRepository } from './users.repository.js';
 
 export type SafeUser = Omit<UserRecord, 'passwordHash'>;
+export type CreateUserRequest = Pick<CreateUserInput, 'name' | 'email'>;
 
 export interface UsersService {
   listUsers(): Promise<SafeUser[]>;
   getUserById(userId: string): Promise<SafeUser>;
-  createUser(input: CreateUserInput): Promise<SafeUser>;
+  createUser(input: CreateUserRequest): Promise<SafeUser>;
 }
 
 function sanitizeUser(user: UserRecord): SafeUser {
@@ -31,7 +32,7 @@ export function createUsersService(usersRepository: UsersRepository): UsersServi
 
     async createUser(input) {
       const normalizedInput: CreateUserInput = {
-        ...input,
+        name: input.name.trim(),
         email: input.email.trim().toLowerCase()
       };
 

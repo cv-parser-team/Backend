@@ -39,8 +39,8 @@ Owned by the `users` module and defined in
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |
 | `user_id` | UUID | Primary key, generated | Stable user identifier |
-| `name` | Text | Required | Display name |
-| `email` | Text | Required, unique | Normalized sign-in/contact address |
+| `name` | Text | Required, nonblank | Display name |
+| `email` | Text | Required, normalized, case-insensitively unique | Normalized sign-in/contact address |
 | `password_hash` | Text | Nullable | Password-derived credential; never returned by the API |
 | `role` | `user_role` | Required, defaults to `candidate` | Authorization category |
 | `account_status` | `account_status` | Required, defaults to `active` | Account lifecycle state |
@@ -50,7 +50,7 @@ Owned by the `users` module and defined in
 
 ### Enumerations
 
-- `user_role`: `candidate`, `admin`
+- `user_role`: `candidate`, `reviewer`, `admin`
 - `account_status`: `active`, `suspended`, `disabled`
 
 ## Maintenance rules

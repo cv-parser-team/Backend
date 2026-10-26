@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createUsersService } from './users.service.js';
-import { users } from './users.table.js';
+import { userRole, users } from './users.table.js';
 import type { UserRecord, UsersRepository } from './users.repository.js';
 
 const userRecord: UserRecord = {
@@ -29,16 +29,20 @@ describe('users module', () => {
     expect(users.userId).toBeDefined();
     expect(users.email).toBeDefined();
     expect(users.accountStatus).toBeDefined();
+    expect(userRole.enumValues).toEqual(['candidate', 'reviewer', 'admin']);
   });
 
-  it('normalizes email and does not expose password hashes', async () => {
+  it('normalizes user input and does not expose password hashes', async () => {
     const repository = createRepository();
     const service = createUsersService(repository);
 
-    const result = await service.createUser({
-      name: 'Example User',
-      email: '  USER@Example.com '
-    });
+    const untrustedInput = {
+      name: '  Example User  ',
+      email: '  USER@Example.com ',
+      role: 'admin' as const,
+      accountStatus: 'suspended' as const
+    };
+    const result = await service.createUser(untrustedInput);
 
     expect(repository.create).toHaveBeenCalledWith({
       name: 'Example User',

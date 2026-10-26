@@ -38,10 +38,11 @@ export function createUsersRepository(
 
     async findByEmail(email) {
       return withDbErrors('User', async () => {
+        const normalizedEmail = email.trim().toLowerCase();
         const [user] = await database.db
           .select()
           .from(users)
-          .where(eq(users.email, email))
+          .where(eq(users.email, normalizedEmail))
           .limit(1);
 
         return user ?? null;
