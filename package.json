@@ -1,0 +1,40 @@
+{
+  "name": "luminacv",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LuminaCV - modern talent matching and candidate intelligence backend API",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
+    "db:reset": "docker compose down -v && docker compose up -d postgres",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "argon2": "^0.45.1",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.2.1",
+    "fastify-plugin": "^5.1.0",
+    "jose": "^6.2.13",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.10",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11",
+    "json-schema-to-ts": "^3.1.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^5.0.5"
+  }
+}
