@@ -40,6 +40,8 @@ erDiagram
         uuid candidate_id PK
         uuid user_id FK, UK
         text full_name
+        text headline
+        text summary
         text phone
         text location
         jsonb profile_links

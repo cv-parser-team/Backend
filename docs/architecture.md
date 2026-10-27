@@ -15,6 +15,7 @@ src/
 │   └── http/                 # Global HTTP error handling
 ├── modules/
 │   ├── auth/                 # JWT authentication, token versions, guards
+│   ├── candidates/           # Candidate profiles, claims, profile export
 │   └── users/                # Table, schemas, repository, service, routes
 └── shared/                   # Module-independent contracts and errors
 ```

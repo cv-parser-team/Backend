@@ -15,6 +15,13 @@
       "when": 1793018045903,
       "tag": "0001_yielding_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793096767728,
+      "tag": "0002_mushy_marvel_zombies",
+      "breakpoints": true
     }
   ]
 }

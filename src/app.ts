@@ -4,6 +4,7 @@ import { databasePlugin } from './infrastructure/database/database.plugin.js';
 import { AppDatabase } from './infrastructure/database/database.js';
 import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.js';
 import { authModule } from './modules/auth/index.js';
+import { candidatesModule } from './modules/candidates/index.js';
 import { usersModule } from './modules/users/index.js';
 
 export interface CreateAppOptions {
@@ -23,7 +24,8 @@ export async function createApp(
   await app.register(databasePlugin, { database: options.database });
   await app.register(errorHandlerPlugin);
   await app.register(authModule);
-  await app.register(usersModule, { prefix: '/api/users' });
+  await app.register(usersModule);
+  await app.register(candidatesModule, { prefix: '/api/candidates' });
 
   return app;
 }

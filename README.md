@@ -53,6 +53,18 @@ The protected user routes are:
 - `GET /api/users` (admin only)
 - `GET /api/users/:id` (self or admin)
 
+The candidate profile routes require a Bearer token with the `candidate` role
+and always act on the authenticated user's own profile:
+
+- `POST /api/candidates/me` (create the profile)
+- `GET /api/candidates/me`
+- `PATCH /api/candidates/me`
+- `GET /api/candidates/me/profile` (structured JSON with accepted claims only)
+- `POST /api/candidates/me/claims` (add a manual claim)
+- `GET /api/candidates/me/claims` (optional `type` and `status` filters)
+- `PUT /api/candidates/me/claims/:claimId`
+- `DELETE /api/candidates/me/claims/:claimId`
+
 There is intentionally no health endpoint.
 
 ## Authentication
