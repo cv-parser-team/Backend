@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793004523756,
+      "tag": "0000_sturdy_maggott",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793018045903,
+      "tag": "0001_yielding_maggott",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793176274919,
+      "tag": "0002_petite_bucky",
+      "breakpoints": true
+    }
+  ]
+}
