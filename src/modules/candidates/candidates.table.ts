@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  date,
   index,
   jsonb,
   pgEnum,
@@ -18,6 +19,7 @@ export interface ProfileLink {
 }
 
 export type ClaimFieldValue = string | string[];
+export type ClaimSnapshot = Record<string, ClaimFieldValue>;
 
 export const claimType = pgEnum('claim_type', [
   'skill',
@@ -32,11 +34,6 @@ export const claimStatus = pgEnum('claim_status', [
   'pending',
   'accepted',
   'rejected'
-]);
-
-export const claimValueStatus = pgEnum('claim_value_status', [
-  'current',
-  'superseded'
 ]);
 
 export const candidates = pgTable(
@@ -105,18 +102,91 @@ export const claims = pgTable(
   (table) => [index('claims_candidate_id_idx').on(table.candidateId)]
 );
 
-// Each row stores one field of a claim. Edits supersede the current row
-// instead of overwriting it, preserving the original value.
-export const claimValueHistory = pgTable(
-  'claim_value_history',
+// Each claim has exactly one details row, in the table that matches its type.
+function detailsClaimId() {
+  return uuid('claim_id')
+    .primaryKey()
+    .references(() => claims.claimId, { onDelete: 'cascade' });
+}
+
+export const skillDetails = pgTable(
+  'skill_details',
   {
-    valueId: uuid('value_id').primaryKey().defaultRandom(),
+    claimId: detailsClaimId(),
+    name: text('name').notNull()
+  },
+  (table) => [
+    index('skill_details_name_lower_idx').on(sql`lower(${table.name})`)
+  ]
+);
+
+export const employmentDetails = pgTable(
+  'employment_details',
+  {
+    claimId: detailsClaimId(),
+    employer: text('employer').notNull(),
+    jobTitle: text('job_title').notNull(),
+    startDate: date('start_date', { mode: 'string' }).notNull(),
+    endDate: date('end_date', { mode: 'string' }),
+    location: text('location'),
+    description: text('description'),
+    skills: text('skills').array().default(sql`'{}'::text[]`).notNull()
+  },
+  (table) => [
+    index('employment_details_skills_idx').using('gin', table.skills),
+    check(
+      'employment_details_dates_ordered',
+      sql`${table.endDate} is null or ${table.endDate} >= ${table.startDate}`
+    )
+  ]
+);
+
+export const educationDetails = pgTable(
+  'education_details',
+  {
+    claimId: detailsClaimId(),
+    institution: text('institution').notNull(),
+    degree: text('degree').notNull(),
+    fieldOfStudy: text('field_of_study'),
+    startDate: date('start_date', { mode: 'string' }).notNull(),
+    endDate: date('end_date', { mode: 'string' })
+  },
+  (table) => [
+    check(
+      'education_details_dates_ordered',
+      sql`${table.endDate} is null or ${table.endDate} >= ${table.startDate}`
+    )
+  ]
+);
+
+export const certificationDetails = pgTable(
+  'certification_details',
+  {
+    claimId: detailsClaimId(),
+    title: text('title').notNull(),
+    issuer: text('issuer').notNull(),
+    issueDate: date('issue_date', { mode: 'string' }).notNull(),
+    expiryDate: date('expiry_date', { mode: 'string' }),
+    credentialId: text('credential_id')
+  },
+  (table) => [
+    check(
+      'certification_details_dates_ordered',
+      sql`${table.expiryDate} is null or ${table.expiryDate} >= ${table.issueDate}`
+    )
+  ]
+);
+
+// Before a claim is edited, its previous values are archived here, so the
+// first revision of an edited claim holds its original values.
+export const claimRevisions = pgTable(
+  'claim_revisions',
+  {
+    revisionId: uuid('revision_id').primaryKey().defaultRandom(),
     claimId: uuid('claim_id')
       .notNull()
       .references(() => claims.claimId, { onDelete: 'cascade' }),
-    fieldName: text('field_name').notNull(),
-    value: jsonb('value').$type<ClaimFieldValue>().notNull(),
-    valueStatus: claimValueStatus('value_status').default('current').notNull(),
+    previousValues: jsonb('previous_values').$type<ClaimSnapshot>().notNull(),
     createdAt: timestamp('created_at', {
       withTimezone: true,
       mode: 'date'
@@ -124,14 +194,5 @@ export const claimValueHistory = pgTable(
       .defaultNow()
       .notNull()
   },
-  (table) => [
-    index('claim_value_history_claim_id_idx').on(table.claimId),
-    uniqueIndex('claim_value_history_current_field_unique')
-      .on(table.claimId, table.fieldName)
-      .where(sql`${table.valueStatus} = 'current'`),
-    check(
-      'claim_value_history_field_name_not_blank',
-      sql`length(btrim(${table.fieldName})) > 0`
-    )
-  ]
+  (table) => [index('claim_revisions_claim_id_idx').on(table.claimId)]
 );

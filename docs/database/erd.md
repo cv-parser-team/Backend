@@ -102,13 +102,40 @@ erDiagram
         text section
         text text_span
     }
-    ClaimValueHistory {
-        uuid value_id PK
+    SkillDetails {
+        uuid claim_id PK, FK
+        text name
+    }
+    EmploymentDetails {
+        uuid claim_id PK, FK
+        text employer
+        text job_title
+        date start_date
+        date end_date
+        text location
+        text description
+        text[] skills
+    }
+    EducationDetails {
+        uuid claim_id PK, FK
+        text institution
+        text degree
+        text field_of_study
+        date start_date
+        date end_date
+    }
+    CertificationDetails {
+        uuid claim_id PK, FK
+        text title
+        text issuer
+        date issue_date
+        date expiry_date
+        text credential_id
+    }
+    ClaimRevision {
+        uuid revision_id PK
         uuid claim_id FK
-        text field_name
-        jsonb value
-        claim_value_status value_status
-        validation_status validation_status
+        jsonb previous_values
         timestamptz created_at
     }
     NormalizationDecision {
@@ -199,7 +226,11 @@ erDiagram
     Candidate ||--o{ EvidenceDocument : "owns"
     SourceDocument ||--o{ SourceOccurrence : "has"
     Claim ||--o{ SourceOccurrence : "has"
-    Claim ||--o{ ClaimValueHistory : "has"
+    Claim ||--o| SkillDetails : "skill details"
+    Claim ||--o| EmploymentDetails : "employment details"
+    Claim ||--o| EducationDetails : "education details"
+    Claim ||--o| CertificationDetails : "certification details"
+    Claim ||--o{ ClaimRevision : "archives"
     Claim ||--o{ NormalizationDecision : "has"
     Claim ||--o{ Conflict : "has"
     Claim ||--o{ ClaimEvidence : "has"

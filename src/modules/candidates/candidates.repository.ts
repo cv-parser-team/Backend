@@ -1,12 +1,17 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import {
   candidates,
+  certificationDetails,
   ClaimFieldValue,
+  claimRevisions,
   claims,
-  claimValueHistory
+  ClaimSnapshot,
+  educationDetails,
+  employmentDetails,
+  skillDetails
 } from './candidates.table.js';
 
 export type CandidateRecord = typeof candidates.$inferSelect;
@@ -22,7 +27,7 @@ export type UpdateCandidateInput = Partial<
 >;
 
 type ClaimRow = typeof claims.$inferSelect;
-export type ClaimValues = Record<string, ClaimFieldValue>;
+export type ClaimValues = ClaimSnapshot;
 
 export interface ClaimRecord {
   claimId: string;
@@ -50,8 +55,7 @@ export interface ClaimFilters {
 export interface UpdateClaimValuesInput {
   candidateId: string;
   claimId: string;
-  changedValues: ClaimValues;
-  removedFields: string[];
+  values: ClaimValues;
 }
 
 export interface CandidatesRepository {
@@ -68,55 +72,214 @@ export interface CandidatesRepository {
   deleteClaim(candidateId: string, claimId: string): Promise<boolean>;
 }
 
-type QueryExecutor = Pick<AppDatabase['db'], 'select'>;
+type QueryExecutor = Pick<AppDatabase['db'], 'select' | 'insert' | 'update'>;
 
-function toClaimRecord(row: ClaimRow, values: ClaimValues): ClaimRecord {
+function readText(values: ClaimValues, fieldName: string): string | null {
+  const value = values[fieldName];
+  return typeof value === 'string' ? value : null;
+}
+
+function readRequiredText(values: ClaimValues, fieldName: string): string {
+  const value = readText(values, fieldName);
+  if (value === null) {
+    throw new Error(`Claim field '${fieldName}' is required`);
+  }
+  return value;
+}
+
+function readList(values: ClaimValues, fieldName: string): string[] {
+  const value = values[fieldName];
+  return Array.isArray(value) ? value : [];
+}
+
+// The API uses YYYY-MM; the database stores the first day of that month.
+function toDate(month: string): string;
+function toDate(month: string | null): string | null;
+function toDate(month: string | null): string | null {
+  return month === null ? null : `${month}-01`;
+}
+
+function toMonth(date: string | null): string | null {
+  return date === null ? null : date.slice(0, 7);
+}
+
+// Optional fields that are empty are omitted, matching the request shape.
+function compactValues(
+  fields: Record<string, ClaimFieldValue | null>
+): ClaimValues {
+  const values: ClaimValues = {};
+  for (const [fieldName, value] of Object.entries(fields)) {
+    if (value !== null && !(Array.isArray(value) && value.length === 0)) {
+      values[fieldName] = value;
+    }
+  }
+  return values;
+}
+
+function toSkillRow(values: ClaimValues) {
+  return { name: readRequiredText(values, 'name') };
+}
+
+function toEmploymentRow(values: ClaimValues) {
   return {
-    claimId: row.claimId,
-    claimType: row.claimType,
-    origin: row.origin,
-    status: row.status,
-    values,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt
+    employer: readRequiredText(values, 'employer'),
+    jobTitle: readRequiredText(values, 'jobTitle'),
+    startDate: toDate(readRequiredText(values, 'startDate')),
+    endDate: toDate(readText(values, 'endDate')),
+    location: readText(values, 'location'),
+    description: readText(values, 'description'),
+    skills: readList(values, 'skills')
   };
 }
 
-async function attachCurrentValues(
+function toEducationRow(values: ClaimValues) {
+  return {
+    institution: readRequiredText(values, 'institution'),
+    degree: readRequiredText(values, 'degree'),
+    fieldOfStudy: readText(values, 'fieldOfStudy'),
+    startDate: toDate(readRequiredText(values, 'startDate')),
+    endDate: toDate(readText(values, 'endDate'))
+  };
+}
+
+function toCertificationRow(values: ClaimValues) {
+  return {
+    title: readRequiredText(values, 'title'),
+    issuer: readRequiredText(values, 'issuer'),
+    issueDate: toDate(readRequiredText(values, 'issueDate')),
+    expiryDate: toDate(readText(values, 'expiryDate')),
+    credentialId: readText(values, 'credentialId')
+  };
+}
+
+async function insertDetails(
   executor: QueryExecutor,
-  rows: ClaimRow[]
+  claimId: string,
+  claimType: ClaimRow['claimType'],
+  values: ClaimValues
+): Promise<void> {
+  switch (claimType) {
+    case 'skill':
+      await executor.insert(skillDetails).values({ claimId, ...toSkillRow(values) });
+      break;
+    case 'employment':
+      await executor
+        .insert(employmentDetails)
+        .values({ claimId, ...toEmploymentRow(values) });
+      break;
+    case 'education':
+      await executor
+        .insert(educationDetails)
+        .values({ claimId, ...toEducationRow(values) });
+      break;
+    case 'certification':
+      await executor
+        .insert(certificationDetails)
+        .values({ claimId, ...toCertificationRow(values) });
+      break;
+  }
+}
+
+async function updateDetails(
+  executor: QueryExecutor,
+  claimId: string,
+  claimType: ClaimRow['claimType'],
+  values: ClaimValues
+): Promise<void> {
+  switch (claimType) {
+    case 'skill':
+      await executor
+        .update(skillDetails)
+        .set(toSkillRow(values))
+        .where(eq(skillDetails.claimId, claimId));
+      break;
+    case 'employment':
+      await executor
+        .update(employmentDetails)
+        .set(toEmploymentRow(values))
+        .where(eq(employmentDetails.claimId, claimId));
+      break;
+    case 'education':
+      await executor
+        .update(educationDetails)
+        .set(toEducationRow(values))
+        .where(eq(educationDetails.claimId, claimId));
+      break;
+    case 'certification':
+      await executor
+        .update(certificationDetails)
+        .set(toCertificationRow(values))
+        .where(eq(certificationDetails.claimId, claimId));
+      break;
+  }
+}
+
+async function selectClaims(
+  executor: QueryExecutor,
+  where: SQL | undefined
 ): Promise<ClaimRecord[]> {
-  if (rows.length === 0) {
-    return [];
-  }
-
-  const valueRows = await executor
+  const rows = await executor
     .select({
-      claimId: claimValueHistory.claimId,
-      fieldName: claimValueHistory.fieldName,
-      value: claimValueHistory.value
+      claim: claims,
+      skill: skillDetails,
+      employment: employmentDetails,
+      education: educationDetails,
+      certification: certificationDetails
     })
-    .from(claimValueHistory)
-    .where(
-      and(
-        inArray(
-          claimValueHistory.claimId,
-          rows.map((row) => row.claimId)
-        ),
-        eq(claimValueHistory.valueStatus, 'current')
-      )
-    );
+    .from(claims)
+    .leftJoin(skillDetails, eq(skillDetails.claimId, claims.claimId))
+    .leftJoin(employmentDetails, eq(employmentDetails.claimId, claims.claimId))
+    .leftJoin(educationDetails, eq(educationDetails.claimId, claims.claimId))
+    .leftJoin(
+      certificationDetails,
+      eq(certificationDetails.claimId, claims.claimId)
+    )
+    .where(where)
+    .orderBy(asc(claims.createdAt));
 
-  const valuesByClaim = new Map<string, ClaimValues>();
-  for (const valueRow of valueRows) {
-    const values = valuesByClaim.get(valueRow.claimId) ?? {};
-    values[valueRow.fieldName] = valueRow.value;
-    valuesByClaim.set(valueRow.claimId, values);
-  }
+  return rows.map(({ claim, skill, employment, education, certification }) => {
+    let values: ClaimValues = {};
 
-  return rows.map((row) =>
-    toClaimRecord(row, valuesByClaim.get(row.claimId) ?? {})
-  );
+    if (claim.claimType === 'skill' && skill) {
+      values = compactValues({ name: skill.name });
+    } else if (claim.claimType === 'employment' && employment) {
+      values = compactValues({
+        employer: employment.employer,
+        jobTitle: employment.jobTitle,
+        startDate: toMonth(employment.startDate),
+        endDate: toMonth(employment.endDate),
+        location: employment.location,
+        description: employment.description,
+        skills: employment.skills
+      });
+    } else if (claim.claimType === 'education' && education) {
+      values = compactValues({
+        institution: education.institution,
+        degree: education.degree,
+        fieldOfStudy: education.fieldOfStudy,
+        startDate: toMonth(education.startDate),
+        endDate: toMonth(education.endDate)
+      });
+    } else if (claim.claimType === 'certification' && certification) {
+      values = compactValues({
+        title: certification.title,
+        issuer: certification.issuer,
+        issueDate: toMonth(certification.issueDate),
+        expiryDate: toMonth(certification.expiryDate),
+        credentialId: certification.credentialId
+      });
+    }
+
+    return {
+      claimId: claim.claimId,
+      claimType: claim.claimType,
+      origin: claim.origin,
+      status: claim.status,
+      values,
+      createdAt: claim.createdAt,
+      updatedAt: claim.updatedAt
+    };
+  });
 }
 
 export function createCandidatesRepository(
@@ -177,57 +340,50 @@ export function createCandidatesRepository(
               origin: input.origin,
               status: input.status
             })
-            .returning();
+            .returning({ claimId: claims.claimId });
 
           if (!createdClaim) {
             throw new Error('Claim creation did not return a record');
           }
 
-          const valueEntries = Object.entries(input.values);
-          if (valueEntries.length > 0) {
-            await transaction.insert(claimValueHistory).values(
-              valueEntries.map(([fieldName, value]) => ({
-                claimId: createdClaim.claimId,
-                fieldName,
-                value
-              }))
-            );
-          }
+          await insertDetails(
+            transaction,
+            createdClaim.claimId,
+            input.claimType,
+            input.values
+          );
 
-          return toClaimRecord(createdClaim, { ...input.values });
+          const [claim] = await selectClaims(
+            transaction,
+            eq(claims.claimId, createdClaim.claimId)
+          );
+          if (!claim) {
+            throw new Error('Created claim could not be read');
+          }
+          return claim;
         });
       });
     },
 
     async listClaims(candidateId, filters = {}) {
-      return withDbErrors('Claims', async () => {
-        const rows = await database.db
-          .select()
-          .from(claims)
-          .where(
-            and(
-              eq(claims.candidateId, candidateId),
-              filters.claimType ? eq(claims.claimType, filters.claimType) : undefined,
-              filters.status ? eq(claims.status, filters.status) : undefined
-            )
+      return withDbErrors('Claims', () =>
+        selectClaims(
+          database.db,
+          and(
+            eq(claims.candidateId, candidateId),
+            filters.claimType ? eq(claims.claimType, filters.claimType) : undefined,
+            filters.status ? eq(claims.status, filters.status) : undefined
           )
-          .orderBy(asc(claims.createdAt));
-
-        return attachCurrentValues(database.db, rows);
-      });
+        )
+      );
     },
 
     async findClaim(candidateId, claimId) {
       return withDbErrors('Claim', async () => {
-        const rows = await database.db
-          .select()
-          .from(claims)
-          .where(
-            and(eq(claims.claimId, claimId), eq(claims.candidateId, candidateId))
-          )
-          .limit(1);
-
-        const [claim] = await attachCurrentValues(database.db, rows);
+        const [claim] = await selectClaims(
+          database.db,
+          and(eq(claims.claimId, claimId), eq(claims.candidateId, candidateId))
+        );
         return claim ?? null;
       });
     },
@@ -235,54 +391,31 @@ export function createCandidatesRepository(
     async updateClaimValues(input) {
       return withDbErrors('Claim', () => {
         return database.db.transaction(async (transaction) => {
-          // Updating the claim first both verifies ownership and records the
-          // edit time; nothing else is written when the claim is not owned.
-          const [claim] = await transaction
-            .update(claims)
-            .set({ updatedAt: new Date() })
-            .where(
-              and(
-                eq(claims.claimId, input.claimId),
-                eq(claims.candidateId, input.candidateId)
-              )
-            )
-            .returning();
-
-          if (!claim) {
+          const ownedClaim = and(
+            eq(claims.claimId, input.claimId),
+            eq(claims.candidateId, input.candidateId)
+          );
+          const [current] = await selectClaims(transaction, ownedClaim);
+          if (!current) {
             return null;
           }
 
-          const changedEntries = Object.entries(input.changedValues);
-          const supersededFields = [
-            ...changedEntries.map(([fieldName]) => fieldName),
-            ...input.removedFields
-          ];
+          await transaction
+            .insert(claimRevisions)
+            .values({ claimId: current.claimId, previousValues: current.values });
+          await updateDetails(
+            transaction,
+            current.claimId,
+            current.claimType,
+            input.values
+          );
+          await transaction
+            .update(claims)
+            .set({ updatedAt: new Date() })
+            .where(ownedClaim);
 
-          if (supersededFields.length > 0) {
-            await transaction
-              .update(claimValueHistory)
-              .set({ valueStatus: 'superseded' })
-              .where(
-                and(
-                  eq(claimValueHistory.claimId, claim.claimId),
-                  inArray(claimValueHistory.fieldName, supersededFields),
-                  eq(claimValueHistory.valueStatus, 'current')
-                )
-              );
-          }
-
-          if (changedEntries.length > 0) {
-            await transaction.insert(claimValueHistory).values(
-              changedEntries.map(([fieldName, value]) => ({
-                claimId: claim.claimId,
-                fieldName,
-                value
-              }))
-            );
-          }
-
-          const [updatedClaim] = await attachCurrentValues(transaction, [claim]);
-          return updatedClaim ?? null;
+          const [updated] = await selectClaims(transaction, ownedClaim);
+          return updated ?? null;
         });
       });
     },

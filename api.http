@@ -156,7 +156,7 @@ Content-Type: application/json
 GET {{baseUrl}}/api/candidates/me/claims?type=skill
 Authorization: Bearer {{accessToken}}
 
-### Edit a claim; previous values are kept as superseded history (200)
+### Edit a claim; previous values are archived in claim_revisions (200)
 PUT {{baseUrl}}/api/candidates/me/claims/{{claimId}}
 Authorization: Bearer {{accessToken}}
 Content-Type: application/json

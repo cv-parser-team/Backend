@@ -18,7 +18,7 @@ import {
   ListClaimsQuery,
   UpdateCandidateBody
 } from './candidates.schemas.js';
-import { ClaimFieldValue, ProfileLink } from './candidates.table.js';
+import { ProfileLink } from './candidates.table.js';
 
 export interface CandidateProfile {
   candidateId: string;
@@ -102,7 +102,7 @@ function normalizeClaimValues(values: ClaimBody['values']): ClaimValues {
   for (const [fieldName, value] of Object.entries(values)) {
     if (typeof value === 'string') {
       normalized[fieldName] = value.trim();
-    } else if (Array.isArray(value)) {
+    } else if (Array.isArray(value) && value.length > 0) {
       normalized[fieldName] = [...new Set(value.map((item) => item.trim()))];
     }
   }
@@ -132,8 +132,14 @@ function assertValidClaimDates(input: ClaimBody): void {
   }
 }
 
-function isSameValue(left: ClaimFieldValue | undefined, right: ClaimFieldValue): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function hasSameValues(left: ClaimValues, right: ClaimValues): boolean {
+  const fieldNames = Object.keys(left);
+  return (
+    fieldNames.length === Object.keys(right).length &&
+    fieldNames.every(
+      (fieldName) => JSON.stringify(left[fieldName]) === JSON.stringify(right[fieldName])
+    )
+  );
 }
 
 function toExportedClaim(claim: ClaimRecord): ExportedClaim {
@@ -251,26 +257,15 @@ export function createCandidatesService({
       }
       assertValidClaimDates(input);
 
-      const nextValues = normalizeClaimValues(input.values);
-      const changedValues: ClaimValues = {};
-      for (const [fieldName, value] of Object.entries(nextValues)) {
-        if (!isSameValue(claim.values[fieldName], value)) {
-          changedValues[fieldName] = value;
-        }
-      }
-      const removedFields = Object.keys(claim.values).filter(
-        (fieldName) => !(fieldName in nextValues)
-      );
-
-      if (Object.keys(changedValues).length === 0 && removedFields.length === 0) {
+      const values = normalizeClaimValues(input.values);
+      if (hasSameValues(claim.values, values)) {
         return claim;
       }
 
       const updated = await repository.updateClaimValues({
         candidateId: candidate.candidateId,
         claimId,
-        changedValues,
-        removedFields
+        values
       });
       if (!updated) {
         throw new RecordNotFoundError('Claim', claimId);

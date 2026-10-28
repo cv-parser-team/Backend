@@ -1,5 +1,5 @@
 {
-  "id": "48518f84-9fac-4529-bff6-c292415901dc",
+  "id": "570c3c3f-4ae2-4e33-a0d5-b3348e7674ad",
   "prevId": "987355e9-0795-4eb3-83a0-b762675b5a3d",
   "version": "7",
   "dialect": "postgresql",
@@ -168,94 +168,52 @@
       },
       "isRLSEnabled": false
     },
-    "public.claim_value_history": {
-      "name": "claim_value_history",
+    "public.certification_details": {
+      "name": "certification_details",
       "schema": "",
       "columns": {
-        "value_id": {
-          "name": "value_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
         "claim_id": {
           "name": "claim_id",
           "type": "uuid",
-          "primaryKey": false,
+          "primaryKey": true,
           "notNull": true
         },
-        "field_name": {
-          "name": "field_name",
+        "title": {
+          "name": "title",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "value": {
-          "name": "value",
-          "type": "jsonb",
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "value_status": {
-          "name": "value_status",
-          "type": "claim_value_status",
-          "typeSchema": "public",
+        "issue_date": {
+          "name": "issue_date",
+          "type": "date",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'current'"
+          "notNull": true
         },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {
-        "claim_value_history_claim_id_idx": {
-          "name": "claim_value_history_claim_id_idx",
-          "columns": [
-            {
-              "expression": "claim_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "claim_value_history_current_field_unique": {
-          "name": "claim_value_history_current_field_unique",
-          "columns": [
-            {
-              "expression": "claim_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "field_name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"claim_value_history\".\"value_status\" = 'current'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
-        "claim_value_history_claim_id_claims_claim_id_fk": {
-          "name": "claim_value_history_claim_id_claims_claim_id_fk",
-          "tableFrom": "claim_value_history",
+        "certification_details_claim_id_claims_claim_id_fk": {
+          "name": "certification_details_claim_id_claims_claim_id_fk",
+          "tableFrom": "certification_details",
           "tableTo": "claims",
           "columnsFrom": [
             "claim_id"
@@ -271,11 +229,80 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "claim_value_history_field_name_not_blank": {
-          "name": "claim_value_history_field_name_not_blank",
-          "value": "length(btrim(\"claim_value_history\".\"field_name\")) > 0"
+        "certification_details_dates_ordered": {
+          "name": "certification_details_dates_ordered",
+          "value": "\"certification_details\".\"expiry_date\" is null or \"certification_details\".\"expiry_date\" >= \"certification_details\".\"issue_date\""
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.claim_revisions": {
+      "name": "claim_revisions",
+      "schema": "",
+      "columns": {
+        "revision_id": {
+          "name": "revision_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "claim_id": {
+          "name": "claim_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_values": {
+          "name": "previous_values",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "claim_revisions_claim_id_idx": {
+          "name": "claim_revisions_claim_id_idx",
+          "columns": [
+            {
+              "expression": "claim_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "claim_revisions_claim_id_claims_claim_id_fk": {
+          "name": "claim_revisions_claim_id_claims_claim_id_fk",
+          "tableFrom": "claim_revisions",
+          "tableTo": "claims",
+          "columnsFrom": [
+            "claim_id"
+          ],
+          "columnsTo": [
+            "claim_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.claims": {
@@ -359,6 +386,226 @@
           ],
           "columnsTo": [
             "candidate_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.education_details": {
+      "name": "education_details",
+      "schema": "",
+      "columns": {
+        "claim_id": {
+          "name": "claim_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "institution": {
+          "name": "institution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "degree": {
+          "name": "degree",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "field_of_study": {
+          "name": "field_of_study",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "start_date": {
+          "name": "start_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "end_date": {
+          "name": "end_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "education_details_claim_id_claims_claim_id_fk": {
+          "name": "education_details_claim_id_claims_claim_id_fk",
+          "tableFrom": "education_details",
+          "tableTo": "claims",
+          "columnsFrom": [
+            "claim_id"
+          ],
+          "columnsTo": [
+            "claim_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "education_details_dates_ordered": {
+          "name": "education_details_dates_ordered",
+          "value": "\"education_details\".\"end_date\" is null or \"education_details\".\"end_date\" >= \"education_details\".\"start_date\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.employment_details": {
+      "name": "employment_details",
+      "schema": "",
+      "columns": {
+        "claim_id": {
+          "name": "claim_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "employer": {
+          "name": "employer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job_title": {
+          "name": "job_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "start_date": {
+          "name": "start_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "end_date": {
+          "name": "end_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "skills": {
+          "name": "skills",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        }
+      },
+      "indexes": {
+        "employment_details_skills_idx": {
+          "name": "employment_details_skills_idx",
+          "columns": [
+            {
+              "expression": "skills",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "employment_details_claim_id_claims_claim_id_fk": {
+          "name": "employment_details_claim_id_claims_claim_id_fk",
+          "tableFrom": "employment_details",
+          "tableTo": "claims",
+          "columnsFrom": [
+            "claim_id"
+          ],
+          "columnsTo": [
+            "claim_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "employment_details_dates_ordered": {
+          "name": "employment_details_dates_ordered",
+          "value": "\"employment_details\".\"end_date\" is null or \"employment_details\".\"end_date\" >= \"employment_details\".\"start_date\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.skill_details": {
+      "name": "skill_details",
+      "schema": "",
+      "columns": {
+        "claim_id": {
+          "name": "claim_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "skill_details_name_lower_idx": {
+          "name": "skill_details_name_lower_idx",
+          "columns": [
+            {
+              "expression": "lower(\"name\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "skill_details_claim_id_claims_claim_id_fk": {
+          "name": "skill_details_claim_id_claims_claim_id_fk",
+          "tableFrom": "skill_details",
+          "tableTo": "claims",
+          "columnsFrom": [
+            "claim_id"
+          ],
+          "columnsTo": [
+            "claim_id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
@@ -496,14 +743,6 @@
         "employment",
         "education",
         "certification"
-      ]
-    },
-    "public.claim_value_status": {
-      "name": "claim_value_status",
-      "schema": "public",
-      "values": [
-        "current",
-        "superseded"
       ]
     },
     "public.account_status": {

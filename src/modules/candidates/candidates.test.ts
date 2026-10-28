@@ -24,12 +24,15 @@ import {
 } from './candidates.service.js';
 import {
   candidates,
+  certificationDetails,
   claimOrigin,
+  claimRevisions,
   claims,
   claimStatus,
   claimType,
-  claimValueHistory,
-  claimValueStatus
+  educationDetails,
+  employmentDetails,
+  skillDetails
 } from './candidates.table.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
@@ -110,22 +113,41 @@ describe('candidates tables', () => {
     ]);
     expect(claimOrigin.enumValues).toEqual(['manual', 'extracted']);
     expect(claimStatus.enumValues).toEqual(['pending', 'accepted', 'rejected']);
-    expect(claimValueStatus.enumValues).toEqual(['current', 'superseded']);
   });
 
   it('links profiles to users and claims to their owners', () => {
     expect(getTableConfig(candidates).foreignKeys).toHaveLength(1);
     expect(getTableConfig(claims).foreignKeys).toHaveLength(1);
-    expect(getTableConfig(claimValueHistory).foreignKeys).toHaveLength(1);
+    expect(getTableConfig(claimRevisions).foreignKeys).toHaveLength(1);
   });
 
-  it('allows only one current value per claim field', () => {
-    const currentValueIndex = getTableConfig(claimValueHistory).indexes.find(
-      (index) => index.config.name === 'claim_value_history_current_field_unique'
+  it('stores one details row per claim in the table of its type', () => {
+    for (const table of [
+      skillDetails,
+      employmentDetails,
+      educationDetails,
+      certificationDetails
+    ]) {
+      const config = getTableConfig(table);
+      const claimIdColumn = config.columns.find((column) => column.name === 'claim_id');
+
+      expect(claimIdColumn?.primary).toBe(true);
+      expect(config.foreignKeys).toHaveLength(1);
+    }
+  });
+
+  it('enforces date order in the database', () => {
+    expect(getTableConfig(employmentDetails).checks).toHaveLength(1);
+    expect(getTableConfig(educationDetails).checks).toHaveLength(1);
+    expect(getTableConfig(certificationDetails).checks).toHaveLength(1);
+  });
+
+  it('indexes employment skills for search', () => {
+    const skillsIndex = getTableConfig(employmentDetails).indexes.find(
+      (index) => index.config.name === 'employment_details_skills_idx'
     );
 
-    expect(currentValueIndex?.config.unique).toBe(true);
-    expect(currentValueIndex?.config.where).toBeDefined();
+    expect(skillsIndex?.config.method).toBe('gin');
   });
 });
 
@@ -242,7 +264,7 @@ describe('candidates service', () => {
     expect(repository.createClaim).not.toHaveBeenCalled();
   });
 
-  it('records only changed and removed claim fields', async () => {
+  it('sends the complete new values when a claim changes', async () => {
     const repository = createRepositoryDouble();
     vi.mocked(repository.findClaim).mockResolvedValue(
       claimRecord({
@@ -269,8 +291,11 @@ describe('candidates service', () => {
     expect(repository.updateClaimValues).toHaveBeenCalledWith({
       candidateId,
       claimId,
-      changedValues: { jobTitle: 'Backend Developer' },
-      removedFields: ['endDate']
+      values: {
+        employer: 'Aramex',
+        jobTitle: 'Backend Developer',
+        startDate: '2021-03'
+      }
     });
   });
 
@@ -285,6 +310,29 @@ describe('candidates service', () => {
 
     expect(repository.updateClaimValues).not.toHaveBeenCalled();
     expect(result.values).toEqual({ name: 'Python' });
+  });
+
+  it('ignores field order and empty skill lists when comparing values', async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.findClaim).mockResolvedValue(
+      claimRecord({
+        claimType: 'employment',
+        values: { startDate: '2021-03', jobTitle: 'Developer', employer: 'Aramex' }
+      })
+    );
+    const service = createService(repository);
+
+    await service.updateClaim(userId, claimId, {
+      type: 'employment',
+      values: {
+        employer: 'Aramex',
+        jobTitle: 'Developer',
+        startDate: '2021-03',
+        skills: []
+      }
+    });
+
+    expect(repository.updateClaimValues).not.toHaveBeenCalled();
   });
 
   it('does not change the type of an existing claim', async () => {
