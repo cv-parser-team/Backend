@@ -1,0 +1,173 @@
+# Document upload module plan
+
+## Goal
+
+Use one `documents` module to upload, store, list, download, and delete all
+candidate-owned source and evidence documents.
+
+## Scope
+
+- Store files on a private local filesystem; keep metadata in PostgreSQL.
+- Accept PDF/DOCX sources and PDF/DOCX/JPEG/PNG evidence.
+- Support single and multi-file uploads, authenticated downloads, and deletion.
+- Leave parsing, extraction, claim attachment, and verification to later modules.
+
+## Design decisions
+
+- Use one `documents` table with `purpose = source | evidence`.
+- Derive ownership from the authenticated user; never accept an owner ID.
+- Store only the server-verified `media_type`; discard the client MIME type.
+- Stream files with hard size/count limits and validate their actual content type.
+- Keep original bytes; use an opaque storage key and SHA-256 checksum.
+- Hide local paths behind a `DocumentStorage` interface for a later S3 adapter.
+- Process every uploaded file independently; one failure does not roll back
+  successful files from the same request.
+- Keep workflow-specific metadata in later one-to-one tables, not `documents`.
+
+## API
+
+All routes require an active candidate account and scope queries by authenticated
+`userId` plus `documentId`.
+
+| Method | Endpoint | Action |
+| --- | --- | --- |
+| `POST` | `/api/candidates/me/documents` | Upload `files` with one `purpose` |
+| `GET` | `/api/candidates/me/documents` | List; filter by `purpose` or `status` |
+| `GET` | `/api/candidates/me/documents/:documentId` | Read metadata |
+| `GET` | `/api/candidates/me/documents/:documentId/content` | Stream original bytes |
+| `DELETE` | `/api/candidates/me/documents/:documentId` | Delete document |
+
+The upload response reports a success or failure for each file so clients can
+retry only failed files.
+
+## Data model
+
+```mermaid
+erDiagram
+    USERS {
+        uuid user_id PK
+    }
+    DOCUMENTS {
+        uuid document_id PK
+        uuid owner_user_id FK
+        document_purpose purpose
+        text original_filename
+        text media_type
+        bigint byte_size
+        text sha256
+        text storage_key UK
+        document_status status
+        text failure_code "nullable"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    SOURCE_OCCURRENCES {
+        uuid occurrence_id PK
+        uuid document_id FK
+        uuid claim_id FK
+        integer page_number "future"
+        jsonb position "future"
+        text text_span "future"
+    }
+    CLAIMS {
+        uuid claim_id PK
+    }
+    CLAIM_EVIDENCE {
+        uuid claim_id PK, FK
+        uuid document_id PK, FK
+        timestamptz attached_at "future"
+    }
+
+    USERS ||--o{ DOCUMENTS : owns
+    DOCUMENTS ||--o{ SOURCE_OCCURRENCES : "cited by (future)"
+    CLAIMS ||--o{ SOURCE_OCCURRENCES : "supported by (future)"
+    DOCUMENTS ||--o{ CLAIM_EVIDENCE : "attached as (future)"
+    CLAIMS ||--o{ CLAIM_EVIDENCE : "has evidence (future)"
+```
+
+- `document_purpose`: `source`, `evidence`
+- `document_status`: `stored`, `processing`, `ready`, `failed`, `deleting`
+- `media_type`: server-verified media type; no separate `mime_type` column
+- Index `(owner_user_id, created_at)` and `(owner_user_id, sha256)`; make
+  `storage_key` unique.
+
+## Module boundaries
+
+```mermaid
+flowchart LR
+    Client -->|multipart / metadata / content| Routes
+    Routes -->|userId from auth| Service
+    Service --> Repository
+    Service --> Validator
+    Service --> Storage[DocumentStorage interface]
+    Repository --> PostgreSQL[(PostgreSQL metadata)]
+    Storage --> Local[(private local filesystem)]
+    SourceWorkflow[Future parsing and extraction] -->|content and status API| Service
+    EvidenceWorkflow[Future attachment and verification] -->|metadata API| Service
+    Storage -. later adapter .-> S3[(S3)]
+```
+
+## Upload flow
+
+```mermaid
+sequenceDiagram
+    actor Candidate
+    participant Route
+    participant Service
+    participant Validator
+    participant Storage
+    participant Database
+
+    Candidate->>Route: POST purpose + files
+    Route->>Service: upload(userId, purpose, streams)
+    loop Each file
+        Service->>Storage: stage stream and calculate checksum
+        Service->>Validator: validate purpose, type, size, and readability
+        alt File is invalid
+            Service->>Storage: discard staged file
+            Service->>Service: record file failure
+        else File is valid
+            Service->>Storage: commit file
+            Service->>Database: insert metadata
+            alt Insert fails
+                Service->>Storage: clean up committed file
+                Service->>Service: record file failure
+            else Insert succeeds
+                Service->>Service: record document success
+            end
+        end
+    end
+    Service-->>Candidate: per-file success and failure results
+```
+
+## Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> stored: Upload committed
+    stored --> processing: Workflow claims document
+    processing --> ready: Processing succeeds
+    processing --> failed: Processing fails
+    failed --> processing: Retry
+    stored --> deleting: Delete requested
+    ready --> deleting: Delete requested
+    failed --> deleting: Delete requested
+    deleting --> [*]: File and row removed
+```
+
+## Implementation
+
+- [ ] Add validated storage root and multipart limits.
+- [ ] Add `documents` table, migration, schema export, and data-model update.
+- [ ] Add local `DocumentStorage` adapter with staging, hashing, atomic rename, streaming reads, and idempotent deletion.
+- [ ] Add schemas, repository, service, typed errors, routes, and README entries.
+- [ ] Add cleanup for stale temporary files, orphan objects, and `deleting` rows.
+- [ ] Later modules access files only through a narrow documents service.
+
+## Verification
+
+- [ ] Test authentication, ownership, both purposes, filters, limits, and mixed per-file upload outcomes.
+- [ ] Test disguised, corrupt, empty, oversized, and purpose/type-mismatched files.
+- [ ] Test byte-for-byte download, checksum, cleanup, and idempotent deletion.
+- [ ] Test database constraints, indexes, ordering, and account-delete cascade.
+- [ ] Run focused tests, `npm test`, and `npm run build`.
