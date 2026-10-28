@@ -15,6 +15,7 @@ src/
 │   └── http/                 # Global HTTP error handling
 ├── modules/
 │   ├── auth/                 # JWT authentication, token versions, guards
+│   ├── candidates/           # Candidate profiles, claims, profile export
 │   └── users/                # Table, schemas, repository, service, routes
 └── shared/                   # Module-independent contracts and errors
 ```
@@ -47,6 +48,9 @@ A module exposes its Fastify plugin through `index.ts`. Files outside the
 module should not import its routes, repository, or table directly. If one
 module needs behavior owned by another, expose a narrow service interface
 instead of reading the other module's tables.
+
+Module design notes and diagrams live in `docs/modules/`, for example
+[Candidates](modules/candidates.md).
 
 Keep a module flat while it remains small. Introduce subdirectories such as
 `domain/`, `application/`, and `infrastructure/` only when the number of files

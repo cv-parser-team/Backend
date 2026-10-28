@@ -15,6 +15,13 @@
       "when": 1793018045903,
       "tag": "0001_yielding_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793176274919,
+      "tag": "0002_petite_bucky",
+      "breakpoints": true
     }
   ]
 }

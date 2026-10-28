@@ -63,6 +63,142 @@ Content-Type: application/json
   "password": "short"
 }
 
+### Create the authenticated candidate's profile (201; 409 when it exists)
+POST {{baseUrl}}/api/candidates/me
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "fullName": "Example Candidate",
+  "headline": "Backend Developer",
+  "location": "Amman, Jordan",
+  "profileLinks": [
+    { "label": "GitHub", "url": "https://github.com/example" }
+  ]
+}
+
+### Get the candidate profile (200)
+GET {{baseUrl}}/api/candidates/me
+Authorization: Bearer {{accessToken}}
+
+### Update the candidate profile; null clears an optional field (200)
+PATCH {{baseUrl}}/api/candidates/me
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "summary": "Backend developer focused on APIs.",
+  "headline": null
+}
+
+### Add a manual skill claim (201)
+# @name createSkill
+POST {{baseUrl}}/api/candidates/me/claims
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "skill",
+  "values": { "name": "Python" }
+}
+
+###
+@claimId = {{createSkill.response.body.data.claimId}}
+
+### Add a manual employment claim (201)
+POST {{baseUrl}}/api/candidates/me/claims
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "employment",
+  "values": {
+    "employer": "Aramex",
+    "jobTitle": "Backend Developer",
+    "startDate": "2021-03",
+    "endDate": "2023-06",
+    "location": "Remote",
+    "skills": ["Node.js", "PostgreSQL"]
+  }
+}
+
+### Add a manual education claim (201)
+POST {{baseUrl}}/api/candidates/me/claims
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "education",
+  "values": {
+    "institution": "University of Jordan",
+    "degree": "BSc",
+    "fieldOfStudy": "Computer Engineering",
+    "startDate": "2016-09",
+    "endDate": "2020-06"
+  }
+}
+
+### Add a manual certification claim (201)
+POST {{baseUrl}}/api/candidates/me/claims
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "certification",
+  "values": {
+    "title": "AWS Certified Developer",
+    "issuer": "Amazon",
+    "issueDate": "2023-01"
+  }
+}
+
+### List claims, optionally filtered by type and status (200)
+GET {{baseUrl}}/api/candidates/me/claims?type=skill
+Authorization: Bearer {{accessToken}}
+
+### Edit a claim; previous values are archived in claim_revisions (200)
+PUT {{baseUrl}}/api/candidates/me/claims/{{claimId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "skill",
+  "values": { "name": "Python 3" }
+}
+
+### Change a claim's type (400)
+PUT {{baseUrl}}/api/candidates/me/claims/{{claimId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "certification",
+  "values": { "title": "Python", "issuer": "PSF", "issueDate": "2023-01" }
+}
+
+### Add a claim with an end date before its start date (400)
+POST {{baseUrl}}/api/candidates/me/claims
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "type": "education",
+  "values": {
+    "institution": "University of Jordan",
+    "degree": "BSc",
+    "startDate": "2020-09",
+    "endDate": "2019-06"
+  }
+}
+
+### Export the structured profile with accepted claims only (200)
+GET {{baseUrl}}/api/candidates/me/profile
+Authorization: Bearer {{accessToken}}
+
+### Delete a claim (204; 404 when repeated or owned by another candidate)
+DELETE {{baseUrl}}/api/candidates/me/claims/{{claimId}}
+Authorization: Bearer {{accessToken}}
+
 ### Logout and invalidate all previously issued tokens (204)
 POST {{baseUrl}}/api/auth/logout
 Authorization: Bearer {{accessToken}}

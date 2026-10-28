@@ -31,8 +31,72 @@ erDiagram
         integer version
         timestamptz updated_at
     }
+    CANDIDATES {
+        uuid candidate_id PK
+        uuid user_id FK, UK
+        text full_name
+        text headline "nullable"
+        text summary "nullable"
+        text phone "nullable"
+        text location "nullable"
+        jsonb profile_links
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    CLAIMS {
+        uuid claim_id PK
+        uuid candidate_id FK
+        claim_type claim_type
+        claim_origin origin
+        claim_status status
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    SKILL_DETAILS {
+        uuid claim_id PK, FK
+        text name
+    }
+    EMPLOYMENT_DETAILS {
+        uuid claim_id PK, FK
+        text employer
+        text job_title
+        date start_date
+        date end_date "nullable"
+        text location "nullable"
+        text description "nullable"
+        text[] skills
+    }
+    EDUCATION_DETAILS {
+        uuid claim_id PK, FK
+        text institution
+        text degree
+        text field_of_study "nullable"
+        date start_date
+        date end_date "nullable"
+    }
+    CERTIFICATION_DETAILS {
+        uuid claim_id PK, FK
+        text title
+        text issuer
+        date issue_date
+        date expiry_date "nullable"
+        text credential_id "nullable"
+    }
+    CLAIM_REVISIONS {
+        uuid revision_id PK
+        uuid claim_id FK
+        jsonb previous_values
+        timestamptz created_at
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
+    USERS ||--o| CANDIDATES : "has profile"
+    CANDIDATES ||--o{ CLAIMS : has
+    CLAIMS ||--o| SKILL_DETAILS : "type skill"
+    CLAIMS ||--o| EMPLOYMENT_DETAILS : "type employment"
+    CLAIMS ||--o| EDUCATION_DETAILS : "type education"
+    CLAIMS ||--o| CERTIFICATION_DETAILS : "type certification"
+    CLAIMS ||--o{ CLAIM_REVISIONS : archives
 ```
 
 ## Users
@@ -74,6 +138,141 @@ deletion.
 | `user_id` | UUID | Primary key, user FK, cascade delete | Token owner |
 | `version` | Integer | Required, nonnegative, defaults to `0` | Current valid JWT version |
 | `updated_at` | Timestamp with time zone | Required, generated | Last invalidation time |
+
+## Candidates
+
+Owned by the `candidates` module and defined in
+`src/modules/candidates/candidates.table.ts`.
+
+`candidates` stores one profile per user with the candidate's personal
+information. The email address is not duplicated; it is read from the user
+through the users service. The row cascades on user deletion.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `candidate_id` | UUID | Primary key, generated | Stable profile identifier |
+| `user_id` | UUID | Required, unique, user FK, cascade delete | Profile owner |
+| `full_name` | Text | Required, nonblank | Name shown on the profile |
+| `headline` | Text | Nullable | Professional title, such as "Backend Developer" |
+| `summary` | Text | Nullable | Professional summary |
+| `phone` | Text | Nullable | Contact phone number |
+| `location` | Text | Nullable | Candidate location |
+| `profile_links` | JSONB | Required, defaults to `[]` | `{ label, url }` links such as LinkedIn or GitHub |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Last update time |
+
+## Claims
+
+Owned by the `candidates` module.
+
+A claim is one piece of profile information: a skill, an employment record,
+an education record, or a certification. Claims entered by the candidate are
+stored as `manual` and `accepted`. Only accepted claims appear in the exported
+profile; pending and rejected claims are excluded. Claims cascade on profile
+deletion.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, generated | Stable claim identifier |
+| `candidate_id` | UUID | Required, candidate FK, cascade delete, indexed | Claim owner |
+| `claim_type` | `claim_type` | Required | Kind of profile information |
+| `origin` | `claim_origin` | Required | Whether the candidate entered or extraction produced the claim |
+| `status` | `claim_status` | Required, defaults to `pending` | Review state; only `accepted` is exported |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Last value change |
+
+## Claim details
+
+Owned by the `candidates` module.
+
+Each claim has exactly one details row, stored in the table that matches its
+`claim_type`. The details table uses `claim_id` as both its primary key and its
+claim foreign key, and rows cascade on claim deletion. Real columns, rather
+than generic JSON values, let profile search query and index claim data
+directly, such as finding candidates with a given skill.
+
+The API exchanges dates as `YYYY-MM`. The database stores them as `date` values
+on the first day of the month, so durations can be calculated and records can
+be sorted by date. Optional fields are omitted from API values when empty.
+
+### `skill_details`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
+| `name` | Text | Required, indexed case-insensitively | Skill name |
+
+### `employment_details`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
+| `employer` | Text | Required | Employer name |
+| `job_title` | Text | Required | Job title |
+| `start_date` | Date | Required | First month of employment |
+| `end_date` | Date | Nullable, not before `start_date` | Last month; null for a current role |
+| `location` | Text | Nullable | Work location, such as "Remote" |
+| `description` | Text | Nullable | Role description |
+| `skills` | Text array | Required, defaults to empty, GIN indexed | Skills used in the role |
+
+### `education_details`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
+| `institution` | Text | Required | Educational institution |
+| `degree` | Text | Required | Degree, such as "BSc" |
+| `field_of_study` | Text | Nullable | Field of study |
+| `start_date` | Date | Required | First month of study |
+| `end_date` | Date | Nullable, not before `start_date` | Last month; null while studying |
+
+### `certification_details`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
+| `title` | Text | Required | Certificate title |
+| `issuer` | Text | Required | Issuing organization |
+| `issue_date` | Date | Required | Issue month |
+| `expiry_date` | Date | Nullable, not before `issue_date` | Expiry month |
+| `credential_id` | Text | Nullable | Issuer credential identifier |
+
+## Claim revisions
+
+Owned by the `candidates` module.
+
+Before a claim's details are edited, its previous values are archived in
+`claim_revisions` in the API shape (camelCase fields, `YYYY-MM` dates). The
+details tables therefore always hold current values, and the oldest revision of
+an edited claim holds its original values. Unchanged edits create no revision.
+Revisions are not searched and cascade on claim deletion.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `revision_id` | UUID | Primary key, generated | Stable revision identifier |
+| `claim_id` | UUID | Required, claim FK, cascade delete, indexed | Edited claim |
+| `previous_values` | JSONB | Required | Complete claim values before the edit |
+| `created_at` | Timestamp with time zone | Required, generated | Edit time |
+
+### Enumerations
+
+- `claim_type`: `skill`, `employment`, `education`, `certification`
+- `claim_origin`: `manual`, `extracted`
+- `claim_status`: `pending`, `accepted`, `rejected`
+
+### Not yet implemented
+
+The [target domain ERD](erd.md) includes claim details that belong to later
+features and are intentionally not part of the current schema:
+
+- `claims.confidence_score`, `claims.matched_claim_id`, and
+  `claims.match_status` arrive with extraction and duplicate matching.
+- Field-level validation flags for low-confidence extracted values, previously
+  modeled as `ClaimValueHistory.validation_status`, are left to the extraction
+  review feature to place.
+- `source_occurrences`, which links extracted claims to their source document
+  and location, arrives with document upload and parsing. Exported claims
+  already include an empty `sources` array for these references.
 
 ## Maintenance rules
 
