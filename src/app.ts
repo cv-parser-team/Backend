@@ -1,5 +1,9 @@
+
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import swagger from '@fastify/swagger';
+import swaggerUI from '@fastify/swagger-ui';
+
 import { databasePlugin } from './infrastructure/database/database.plugin.js';
 import { AppDatabase } from './infrastructure/database/database.js';
 import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.js';
@@ -18,14 +22,42 @@ export async function createApp(
     logger: true
   });
 
+  // CORS configuration
   await app.register(cors, {
     origin: true
   });
-  await app.register(databasePlugin, { database: options.database });
+
+  // Swagger / OpenAPI configuration
+  await app.register(swagger, {
+    openapi: {
+      openapi: '3.0.3',
+      info: {
+        title: 'LuminaCV API',
+        description: 'API documentation for the LuminaCV backend',
+        version: '1.0.0'
+      }
+    }
+  });
+
+  // Swagger UI
+  await app.register(swaggerUI, {
+    routePrefix: '/docs'
+  });
+
+  // Database
+  await app.register(databasePlugin, {
+    database: options.database
+  });
+
+  // Error handling
   await app.register(errorHandlerPlugin);
+
+  // API modules
   await app.register(authModule);
   await app.register(usersModule);
-  await app.register(candidatesModule, { prefix: '/api/candidates' });
+  await app.register(candidatesModule, {
+    prefix: '/api/candidates'
+  });
 
   return app;
 }
