@@ -22,6 +22,9 @@ of a file fails.
   not know where the file came from, so it works before the upload module is
   finished and later reads files through `documentsService` without changes.
 - Parse `source` documents only; `evidence` documents are not parsed in Part 1.
+- Use the Strategy pattern: one `DocumentParser` contract with a PDF parser
+  and a DOCX parser, chosen by media type. A new format adds one parser without
+  changing the rest.
 - Use `pdfjs-dist` for PDF. It returns text with page numbers and coordinates.
 - Group PDF text into lines. Each line keeps its text, its bounding box, and
   the original text pieces inside it, so any word can be traced to its page
