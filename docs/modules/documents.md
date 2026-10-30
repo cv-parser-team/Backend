@@ -40,6 +40,35 @@ All routes require an active candidate account and scope queries by authenticate
 The upload response reports a success or failure for each file so clients can
 retry only failed files.
 
+## Validation and integrity requirements
+
+Reject a file before committing it to storage when any upload requirement
+fails:
+
+- `original_filename` must be at most 255 Unicode characters and contain at
+  least one non-whitespace character. Preserve the accepted filename exactly
+  as received; use the opaque `storage_key` for filesystem access.
+- Files must be nonempty and must not exceed the configured upload-size limit.
+- Determine the media type from the file contents; do not trust the multipart
+  content type or filename extension.
+- Source documents accept only PDF and DOCX. Evidence documents accept PDF,
+  DOCX, JPEG, and PNG.
+- Files must be readable and structurally valid for their detected media type.
+
+PostgreSQL enforces stable metadata invariants even when a write does not pass
+through the upload validator:
+
+- `owner_user_id`, `purpose`, `original_filename`, `media_type`, `byte_size`,
+  `sha256`, `storage_key`, and `status` are required.
+- `byte_size` is greater than zero.
+- `sha256` is exactly 64 lowercase hexadecimal characters.
+- `storage_key` contains at least one non-whitespace character and is unique.
+- `media_type` is one of the supported server-verified values and is compatible
+  with the document purpose.
+- `failure_code` is required exactly when `status = failed` and is otherwise
+  null.
+- Deleting a user cascades to that user's document metadata.
+
 ## Data model
 
 ```mermaid
@@ -168,6 +197,7 @@ stateDiagram-v2
 
 - [ ] Test authentication, ownership, both purposes, filters, limits, and mixed per-file upload outcomes.
 - [ ] Test disguised, corrupt, empty, oversized, and purpose/type-mismatched files.
+- [ ] Test blank, 255-character, and 256-character original filenames.
 - [ ] Test byte-for-byte download, checksum, cleanup, and idempotent deletion.
 - [ ] Test database constraints, indexes, ordering, and account-delete cascade.
 - [ ] Run focused tests, `npm test`, and `npm run build`.

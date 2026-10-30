@@ -13,7 +13,9 @@ export default defineConfig({
       NODE_ENV: 'test',
       JWT_SECRET: 'test-only-jwt-secret-with-at-least-32-characters',
       JWT_ISSUER: 'luminacv-test',
-      JWT_AUDIENCE: 'luminacv-test-api'
+      JWT_AUDIENCE: 'luminacv-test-api',
+      DOCUMENT_STORAGE_ROOT: '.data/test-documents',
+      DOCUMENT_MAX_UPLOAD_BYTES: '10485760'
     }
   }
 });

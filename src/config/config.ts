@@ -1,3 +1,5 @@
+import { parse, resolve } from 'node:path';
+
 try {
   process.loadEnvFile();
 } catch {
@@ -11,6 +13,27 @@ export function extractOrThrow(name: string): string {
   }
 
   return value;
+}
+
+export function extractPositiveIntegerOrThrow(name: string): number {
+  const rawValue = extractOrThrow(name);
+  const value = Number(rawValue);
+
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+export function extractPrivateDirectoryOrThrow(name: string): string {
+  const directory = resolve(extractOrThrow(name));
+
+  if (directory === parse(directory).root) {
+    throw new Error(`${name} must not be a filesystem root`);
+  }
+
+  return directory;
 }
 
 const nodeEnv = extractOrThrow('NODE_ENV');
@@ -33,5 +56,11 @@ export const config = {
     jwtSecret,
     issuer: extractOrThrow('JWT_ISSUER'),
     audience: extractOrThrow('JWT_AUDIENCE')
+  },
+  documents: {
+    storageRoot: extractPrivateDirectoryOrThrow('DOCUMENT_STORAGE_ROOT'),
+    maximumUploadByteSize: extractPositiveIntegerOrThrow(
+      'DOCUMENT_MAX_UPLOAD_BYTES'
+    )
   }
 } as const;
