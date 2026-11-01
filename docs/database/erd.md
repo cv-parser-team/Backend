@@ -48,32 +48,36 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
-    SourceDocument {
+    Document {
         uuid document_id PK
-        uuid candidate_id FK
-        source_type source_type
+        uuid owner_user_id FK
+        document_purpose purpose
         text original_filename
-        text file_format
-        bigint file_size
-        integer version_no
-        text storage_ref
-        text file_hash
-        timestamptz uploaded_at
-        processing_status processing_status
-        integer attempt_count
-        text error_details
-        jsonb parsed_content
-        jsonb failed_portions
-        jsonb unmapped_data
+        text media_type
+        bigint byte_size
+        text sha256
+        text storage_key UK
+        document_status status
+        text failure_code "nullable"
+        timestamptz created_at
+        timestamptz updated_at
     }
-    EvidenceDocument {
-        uuid evidence_id PK
-        uuid candidate_id FK
-        text file_name
-        text file_type
-        bigint file_size
-        text storage_ref
-        timestamptz uploaded_at
+    DocumentExtraction {
+        uuid extraction_id PK
+        uuid document_id FK, UK
+        extraction_status status
+        document_format format
+        integer page_count "nullable"
+        jsonb content
+        jsonb failures
+        text parser_version
+        integer attempt_count "Part 2"
+        jsonb unmapped_data "Part 2"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    EvidenceDetails {
+        uuid document_id PK, FK
         text certificate_title
         text issuer
         date issue_date
@@ -162,7 +166,7 @@ erDiagram
     }
     ClaimEvidence {
         uuid claim_id PK, FK
-        uuid evidence_id PK, FK
+        uuid document_id PK, FK
         attachment_status attachment_status
         timestamptz attached_at
     }
@@ -205,7 +209,7 @@ erDiagram
     }
     CertificateReview {
         uuid certificate_review_id PK
-        uuid evidence_id FK
+        uuid document_id FK
         review_status status
         uuid claimed_by FK "references User"
         timestamptz claimed_at
@@ -221,10 +225,11 @@ erDiagram
     User ||--|| AuthTokenVersion : "owns"
     User ||--o{ AuditLog : "performs"
     User o|--o| Candidate : "has profile"
-    Candidate ||--o{ SourceDocument : "has"
+    User ||--o{ Document : "owns"
     Candidate ||--o{ Claim : "has"
-    Candidate ||--o{ EvidenceDocument : "owns"
-    SourceDocument ||--o{ SourceOccurrence : "has"
+    Document ||--o| DocumentExtraction : "source text"
+    Document ||--o| EvidenceDetails : "evidence metadata"
+    Document ||--o{ SourceOccurrence : "has"
     Claim ||--o{ SourceOccurrence : "has"
     Claim ||--o| SkillDetails : "skill details"
     Claim ||--o| EmploymentDetails : "employment details"
@@ -234,10 +239,10 @@ erDiagram
     Claim ||--o{ NormalizationDecision : "has"
     Claim ||--o{ Conflict : "has"
     Claim ||--o{ ClaimEvidence : "has"
-    EvidenceDocument ||--o{ ClaimEvidence : "supports"
+    Document ||--o{ ClaimEvidence : "supports"
     CanonicalTerm ||--o{ Alias : "has"
     CanonicalTerm ||--o{ NormalizationDecision : "maps"
     Conflict ||--o{ ConflictValue : "has"
     Alias ||--o{ AliasReview : "proposed in"
-    EvidenceDocument ||--o{ CertificateReview : "verified in"
+    Document ||--o{ CertificateReview : "verified in"
 ```
