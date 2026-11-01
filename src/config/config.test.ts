@@ -11,8 +11,9 @@ describe('document storage configuration', () => {
     vi.unstubAllEnvs();
   });
 
-  it('exposes an absolute private storage root and positive size limit', () => {
+  it('exposes an absolute private storage root and positive upload limits', () => {
     expect(isAbsolute(config.documents.storageRoot)).toBe(true);
+    expect(config.documents.maximumUploadFiles).toBe(5);
     expect(config.documents.maximumUploadByteSize).toBe(10_485_760);
   });
 

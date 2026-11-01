@@ -1,5 +1,18 @@
 import { FromSchema } from 'json-schema-to-ts';
 
+export const uploadDocumentQuerySchema = {
+  type: 'object',
+  properties: {
+    purpose: { type: 'string', enum: ['source', 'evidence'] }
+  },
+  required: ['purpose'],
+  additionalProperties: false
+} as const;
+
+export type UploadDocumentQuery = FromSchema<
+  typeof uploadDocumentQuerySchema
+>;
+
 export const listDocumentsQuerySchema = {
   type: 'object',
   properties: {

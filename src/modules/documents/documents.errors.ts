@@ -16,6 +16,15 @@ export class DocumentTooLargeError extends AppError {
   }
 }
 
+export class InvalidDocumentUploadError extends AppError {
+  readonly statusCode = 400;
+  readonly code = 'INVALID_DOCUMENT_UPLOAD';
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 export class InvalidDocumentFilenameError extends AppError {
   readonly statusCode = 400;
   readonly code = 'INVALID_DOCUMENT_FILENAME';

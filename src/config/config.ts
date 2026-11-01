@@ -59,6 +59,9 @@ export const config = {
   },
   documents: {
     storageRoot: extractPrivateDirectoryOrThrow('DOCUMENT_STORAGE_ROOT'),
+    maximumUploadFiles: extractPositiveIntegerOrThrow(
+      'DOCUMENT_MAX_UPLOAD_FILES'
+    ),
     maximumUploadByteSize: extractPositiveIntegerOrThrow(
       'DOCUMENT_MAX_UPLOAD_BYTES'
     )

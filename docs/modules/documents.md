@@ -31,7 +31,7 @@ All routes require an active candidate account and scope queries by authenticate
 
 | Method | Endpoint | Action |
 | --- | --- | --- |
-| `POST` | `/api/candidates/me/documents` | Upload `files` with one `purpose` |
+| `POST` | `/api/candidates/me/documents?purpose=source` | Upload one or more `file` parts with a required purpose query |
 | `GET` | `/api/candidates/me/documents` | List; filter by `purpose` or `status` |
 | `GET` | `/api/candidates/me/documents/:documentId` | Read metadata |
 | `GET` | `/api/candidates/me/documents/:documentId/content` | Stream original bytes |
@@ -91,12 +91,8 @@ erDiagram
         timestamptz updated_at
     }
     SOURCE_OCCURRENCES {
-        uuid occurrence_id PK
         uuid document_id FK
         uuid claim_id FK
-        integer page_number "future"
-        jsonb position "future"
-        text text_span "future"
     }
     CLAIMS {
         uuid claim_id PK
@@ -104,7 +100,6 @@ erDiagram
     CLAIM_EVIDENCE {
         uuid claim_id PK, FK
         uuid document_id PK, FK
-        timestamptz attached_at "future"
     }
 
     USERS ||--o{ DOCUMENTS : owns
