@@ -181,12 +181,45 @@ stateDiagram-v2
 
 ## Implementation
 
-- [ ] Add validated storage root and multipart limits.
-- [ ] Add `documents` table, migration, schema export, and data-model update.
-- [ ] Add local `DocumentStorage` adapter with staging, hashing, atomic rename, streaming reads, and idempotent deletion.
-- [ ] Add schemas, repository, service, typed errors, routes, and README entries.
+### Implemented
+
+- [x] Validate the private storage root, per-file byte limit, and per-request
+  file-count limit from environment configuration.
+- [x] Persist document metadata in the `documents` table with migrations,
+  database constraints, indexes, and central schema export.
+- [x] Stage and hash uploads while streaming without loading complete files into
+  application memory.
+- [x] Detect supported media types from file content, enforce purpose/type
+  compatibility, and perform lightweight signature and marker validation.
+- [x] Commit staged files atomically using opaque UUID storage keys that cannot
+  escape the private storage root.
+- [x] Discard staged files and delete committed files idempotently.
+- [x] Upload one or more files with independent success or failure results.
+- [x] List owned document metadata with optional purpose and status filters.
+- [x] Read metadata and stream original file bytes through authenticated,
+  owner-scoped endpoints.
+- [x] Delete an owned document by marking it `deleting`, removing its stored
+  bytes, and then deleting its metadata.
+- [x] Cover storage, validation, service, route, and table behavior with focused
+  automated tests and manual HTTP requests.
+
+### Not yet implemented
+
+- [ ] Replace lightweight marker checks with parser-backed validation that
+  establishes that PDF, DOCX, JPEG, and PNG files are genuinely readable.
+- [ ] Reconcile multipart count and size-limit errors with per-file batch
+  results; a parser limit can currently occur after earlier files were stored.
 - [ ] Add cleanup for stale temporary files, orphan objects, and `deleting` rows.
-- [ ] Later modules access files only through a narrow documents service.
+- [ ] Remove filesystem objects when account deletion cascades document rows.
+- [ ] Identify dependent profile claims and explain their impact before deleting
+  a source document.
+- [ ] Add claim evidence attachment, reuse, detachment, and dependent cleanup.
+- [ ] Accept supported LinkedIn data exports as candidate sources.
+- [ ] Automatically initiate parsing for valid source uploads and implement the
+  `stored` → `processing` → `ready` or `failed` lifecycle.
+- [ ] Extract certificate metadata and connect source occurrences to claims.
+- [ ] Expose only narrow document-service operations to later parsing and
+  evidence modules.
 
 ## Verification
 
