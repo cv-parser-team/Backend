@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
+import { documents } from '../documents/documents.table.js';
 import { ExtractionFailure, ParsedPage, ParsedParagraph } from './parsing.types.js';
 
 export interface ExtractionContent {
@@ -29,8 +30,9 @@ export const documentExtractions = pgTable(
   'document_extractions',
   {
     extractionId: uuid('extraction_id').primaryKey().defaultRandom(),
-    // Gains a foreign key to documents.document_id once that table exists.
-    documentId: uuid('document_id').notNull(),
+    documentId: uuid('document_id')
+      .notNull()
+      .references(() => documents.documentId, { onDelete: 'cascade' }),
     status: extractionStatus('status').notNull(),
     format: documentFormat('format').notNull(),
     pageCount: integer('page_count'),

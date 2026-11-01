@@ -102,10 +102,23 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    DOCUMENT_EXTRACTIONS {
+        uuid extraction_id PK
+        uuid document_id FK, UK
+        extraction_status status
+        document_format format
+        integer page_count "nullable"
+        jsonb content
+        jsonb failures
+        text parser_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
     USERS ||--o| CANDIDATES : "has profile"
     USERS ||--o{ DOCUMENTS : owns
+    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
     CLAIMS ||--o| EMPLOYMENT_DETAILS : "type employment"
@@ -113,9 +126,6 @@ erDiagram
     CLAIMS ||--o| CERTIFICATION_DETAILS : "type certification"
     CLAIMS ||--o{ CLAIM_REVISIONS : archives
 ```
-
-`DOCUMENT_EXTRACTIONS` is described [below](#document-extractions). It has no
-foreign keys until the `documents` table exists.
 
 ## Users
 
@@ -329,15 +339,14 @@ Owned by the `parsing` module and defined in
 
 `document_extractions` stores the text extracted from one source document.
 PDF results keep pages, lines, and on-page coordinates; DOCX results keep
-ordered paragraphs. Parsing a document again replaces its row. `document_id`
-gains a foreign key to `documents.document_id` once the documents module adds
-that table.
+ordered paragraphs. Parsing a document again replaces its row. Deleting a
+document deletes its extraction.
 
 ```mermaid
 erDiagram
     DOCUMENT_EXTRACTIONS {
         uuid extraction_id PK
-        uuid document_id UK
+        uuid document_id FK, UK
         extraction_status status
         document_format format
         integer page_count "nullable"
@@ -352,7 +361,7 @@ erDiagram
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |
 | `extraction_id` | UUID | Primary key, generated | Stable extraction identifier |
-| `document_id` | UUID | Required, unique; foreign key added later | Parsed document |
+| `document_id` | UUID | Required, unique, document FK, cascade delete | Parsed document |
 | `status` | `extraction_status` | Required | Whether every page, some pages, or nothing was extracted |
 | `format` | `document_format` | Required | Parsed file format |
 | `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |

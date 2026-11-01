@@ -47,9 +47,8 @@ of a file fails.
   nothing is saved.
 - Store the extracted content as JSONB. It is read as a whole and never
   searched with SQL; search happens later on structured claims.
-- Create `document_extractions` with a plain `document_id` column now. When
-  the `documents` table exists, one small migration adds the foreign key; no
-  parsing code changes.
+- Link `document_extractions.document_id` to `documents.document_id`.
+  Deleting a document deletes its extraction.
 - Record the parser library and version with every result.
 
 ## Relation to the documents table
@@ -86,7 +85,7 @@ and verification module.
 
 ```mermaid
 erDiagram
-    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into (FK added later)"
+    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
 
     DOCUMENTS {
         uuid document_id PK
@@ -95,7 +94,7 @@ erDiagram
     }
     DOCUMENT_EXTRACTIONS {
         uuid extraction_id PK
-        uuid document_id UK
+        uuid document_id FK, UK
         extraction_status status
         document_format format
         integer page_count "nullable"

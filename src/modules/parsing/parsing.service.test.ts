@@ -66,14 +66,17 @@ describe('parsing module', () => {
 });
 
 describe('document extractions table', () => {
-  it('keeps one extraction per document without a documents foreign key yet', () => {
+  it('keeps one extraction per document and deletes it with the document', () => {
     const config = getTableConfig(documentExtractions);
     const documentIndex = config.indexes.find(
       (index) => index.config.name === 'document_extractions_document_id_unique'
     );
+    const [foreignKey] = config.foreignKeys;
 
     expect(documentIndex?.config.unique).toBe(true);
-    expect(config.foreignKeys).toHaveLength(0);
+    expect(config.foreignKeys).toHaveLength(1);
+    expect(getTableConfig(foreignKey!.reference().foreignTable).name).toBe('documents');
+    expect(foreignKey!.onDelete).toBe('cascade');
   });
 });
 
