@@ -9,6 +9,7 @@ import { AppDatabase } from './infrastructure/database/database.js';
 import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.js';
 import { authModule } from './modules/auth/index.js';
 import { candidatesModule } from './modules/candidates/index.js';
+import { documentsModule } from './modules/documents/index.js';
 import { parsingModule } from './modules/parsing/index.js';
 import { usersModule } from './modules/users/index.js';
 
@@ -56,6 +57,7 @@ export async function createApp(
   // API modules
   await app.register(authModule);
   await app.register(usersModule);
+  await app.register(documentsModule);
   await app.register(candidatesModule, {
     prefix: '/api/candidates'
   });

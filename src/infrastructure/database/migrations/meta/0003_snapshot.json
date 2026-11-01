@@ -1,5 +1,5 @@
 {
-  "id": "c71777aa-a103-4231-a379-d6c793eb0118",
+  "id": "535ff6ce-78e0-41f2-8ed2-0a72fbfb8ea3",
   "prevId": "570c3c3f-4ae2-4e33-a0d5-b3348e7674ad",
   "version": "7",
   "dialect": "postgresql",
@@ -617,61 +617,73 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.document_extractions": {
-      "name": "document_extractions",
+    "public.documents": {
+      "name": "documents",
       "schema": "",
       "columns": {
-        "extraction_id": {
-          "name": "extraction_id",
+        "document_id": {
+          "name": "document_id",
           "type": "uuid",
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "document_id": {
-          "name": "document_id",
+        "owner_user_id": {
+          "name": "owner_user_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "document_purpose",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_filename": {
+          "name": "original_filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "storage_key": {
+          "name": "storage_key",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
         "status": {
           "name": "status",
-          "type": "extraction_status",
+          "type": "document_status",
           "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "format": {
-          "name": "format",
-          "type": "document_format",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "page_count": {
-          "name": "page_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "content": {
-          "name": "content",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "failures": {
-          "name": "failures",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "'stored'"
         },
-        "parser_version": {
-          "name": "parser_version",
+        "failure_code": {
+          "name": "failure_code",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -689,11 +701,11 @@
         }
       },
       "indexes": {
-        "document_extractions_document_id_unique": {
-          "name": "document_extractions_document_id_unique",
+        "documents_storage_key_unique": {
+          "name": "documents_storage_key_unique",
           "columns": [
             {
-              "expression": "document_id",
+              "expression": "storage_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -703,16 +715,96 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "documents_owner_created_at_idx": {
+          "name": "documents_owner_created_at_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "documents_owner_sha256_idx": {
+          "name": "documents_owner_sha256_idx",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "documents_owner_user_id_users_user_id_fk": {
+          "name": "documents_owner_user_id_users_user_id_fk",
+          "tableFrom": "documents",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "document_extractions_page_count_positive": {
-          "name": "document_extractions_page_count_positive",
-          "value": "\"document_extractions\".\"page_count\" is null or \"document_extractions\".\"page_count\" > 0"
+        "documents_byte_size_positive": {
+          "name": "documents_byte_size_positive",
+          "value": "\"documents\".\"byte_size\" > 0"
+        },
+        "documents_original_filename_length": {
+          "name": "documents_original_filename_length",
+          "value": "length(btrim(\"documents\".\"original_filename\")) between 1 and 255"
+        },
+        "documents_sha256_format": {
+          "name": "documents_sha256_format",
+          "value": "\"documents\".\"sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "documents_storage_key_not_blank": {
+          "name": "documents_storage_key_not_blank",
+          "value": "length(btrim(\"documents\".\"storage_key\")) > 0"
+        },
+        "documents_media_type_supported": {
+          "name": "documents_media_type_supported",
+          "value": "\"documents\".\"media_type\" in (\n                'application/pdf',\n                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n                'image/jpeg',\n                'image/png'\n            )"
+        },
+        "documents_purpose_media_type_compatible": {
+          "name": "documents_purpose_media_type_compatible",
+          "value": "\"documents\".\"purpose\" = 'evidence' or \"documents\".\"media_type\" in (\n                'application/pdf',\n                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'\n            )"
+        },
+        "documents_failure_code_status": {
+          "name": "documents_failure_code_status",
+          "value": "(\n                \"documents\".\"status\" = 'failed' and \"documents\".\"failure_code\" is not null\n            ) or (\n                \"documents\".\"status\" <> 'failed' and \"documents\".\"failure_code\" is null\n            )"
         }
       },
       "isRLSEnabled": false
@@ -845,21 +937,23 @@
         "certification"
       ]
     },
-    "public.document_format": {
-      "name": "document_format",
+    "public.document_purpose": {
+      "name": "document_purpose",
       "schema": "public",
       "values": [
-        "pdf",
-        "docx"
+        "source",
+        "evidence"
       ]
     },
-    "public.extraction_status": {
-      "name": "extraction_status",
+    "public.document_status": {
+      "name": "document_status",
       "schema": "public",
       "values": [
-        "succeeded",
-        "partial",
-        "failed"
+        "stored",
+        "processing",
+        "ready",
+        "failed",
+        "deleting"
       ]
     },
     "public.account_status": {
