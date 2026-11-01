@@ -16,6 +16,7 @@ src/
 ├── modules/
 │   ├── auth/                 # JWT authentication, token versions, guards
 │   ├── candidates/           # Candidate profiles, claims, profile export
+│   ├── documents/            # Candidate document upload and storage boundary
 │   └── users/                # Table, schemas, repository, service, routes
 └── shared/                   # Module-independent contracts and errors
 ```

@@ -88,9 +88,24 @@ erDiagram
         jsonb previous_values
         timestamptz created_at
     }
+    DOCUMENTS {
+        uuid document_id PK
+        uuid owner_user_id FK
+        document_purpose purpose
+        text original_filename
+        text media_type
+        bigint byte_size
+        text sha256
+        text storage_key UK
+        document_status status
+        text failure_code "nullable"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
     USERS ||--o| CANDIDATES : "has profile"
+    USERS ||--o{ DOCUMENTS : owns
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
     CLAIMS ||--o| EMPLOYMENT_DETAILS : "type employment"
@@ -259,6 +274,35 @@ Revisions are not searched and cascade on claim deletion.
 - `claim_type`: `skill`, `employment`, `education`, `certification`
 - `claim_origin`: `manual`, `extracted`
 - `claim_status`: `pending`, `accepted`, `rejected`
+
+## Documents
+
+Owned by the `documents` module and defined in
+`src/modules/documents/documents.table.ts`.
+
+Documents store metadata for candidate-owned source and evidence files. The
+file bytes remain in private storage and are addressed by an opaque, unique
+storage key. Document rows cascade when their owning user is deleted.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `document_id` | UUID | Primary key, generated | Stable document identifier |
+| `owner_user_id` | UUID | Required, user FK, cascade delete, indexed | Document owner |
+| `purpose` | `document_purpose` | Required | Source or evidence classification |
+| `original_filename` | Text | Required, nonblank | Client-visible original filename |
+| `media_type` | Text | Required | Server-verified content type |
+| `byte_size` | Bigint | Required, positive | Size of the original file in bytes |
+| `sha256` | Text | Required, indexed with owner | SHA-256 checksum of the original bytes |
+| `storage_key` | Text | Required, unique | Opaque storage identifier |
+| `status` | `document_status` | Required, defaults to `stored` | Document lifecycle state |
+| `failure_code` | Text | Nullable | Machine-readable processing failure |
+| `created_at` | Timestamp with time zone | Required, generated, indexed with owner | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Last lifecycle update |
+
+### Document enumerations
+
+- `document_purpose`: `source`, `evidence`
+- `document_status`: `stored`, `processing`, `ready`, `failed`, `deleting`
 
 ### Not yet implemented
 

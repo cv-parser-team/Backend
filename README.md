@@ -64,6 +64,11 @@ and always act on the authenticated user's own profile:
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
 - `PUT /api/candidates/me/claims/:claimId`
 - `DELETE /api/candidates/me/claims/:claimId`
+- `POST /api/candidates/me/documents?purpose=source` (one or more multipart `file` fields)
+- `GET /api/candidates/me/documents`
+- `GET /api/candidates/me/documents/:documentId`
+- `GET /api/candidates/me/documents/:documentId/content`
+- `DELETE /api/candidates/me/documents/:documentId`
 
 There is intentionally no health endpoint.
 

@@ -141,3 +141,22 @@ and design decisions where useful.
 | `FR-AD-03` | Allow admins to reopen completed reviews, preserving previous decisions and recording the reason. |
 | `FR-AD-04` | Allow admins to create, edit, merge, or deactivate canonical terms and aliases while preserving existing candidate claims and normalization history. |
 | `FR-AD-05` | Provide admins with review queue statistics, including pending, claimed, and completed cases. |
+
+## 12 — Document storage
+
+| ID | Requirement |
+| --- | --- |
+| `FR-DS-01` | Stage and hash document uploads while streaming. |
+| `FR-DS-02` | Commit validated staged files atomically. |
+| `FR-DS-03` | Open and delete files using opaque UUID keys. |
+| `FR-DS-04` | Make staged-file discard and permanent-file deletion idempotent. |
+
+# Non-functional requirements
+
+## Document storage
+
+| ID | Requirement |
+| --- | --- |
+| `NFR-DS-01` | User-provided filenames must never influence storage paths. |
+| `NFR-DS-02` | Storage keys must not resolve outside the private storage root. |
+| `NFR-DS-03` | File operations must stream data without loading complete files into memory. |
