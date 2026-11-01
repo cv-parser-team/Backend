@@ -1,0 +1,61 @@
+import { sql } from 'drizzle-orm';
+import {
+  check,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid
+} from 'drizzle-orm/pg-core';
+import { ExtractionFailure, ParsedPage, ParsedParagraph } from './parsing.types.js';
+
+export interface ExtractionContent {
+  pages: ParsedPage[];
+  paragraphs: ParsedParagraph[];
+}
+
+export const extractionStatus = pgEnum('extraction_status', [
+  'succeeded',
+  'partial',
+  'failed'
+]);
+
+export const documentFormat = pgEnum('document_format', ['pdf', 'docx']);
+
+export const documentExtractions = pgTable(
+  'document_extractions',
+  {
+    extractionId: uuid('extraction_id').primaryKey().defaultRandom(),
+    // Gains a foreign key to documents.document_id once that table exists.
+    documentId: uuid('document_id').notNull(),
+    status: extractionStatus('status').notNull(),
+    format: documentFormat('format').notNull(),
+    pageCount: integer('page_count'),
+    content: jsonb('content').$type<ExtractionContent>().notNull(),
+    failures: jsonb('failures').$type<ExtractionFailure[]>().default([]).notNull(),
+    parserVersion: text('parser_version').notNull(),
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex('document_extractions_document_id_unique').on(table.documentId),
+    check(
+      'document_extractions_page_count_positive',
+      sql`${table.pageCount} is null or ${table.pageCount} > 0`
+    )
+  ]
+);

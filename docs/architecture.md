@@ -16,6 +16,7 @@ src/
 ├── modules/
 │   ├── auth/                 # JWT authentication, token versions, guards
 │   ├── candidates/           # Candidate profiles, claims, profile export
+│   ├── parsing/              # Text extraction from PDF and DOCX documents
 │   └── users/                # Table, schemas, repository, service, routes
 └── shared/                   # Module-independent contracts and errors
 ```

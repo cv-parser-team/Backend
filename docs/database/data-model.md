@@ -99,6 +99,9 @@ erDiagram
     CLAIMS ||--o{ CLAIM_REVISIONS : archives
 ```
 
+`DOCUMENT_EXTRACTIONS` is described [below](#document-extractions). It has no
+foreign keys until the `documents` table exists.
+
 ## Users
 
 Owned by the `users` module and defined in
@@ -273,6 +276,52 @@ features and are intentionally not part of the current schema:
 - `source_occurrences`, which links extracted claims to their source document
   and location, arrives with document upload and parsing. Exported claims
   already include an empty `sources` array for these references.
+
+## Document extractions
+
+Owned by the `parsing` module and defined in
+`src/modules/parsing/parsing.table.ts`. See
+[Document parsing](../modules/parsing.md) for the design.
+
+`document_extractions` stores the text extracted from one source document.
+PDF results keep pages, lines, and on-page coordinates; DOCX results keep
+ordered paragraphs. Parsing a document again replaces its row. `document_id`
+gains a foreign key to `documents.document_id` once the documents module adds
+that table.
+
+```mermaid
+erDiagram
+    DOCUMENT_EXTRACTIONS {
+        uuid extraction_id PK
+        uuid document_id UK
+        extraction_status status
+        document_format format
+        integer page_count "nullable"
+        jsonb content
+        jsonb failures
+        text parser_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+```
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `extraction_id` | UUID | Primary key, generated | Stable extraction identifier |
+| `document_id` | UUID | Required, unique; foreign key added later | Parsed document |
+| `status` | `extraction_status` | Required | Whether every page, some pages, or nothing was extracted |
+| `format` | `document_format` | Required | Parsed file format |
+| `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
+| `content` | JSONB | Required | `{ pages, paragraphs }`: PDF lines with coordinates, or DOCX paragraphs |
+| `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code |
+| `parser_version` | Text | Required | Library and version that produced the result |
+| `created_at` | Timestamp with time zone | Required, generated | First extraction time |
+| `updated_at` | Timestamp with time zone | Required, generated | Latest extraction time |
+
+### Enumerations
+
+- `extraction_status`: `succeeded`, `partial`, `failed`
+- `document_format`: `pdf`, `docx`
 
 ## Maintenance rules
 

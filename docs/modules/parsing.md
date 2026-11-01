@@ -28,17 +28,23 @@ of a file fails.
 - Use `pdfjs-dist` for PDF. It returns text with page numbers and coordinates.
 - Group PDF text into lines. Each line keeps its text, its bounding box, and
   the original text pieces inside it, so any word can be traced to its page
-  and position.
+  and position. A wide horizontal gap splits a line, so side-by-side columns
+  are not merged. Lines are ordered top to bottom, then left to right; columns
+  are not reordered.
 - Store coordinates from the top-left corner, with each page's width and
   height, so a client can highlight text on the page.
 - Use `mammoth` for DOCX. Word files have no fixed pages or coordinates, so
-  DOCX results contain ordered paragraphs with `pageNumber = null`.
-- Treat a page without a text layer (scanned image) as a page failure
-  `NO_TEXT_LAYER`, not a file failure.
-- Fail the whole file only when it cannot be opened: `UNREADABLE` or
-  `PASSWORD_PROTECTED`.
-- Limit the number of PDF pages to protect the server; agree on the exact
-  limit together with the upload size limit.
+  DOCX results contain ordered paragraphs, including table cells, with
+  `pageCount = null`.
+- Treat a PDF page without a text layer (scanned image) as a page failure
+  `NO_TEXT_LAYER`, and a page that cannot be read as `PAGE_UNREADABLE`; the
+  other pages are kept.
+- Fail the whole file when it cannot be opened (`UNREADABLE` or
+  `PASSWORD_PROTECTED`), when it has no text (`NO_TEXT_LAYER`), or when a PDF
+  has more than 4 pages (`TOO_MANY_PAGES`). Oversized PDFs are rejected before
+  any page is read, to protect the server.
+- Reject media types without a parser with `415 UNSUPPORTED_DOCUMENT_TYPE`;
+  nothing is saved.
 - Store the extracted content as JSONB. It is read as a whole and never
   searched with SQL; search happens later on structured claims.
 - Create `document_extractions` with a plain `document_id` column now. When
@@ -97,11 +103,13 @@ erDiagram
         jsonb failures
         text parser_version
         timestamptz created_at
+        timestamptz updated_at
     }
 ```
 
 - `extraction_status`: `succeeded`, `partial`, `failed`
 - `document_format`: `pdf`, `docx`
+- Parsing a document again replaces its extraction and updates `updated_at`.
 
 ## Parsing flow
 
@@ -111,8 +119,12 @@ sequenceDiagram
     participant Parser as Parsing service
     participant Database
 
-    Caller->>Parser: parse(documentId, bytes, mediaType)
-    alt File cannot be opened
+    Caller->>Parser: extract(documentId, content, mediaType)
+    alt Media type has no parser
+        Parser-->>Caller: 415, nothing saved
+    else File cannot be opened
+        Parser->>Database: Save failed extraction
+    else File has more than 4 pages
         Parser->>Database: Save failed extraction
     else File opens
         loop Each page or paragraph block
@@ -126,22 +138,23 @@ sequenceDiagram
 
 ## Implementation
 
-- [ ] Review this plan with the team.
-- [ ] Add PDF and DOCX test fixtures.
-- [ ] Define the input and output types.
-- [ ] Add the PDF reader with pages, lines, and coordinates.
-- [ ] Add the DOCX reader with ordered paragraphs.
-- [ ] Add partial results and error codes.
-- [ ] Add `document_extractions`, its migration, and the repository.
-- [ ] Update the data model documentation.
+- [x] Review this plan with the team.
+- [x] Add PDF and DOCX test fixtures.
+- [x] Define the input and output types.
+- [x] Add the PDF reader with pages, lines, and coordinates.
+- [x] Add the DOCX reader with ordered paragraphs.
+- [x] Add partial results and error codes.
+- [x] Add `document_extractions`, its migration, and the repository.
+- [x] Share `parsingService` with other modules.
+- [x] Update the data model documentation.
 
 ## Verification
 
-- [ ] Test single-page, multi-page, and two-column PDFs.
-- [ ] Test that each line has the correct page number and a box inside the page.
-- [ ] Test scanned, corrupt, and password-protected PDFs.
-- [ ] Test DOCX paragraphs and tables.
-- [ ] Test that partial results keep successful pages.
+- [x] Test single-page, multi-page, and two-column PDFs.
+- [x] Test that each line has the correct page number and a box inside the page.
+- [x] Test scanned, corrupt, password-protected, and oversized PDFs.
+- [x] Test DOCX paragraphs, tables, and empty documents.
+- [x] Test that partial results keep successful pages.
 - [ ] Test saving and reading an extraction.
 - [ ] Run focused tests, `npm test`, and `npm run build`.
 - [ ] Have another team member test and review the code.
