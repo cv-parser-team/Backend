@@ -7,6 +7,7 @@ import {
   version
 } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api.js';
+import { hasTooMuchArabic, removeArabic } from './language.js';
 import {
   BoundingBox,
   DocumentParser,
@@ -165,7 +166,7 @@ export function createPdfParser(): DocumentParser {
           return failedResult('TOO_MANY_PAGES', pdf.numPages);
         }
 
-        const pages: ParsedPage[] = [];
+        const readPages: (Omit<ParsedPage, 'lines'> & { pieces: TextPiece[] })[] = [];
         const failures: ExtractionFailure[] = [];
 
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
@@ -183,16 +184,35 @@ export function createPdfParser(): DocumentParser {
               continue;
             }
 
-            pages.push({
+            readPages.push({
               pageNumber,
               width: round(viewport.width),
               height: round(viewport.height),
-              lines: groupLines(pieces)
+              pieces
             });
           } catch {
             failures.push({ pageNumber, code: 'PAGE_UNREADABLE' });
           }
         }
+
+        // The language is checked across the whole file before lines are built.
+        if (hasTooMuchArabic(readPages.flatMap((page) => page.pieces.map((piece) => piece.text)))) {
+          return failedResult('UNSUPPORTED_LANGUAGE', pdf.numPages);
+        }
+
+        const pages: ParsedPage[] = [];
+        for (const { pieces, ...page } of readPages) {
+          const kept = pieces
+            .map((piece) => ({ ...piece, text: removeArabic(piece.text) }))
+            .filter((piece) => piece.text.trim().length > 0);
+
+          if (kept.length === 0) {
+            failures.push({ pageNumber: page.pageNumber, code: 'NO_TEXT_LAYER' });
+            continue;
+          }
+          pages.push({ ...page, lines: groupLines(kept) });
+        }
+        failures.sort((a, b) => (a.pageNumber ?? 0) - (b.pageNumber ?? 0));
 
         return {
           status: failures.length === 0 ? 'succeeded' : pages.length > 0 ? 'partial' : 'failed',

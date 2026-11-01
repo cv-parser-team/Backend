@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import mammoth from 'mammoth';
+import { hasTooMuchArabic, removeArabic } from './language.js';
 import {
   DocumentParser,
   ExtractionFailure,
@@ -39,9 +40,20 @@ export function createDocxParser(): DocumentParser {
       }
 
       // Each paragraph and table cell is a separate line in the raw text.
-      const paragraphs: ParsedParagraph[] = text
+      const lines = text
         .split('\n')
         .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      if (lines.length === 0) {
+        return failedResult('NO_TEXT_LAYER');
+      }
+      if (hasTooMuchArabic(lines)) {
+        return failedResult('UNSUPPORTED_LANGUAGE');
+      }
+
+      const paragraphs: ParsedParagraph[] = lines
+        .map((line) => removeArabic(line).replace(/\s+/g, ' ').trim())
         .filter((line) => line.length > 0)
         .map((line, index) => ({ index, text: line }));
 

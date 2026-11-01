@@ -13,8 +13,8 @@ of a file fails.
 - Store one extraction result per document.
 - Keep successful pages and record failed ones.
 - Leave AI extraction, claims, source occurrences, OCR for scanned CVs,
-  LinkedIn exports, certificate data from evidence documents, and public
-  endpoints to Part 2 or later modules.
+  Arabic text, LinkedIn exports, certificate data from evidence documents,
+  and public endpoints to Part 2 or later modules.
 
 ## Design decisions
 
@@ -43,6 +43,11 @@ of a file fails.
   `PASSWORD_PROTECTED`), when it has no text (`NO_TEXT_LAYER`), or when a PDF
   has more than 4 pages (`TOO_MANY_PAGES`). Oversized PDFs are rejected before
   any page is read, to protect the server.
+- Arabic text is not supported yet. PDFs store Arabic in drawing order with
+  special letter forms, so the extracted text comes out reversed. A file whose
+  letters are 5% Arabic or more fails with `UNSUPPORTED_LANGUAGE`; below that,
+  Arabic characters are removed and the rest is kept. The rule applies to PDF
+  and DOCX and lives in one place, `language.ts`.
 - Reject media types without a parser with `415 UNSUPPORTED_DOCUMENT_TYPE`;
   nothing is saved.
 - Store the extracted content as JSONB. It is read as a whole and never
@@ -153,6 +158,8 @@ sequenceDiagram
 - [x] Test that each line has the correct page number and a box inside the page.
 - [x] Test scanned, corrupt, password-protected, and oversized PDFs.
 - [x] Test DOCX paragraphs, tables, and empty documents.
+- [x] Test that mostly Arabic PDFs and DOCX files fail and small Arabic
+  fragments are removed.
 - [x] Test that partial results keep successful pages.
 - [ ] Test saving and reading an extraction.
 - [ ] Run focused tests, `npm test`, and `npm run build`.

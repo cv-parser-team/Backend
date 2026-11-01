@@ -55,6 +55,16 @@ describe('docx parser', () => {
     });
   });
 
+  it('fails documents that are mostly Arabic', async () => {
+    const result = await parseFixture('arabic.docx');
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      paragraphs: [],
+      failures: [{ pageNumber: null, code: 'UNSUPPORTED_LANGUAGE' }]
+    });
+  });
+
   it('fails files that are not readable Word documents', async () => {
     const result = await parseFixture('corrupt.pdf');
 

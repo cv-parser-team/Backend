@@ -95,6 +95,27 @@ describe('pdf parser', () => {
     });
   });
 
+  it('fails files that are mostly Arabic', async () => {
+    const result = await parseFixture('arabic.pdf');
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      pageCount: 1,
+      pages: [],
+      failures: [{ pageNumber: null, code: 'UNSUPPORTED_LANGUAGE' }]
+    });
+  });
+
+  it('removes small Arabic fragments and keeps the rest', async () => {
+    const result = await parseFixture('mostly-english.pdf');
+    const texts = lineTexts(result, 1);
+
+    expect(result.status).toBe('succeeded');
+    expect(texts).toContain('Python, Node.js, PostgreSQL, Docker, Linux');
+    expect(texts).toContain('Languages: English and');
+    expect(texts.join(' ')).not.toMatch(/[؀-ۿﹰ-﻿]/);
+  });
+
   it(`rejects files with more than ${MAX_PDF_PAGES} pages without reading them`, async () => {
     const result = await parseFixture('too-many-pages.pdf');
 

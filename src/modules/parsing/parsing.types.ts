@@ -7,6 +7,7 @@ export type ParseErrorCode =
   | 'UNREADABLE'
   | 'PASSWORD_PROTECTED'
   | 'TOO_MANY_PAGES'
+  | 'UNSUPPORTED_LANGUAGE'
   | 'NO_TEXT_LAYER'
   | 'PAGE_UNREADABLE';
 

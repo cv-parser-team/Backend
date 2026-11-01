@@ -366,7 +366,7 @@ erDiagram
 | `format` | `document_format` | Required | Parsed file format |
 | `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
 | `content` | JSONB | Required | `{ pages, paragraphs }`: PDF lines with coordinates, or DOCX paragraphs |
-| `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code |
+| `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code, such as `NO_TEXT_LAYER` or `UNSUPPORTED_LANGUAGE` |
 | `parser_version` | Text | Required | Library and version that produced the result |
 | `created_at` | Timestamp with time zone | Required, generated | First extraction time |
 | `updated_at` | Timestamp with time zone | Required, generated | Latest extraction time |
