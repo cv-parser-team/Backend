@@ -1,3 +1,8 @@
+export interface ValidationIssue {
+  field: string;
+  message: string;
+}
+
 export interface ApiResponse<T> {
   success: true;
   data: T;
@@ -10,7 +15,10 @@ export interface ApiErrorResponse {
   error: {
     code: string;
     message: string;
-    details?: unknown;
+    // Only safe, field-level validation info. Never internal details.
+    issues?: ValidationIssue[];
   };
   timestamp: string;
 }
+
+export type ApiResult<T> = ApiResponse<T> | ApiErrorResponse;
