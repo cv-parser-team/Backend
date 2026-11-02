@@ -21,7 +21,18 @@ export interface DocumentContent {
   stream: Readable;
 }
 
+export interface DocumentCleanupFailure {
+  documentId: string;
+  error: unknown;
+}
+
+export interface DocumentCleanupResult {
+  deleted: number;
+  failures: DocumentCleanupFailure[];
+}
+
 export interface DocumentsService {
+  cleanupDeletingDocuments(): Promise<DocumentCleanupResult>;
   listDocuments(
     ownerUserId: string,
     filters?: DocumentFilters
@@ -47,6 +58,32 @@ export function createDocumentsService({
   validator
 }: DocumentsServiceDependencies): DocumentsService {
   return {
+    async cleanupDeletingDocuments() {
+      const documents = await repository.listDeletingDocuments();
+      const failures: DocumentCleanupFailure[] = [];
+      let deleted = 0;
+
+      for (const document of documents) {
+        try {
+          await storage.delete(document.storageKey);
+
+          const metadataDeleted = await repository.deleteDocument(
+            document.ownerUserId,
+            document.documentId
+          );
+
+          if (!metadataDeleted) {
+            throw new RecordNotFoundError('Document', document.documentId);
+          }
+
+          deleted += 1;
+        } catch (error) {
+          failures.push({ documentId: document.documentId, error });
+        }
+      }
+
+      return { deleted, failures };
+    },
     async listDocuments(ownerUserId, filters) {
       return repository.listDocuments(ownerUserId, filters);
     },

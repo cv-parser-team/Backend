@@ -24,6 +24,7 @@ export interface UpdateDocumentStatusInput {
 
 export interface DocumentsRepository {
   createDocument(input: CreateDocumentInput): Promise<DocumentRecord>;
+  listDeletingDocuments(): Promise<DocumentRecord[]>;
   listDocuments(
     ownerUserId: string,
     filters?: DocumentFilters
@@ -55,6 +56,16 @@ export function createDocumentsRepository(
 
         return createdDocument;
       });
+    },
+
+    async listDeletingDocuments() {
+      return withDbErrors('Documents', () =>
+        database.db
+          .select()
+          .from(documents)
+          .where(eq(documents.status, 'deleting'))
+          .orderBy(documents.updatedAt, documents.documentId)
+      );
     },
 
     async listDocuments(ownerUserId, filters = {}) {

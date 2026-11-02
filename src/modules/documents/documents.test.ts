@@ -59,6 +59,10 @@ function createGuards(): AuthGuards {
 
 function createService(): DocumentsService {
   return {
+    cleanupDeletingDocuments: vi.fn().mockResolvedValue({
+      deleted: 0,
+      failures: []
+    }),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     getDocument: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
@@ -78,6 +82,7 @@ function createRepository(
 ): DocumentsRepository {
   return {
     createDocument: vi.fn().mockResolvedValue(documentRecord),
+    listDeletingDocuments: vi.fn().mockResolvedValue([]),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
     updateDocumentStatus: vi.fn().mockResolvedValue(documentRecord),
@@ -145,6 +150,71 @@ function multipartFile(
 }
 
 describe('documents service', () => {
+  it('cleans up documents left in deleting status', async () => {
+    const deletingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'deleting'
+    };
+    const repository = createRepository({
+      listDeletingDocuments: vi.fn().mockResolvedValue([deletingDocument])
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(service.cleanupDeletingDocuments()).resolves.toEqual({
+      deleted: 1,
+      failures: []
+    });
+    expect(storage.delete).toHaveBeenCalledWith(deletingDocument.storageKey);
+    expect(repository.deleteDocument).toHaveBeenCalledWith(
+      deletingDocument.ownerUserId,
+      deletingDocument.documentId
+    );
+  });
+
+  it('continues cleanup when one deleting document fails', async () => {
+    const storageError = new Error('storage unavailable');
+    const firstDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'deleting'
+    };
+    const secondDocument: DocumentRecord = {
+      ...firstDocument,
+      documentId: '33333333-3333-4333-8333-333333333333',
+      storageKey: 'documents/second'
+    };
+    const repository = createRepository({
+      listDeletingDocuments: vi
+        .fn()
+        .mockResolvedValue([firstDocument, secondDocument])
+    });
+    const storage = createStorage({
+      delete: vi
+        .fn()
+        .mockRejectedValueOnce(storageError)
+        .mockResolvedValueOnce(undefined)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(service.cleanupDeletingDocuments()).resolves.toEqual({
+      deleted: 1,
+      failures: [{ documentId: firstDocument.documentId, error: storageError }]
+    });
+    expect(repository.deleteDocument).toHaveBeenCalledOnce();
+    expect(repository.deleteDocument).toHaveBeenCalledWith(
+      secondDocument.ownerUserId,
+      secondDocument.documentId
+    );
+  });
+
   it('lists only the requested owner documents with the supplied filters', async () => {
     const repository = createRepository();
     const service = createDocumentsService({

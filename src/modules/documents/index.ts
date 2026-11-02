@@ -17,6 +17,31 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   const validator = createDocumentValidator();
   const service = createDocumentsService({ repository, storage, validator });
 
+  fastify.addHook('onListen', async () => {
+    try {
+      const cleanup = await service.cleanupDeletingDocuments();
+
+      if (cleanup.deleted > 0) {
+        fastify.log.info(
+          { deletedDocuments: cleanup.deleted },
+          'Cleaned up documents left in deleting status'
+        );
+      }
+
+      for (const failure of cleanup.failures) {
+        fastify.log.warn(
+          { err: failure.error, documentId: failure.documentId },
+          'Failed to clean up document left in deleting status'
+        );
+      }
+    } catch (error) {
+      fastify.log.warn(
+        { err: error },
+        'Failed to query documents left in deleting status'
+      );
+    }
+  });
+
   await fastify.register(multipart, {
     limits: {
       fields: 0,

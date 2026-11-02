@@ -200,6 +200,8 @@ stateDiagram-v2
   owner-scoped endpoints.
 - [x] Delete an owned document by marking it `deleting`, removing its stored
   bytes, and then deleting its metadata.
+- [x] Retry cleanup of documents left in `deleting` status when the application
+  starts, continuing past individual storage failures.
 - [x] Cover storage, validation, service, route, and table behavior with focused
   automated tests and manual HTTP requests.
 
@@ -209,7 +211,7 @@ stateDiagram-v2
   establishes that PDF, DOCX, JPEG, and PNG files are genuinely readable.
 - [ ] Reconcile multipart count and size-limit errors with per-file batch
   results; a parser limit can currently occur after earlier files were stored.
-- [ ] Add cleanup for stale temporary files, orphan objects, and `deleting` rows.
+- [ ] Add cleanup for stale temporary files and orphan storage objects.
 - [ ] Remove filesystem objects when account deletion cascades document rows.
 - [ ] Identify dependent profile claims and explain their impact before deleting
   a source document.
