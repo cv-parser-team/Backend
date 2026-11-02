@@ -27,6 +27,7 @@ interface DocumentUploadSuccess {
   success: true;
   filename: string;
   document: DocumentRecord;
+  deduplicated: boolean;
 }
 
 interface DocumentUploadFailure {
@@ -130,7 +131,7 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
           }
 
           try {
-            const document = await service.uploadDocument({
+            const { document, deduplicated } = await service.uploadDocument({
               ownerUserId: request.auth.userId,
               purpose: request.query.purpose,
               originalFilename: file.filename,
@@ -139,7 +140,8 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
             results.push({
               success: true,
               filename: file.filename,
-              document
+              document,
+              deduplicated
             });
           } catch (error) {
             try {
@@ -178,8 +180,12 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
         timestamp: new Date().toISOString()
       };
 
+      const allSuccessful = results.every((result) => result.success);
+      const allDeduplicated = results.every(
+        (result) => result.success && result.deduplicated
+      );
       const statusCode =
-        !limitReached && results.every((result) => result.success) ? 201 : 207;
+        limitReached || !allSuccessful ? 207 : allDeduplicated ? 200 : 201;
       return reply.status(statusCode).send(response);
     }
   );

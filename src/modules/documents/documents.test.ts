@@ -72,7 +72,7 @@ function createService(): DocumentsService {
     deleteDocument: vi.fn().mockResolvedValue(undefined),
     uploadDocument: vi.fn().mockImplementation(async (input) => {
       await buffer(input.stream);
-      return documentRecord;
+      return { document: documentRecord, deduplicated: false };
     }),
     openDocument: vi.fn().mockResolvedValue({
       document: documentRecord,
@@ -86,6 +86,7 @@ function createRepository(
 ): DocumentsRepository {
   return {
     createDocument: vi.fn().mockResolvedValue(documentRecord),
+    findDocumentByChecksum: vi.fn().mockResolvedValue(null),
     listDeletingDocuments: vi.fn().mockResolvedValue([]),
     listStorageKeys: vi.fn().mockResolvedValue([documentRecord.storageKey]),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
@@ -419,7 +420,7 @@ describe('documents service', () => {
         originalFilename: 'resume.pdf',
         stream
       })
-    ).resolves.toEqual(documentRecord);
+    ).resolves.toEqual({ document: documentRecord, deduplicated: false });
 
     expect(storage.stage).toHaveBeenCalledWith(stream);
     expect(validator.validate).toHaveBeenCalledWith(
@@ -438,6 +439,66 @@ describe('documents service', () => {
       sha256: 'a'.repeat(64),
       storageKey: '33333333-3333-4333-8333-333333333333'
     });
+  });
+
+  it('discards a staged duplicate and returns the existing document', async () => {
+    const repository = createRepository({
+      findDocumentByChecksum: vi.fn().mockResolvedValue(documentRecord)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.uploadDocument({
+        ownerUserId,
+        purpose: 'source',
+        originalFilename: 'duplicate.pdf',
+        stream: Readable.from('duplicate')
+      })
+    ).resolves.toEqual({ document: documentRecord, deduplicated: true });
+    expect(repository.findDocumentByChecksum).toHaveBeenCalledWith({
+      ownerUserId,
+      purpose: 'source',
+      sha256: 'a'.repeat(64)
+    });
+    expect(storage.discard).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    expect(storage.commit).not.toHaveBeenCalled();
+    expect(repository.createDocument).not.toHaveBeenCalled();
+  });
+
+  it('removes the losing object when a concurrent duplicate wins', async () => {
+    const repository = createRepository({
+      findDocumentByChecksum: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(documentRecord),
+      createDocument: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.uploadDocument({
+        ownerUserId,
+        purpose: 'source',
+        originalFilename: 'duplicate.pdf',
+        stream: Readable.from('duplicate')
+      })
+    ).resolves.toEqual({ document: documentRecord, deduplicated: true });
+    expect(storage.delete).toHaveBeenCalledWith(
+      '33333333-3333-4333-8333-333333333333'
+    );
+    expect(repository.findDocumentByChecksum).toHaveBeenCalledTimes(2);
   });
 
   it('discards a staged document when validation fails', async () => {
@@ -560,6 +621,38 @@ describe('documents routes', () => {
         {
           success: true,
           filename: 'resume.pdf',
+          deduplicated: false,
+          document: { documentId }
+        }
+      ]
+    });
+  });
+
+  it('reports a duplicate upload without creating another document', async () => {
+    const service = createService();
+    service.uploadDocument = vi.fn().mockImplementation(async (input) => {
+      await buffer(input.stream);
+      return { document: documentRecord, deduplicated: true };
+    });
+    await createRoutes(service);
+    const request = createMultipartPayload([
+      multipartFile('file', 'duplicate.pdf', Buffer.from('same document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        {
+          success: true,
+          filename: 'duplicate.pdf',
+          deduplicated: true,
           document: { documentId }
         }
       ]
@@ -625,7 +718,7 @@ describe('documents routes', () => {
       if (input.originalFilename === 'invalid.pdf') {
         throw new UnsupportedDocumentTypeError();
       }
-      return documentRecord;
+      return { document: documentRecord, deduplicated: false };
     });
     await createRoutes(service);
     const request = createMultipartPayload([

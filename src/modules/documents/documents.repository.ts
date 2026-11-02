@@ -22,8 +22,14 @@ export interface UpdateDocumentStatusInput {
   failureCode: string | null;
 }
 
+export interface FindDocumentByChecksumInput {
+  ownerUserId: string;
+  purpose: DocumentPurpose;
+  sha256: string;
+}
+
 export interface DocumentsRepository {
-  createDocument(input: CreateDocumentInput): Promise<DocumentRecord>;
+  createDocument(input: CreateDocumentInput): Promise<DocumentRecord | null>;
   listDeletingDocuments(): Promise<DocumentRecord[]>;
   listStorageKeys(): Promise<string[]>;
   listDocuments(
@@ -33,6 +39,9 @@ export interface DocumentsRepository {
   findDocument(
     ownerUserId: string,
     documentId: string
+  ): Promise<DocumentRecord | null>;
+  findDocumentByChecksum(
+    input: FindDocumentByChecksumInput
   ): Promise<DocumentRecord | null>;
   updateDocumentStatus(
     input: UpdateDocumentStatusInput
@@ -49,13 +58,16 @@ export function createDocumentsRepository(
         const [createdDocument] = await database.db
           .insert(documents)
           .values(input)
+          .onConflictDoNothing({
+            target: [
+              documents.ownerUserId,
+              documents.purpose,
+              documents.sha256
+            ]
+          })
           .returning();
 
-        if (!createdDocument) {
-          throw new Error('Document creation did not return a record');
-        }
-
-        return createdDocument;
+        return createdDocument ?? null;
       });
     },
 
@@ -106,6 +118,24 @@ export function createDocumentsRepository(
             and(
               eq(documents.ownerUserId, ownerUserId),
               eq(documents.documentId, documentId)
+            )
+          )
+          .limit(1);
+
+        return document ?? null;
+      });
+    },
+
+    async findDocumentByChecksum(input) {
+      return withDbErrors('Document', async () => {
+        const [document] = await database.db
+          .select()
+          .from(documents)
+          .where(
+            and(
+              eq(documents.ownerUserId, input.ownerUserId),
+              eq(documents.purpose, input.purpose),
+              eq(documents.sha256, input.sha256)
             )
           )
           .limit(1);

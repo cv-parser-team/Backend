@@ -16,6 +16,11 @@ export interface UploadDocumentInput {
   stream: Readable;
 }
 
+export interface UploadDocumentResult {
+  document: DocumentRecord;
+  deduplicated: boolean;
+}
+
 export interface DocumentContent {
   document: DocumentRecord;
   stream: Readable;
@@ -50,7 +55,7 @@ export interface DocumentsService {
   ): Promise<DocumentRecord[]>;
   getDocument(ownerUserId: string, documentId: string): Promise<DocumentRecord>;
   deleteDocument(ownerUserId: string, documentId: string): Promise<void>;
-  uploadDocument(input: UploadDocumentInput): Promise<DocumentRecord>;
+  uploadDocument(input: UploadDocumentInput): Promise<UploadDocumentResult>;
   openDocument(
     ownerUserId: string,
     documentId: string
@@ -169,9 +174,22 @@ export function createDocumentsService({
           stream: validationStream
         });
 
+        const checksumInput = {
+          ownerUserId: input.ownerUserId,
+          purpose: input.purpose,
+          sha256: staged.sha256
+        };
+        const existingDocument =
+          await repository.findDocumentByChecksum(checksumInput);
+
+        if (existingDocument) {
+          await storage.discard(staged.stagingKey);
+          return { document: existingDocument, deduplicated: true };
+        }
+
         storageKey = await storage.commit(staged.stagingKey);
 
-        return await repository.createDocument({
+        const document = await repository.createDocument({
           ownerUserId: input.ownerUserId,
           purpose: input.purpose,
           originalFilename: input.originalFilename,
@@ -180,6 +198,24 @@ export function createDocumentsService({
           sha256: staged.sha256,
           storageKey
         });
+
+        if (document) {
+          return { document, deduplicated: false };
+        }
+
+        await storage.delete(storageKey);
+        storageKey = undefined;
+
+        const concurrentDocument =
+          await repository.findDocumentByChecksum(checksumInput);
+
+        if (!concurrentDocument) {
+          throw new Error(
+            'Duplicate document was not found after insert conflict'
+          );
+        }
+
+        return { document: concurrentDocument, deduplicated: true };
       } catch (error) {
         try {
           if (storageKey === undefined) {

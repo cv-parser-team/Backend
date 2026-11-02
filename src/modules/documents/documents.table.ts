@@ -61,7 +61,11 @@ export const documents = pgTable(
             table.ownerUserId,
             table.createdAt
         ),
-        index('documents_owner_sha256_idx').on(table.ownerUserId, table.sha256),
+        uniqueIndex('documents_owner_purpose_sha256_unique').on(
+            table.ownerUserId,
+            table.purpose,
+            table.sha256
+        ),
         check('documents_byte_size_positive', sql`${table.byteSize} > 0`),
         check(
             'documents_original_filename_length',

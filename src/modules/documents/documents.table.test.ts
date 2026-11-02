@@ -8,12 +8,26 @@ function normalizeSql(value: string): string {
 
 describe('documents table constraints', () => {
   const dialect = new PgDialect();
+  const tableConfig = getTableConfig(documents);
   const constraints = new Map(
-    getTableConfig(documents).checks.map((constraint) => [
+    tableConfig.checks.map((constraint) => [
       constraint.name,
       normalizeSql(dialect.sqlToQuery(constraint.value).sql)
     ])
   );
+
+  it('prevents duplicate content for the same owner and purpose', () => {
+    const duplicateIndex = tableConfig.indexes.find(
+      (index) => index.config.name === 'documents_owner_purpose_sha256_unique'
+    );
+
+    expect(duplicateIndex?.config.unique).toBe(true);
+    expect(
+      duplicateIndex?.config.columns.map((column) =>
+        'name' in column ? column.name : undefined
+      )
+    ).toEqual(['owner_user_id', 'purpose', 'sha256']);
+  });
 
   it('enforces valid persisted document metadata', () => {
     expect(constraints.get('documents_byte_size_positive')).toBe(
