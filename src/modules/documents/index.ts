@@ -89,7 +89,7 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
     limits: {
       fields: 0,
       files: config.documents.maximumUploadFiles,
-      parts: config.documents.maximumUploadFiles,
+      parts: config.documents.maximumUploadFiles + 1,
       fieldNameSize: 100,
       fileSize: config.documents.maximumUploadByteSize
     }
@@ -98,7 +98,8 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   await fastify.register(documentsRoutes, {
     prefix: '/api/candidates/me/documents',
     service,
-    guards: fastify.authGuards
+    guards: fastify.authGuards,
+    maximumUploadFiles: config.documents.maximumUploadFiles
   });
 };
 

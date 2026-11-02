@@ -500,12 +500,16 @@ describe('documents routes', () => {
     app = undefined;
   });
 
-  async function createRoutes(service: DocumentsService) {
+  async function createRoutes(
+    service: DocumentsService,
+    maximumUploadFiles = 5
+  ) {
     app = Fastify();
     await app.register(multipart);
     await app.register(documentsRoutes, {
       service,
-      guards: createGuards()
+      guards: createGuards(),
+      maximumUploadFiles
     });
   }
 
@@ -584,6 +588,33 @@ describe('documents routes', () => {
         { success: true, filename: 'resume-v1.pdf' },
         { success: true, filename: 'resume-v2.pdf' }
       ]
+    });
+  });
+
+  it('keeps permitted files and reports when the file limit is reached', async () => {
+    const service = createService();
+    await createRoutes(service, 2);
+    const request = createMultipartPayload([
+      multipartFile('file', 'first.pdf', Buffer.from('first document')),
+      multipartFile('file', 'second.pdf', Buffer.from('second document')),
+      multipartFile('file', 'third.pdf', Buffer.from('third document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(207);
+    expect(service.uploadDocument).toHaveBeenCalledTimes(2);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        { success: true, filename: 'first.pdf' },
+        { success: true, filename: 'second.pdf' }
+      ],
+      limit: { reached: true, maximumFiles: 2 }
     });
   });
 

@@ -42,7 +42,9 @@ All routes require an active candidate account and scope queries by authenticate
 | `DELETE` | `/api/candidates/me/documents/:documentId` | Delete document |
 
 The upload response reports a success or failure for each file so clients can
-retry only failed files.
+retry only failed files. If a request exceeds the configured file-count limit,
+the API keeps the first permitted files and returns `207 Multi-Status` with
+`limit.reached = true`; later file parts are rejected by the multipart parser.
 
 ## Validation and integrity requirements
 
@@ -199,6 +201,8 @@ stateDiagram-v2
   escape the private storage root.
 - [x] Discard staged files and delete committed files idempotently.
 - [x] Upload one or more files with independent success or failure results.
+- [x] Keep files up to the configured per-request count limit and report
+  multipart overflow as a partial `207 Multi-Status` result.
 - [x] List owned document metadata with optional purpose and status filters.
 - [x] Read metadata and stream original file bytes through authenticated,
   owner-scoped endpoints.
@@ -217,8 +221,7 @@ stateDiagram-v2
 
 - [ ] Replace lightweight marker checks with parser-backed validation that
   establishes that PDF, DOCX, JPEG, and PNG files are genuinely readable.
-- [ ] Reconcile multipart count and size-limit errors with per-file batch
-  results; a parser limit can currently occur after earlier files were stored.
+- [ ] Reconcile multipart size-limit errors with per-file batch results.
 - [ ] Remove filesystem objects immediately when account deletion cascades
   document rows instead of waiting for orphan cleanup.
 - [ ] Identify dependent profile claims and explain their impact before deleting

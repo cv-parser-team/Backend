@@ -20,6 +20,7 @@ import type { DocumentsService } from './documents.service.js';
 export interface DocumentsRoutesOptions {
   service: DocumentsService;
   guards: AuthGuards;
+  maximumUploadFiles: number;
 }
 
 interface DocumentUploadSuccess {
@@ -38,6 +39,13 @@ interface DocumentUploadFailure {
 }
 
 type DocumentUploadResult = DocumentUploadSuccess | DocumentUploadFailure;
+
+interface DocumentUploadResponse extends ApiResponse<DocumentUploadResult[]> {
+  limit?: {
+    reached: true;
+    maximumFiles: number;
+  };
+}
 
 function uploadFailure(
   filename: string,
@@ -83,7 +91,7 @@ function attachmentHeader(filename: string): string {
 
 export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async (
   fastify,
-  { service, guards }
+  { service, guards, maximumUploadFiles }
 ) => {
   const candidateOnly = [
     guards.authenticate,
@@ -100,46 +108,57 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
     async (request, reply) => {
       const results: DocumentUploadResult[] = [];
       let fileCount = 0;
+      let limitReached = false;
 
-      for await (const file of request.files()) {
-        fileCount += 1;
+      try {
+        for await (const file of request.files({
+          limits: { files: maximumUploadFiles }
+        })) {
+          fileCount += 1;
 
-        if (file.fieldname !== 'file') {
-          await drainFile(file.file);
-          results.push(
-            uploadFailure(
-              file.filename,
-              new InvalidDocumentUploadError(
-                "Document files must use the 'file' field"
-              )
-            )
-          );
-          continue;
-        }
-
-        try {
-          const document = await service.uploadDocument({
-            ownerUserId: request.auth.userId,
-            purpose: request.query.purpose,
-            originalFilename: file.filename,
-            stream: file.file
-          });
-          results.push({
-            success: true,
-            filename: file.filename,
-            document
-          });
-        } catch (error) {
-          try {
+          if (file.fieldname !== 'file') {
             await drainFile(file.file);
-          } catch (drainError) {
-            request.log.error(drainError);
+            results.push(
+              uploadFailure(
+                file.filename,
+                new InvalidDocumentUploadError(
+                  "Document files must use the 'file' field"
+                )
+              )
+            );
+            continue;
           }
-          if (!(error instanceof AppError)) {
-            request.log.error(error);
+
+          try {
+            const document = await service.uploadDocument({
+              ownerUserId: request.auth.userId,
+              purpose: request.query.purpose,
+              originalFilename: file.filename,
+              stream: file.file
+            });
+            results.push({
+              success: true,
+              filename: file.filename,
+              document
+            });
+          } catch (error) {
+            try {
+              await drainFile(file.file);
+            } catch (drainError) {
+              request.log.error(drainError);
+            }
+            if (!(error instanceof AppError)) {
+              request.log.error(error);
+            }
+            results.push(uploadFailure(file.filename, error));
           }
-          results.push(uploadFailure(file.filename, error));
         }
+      } catch (error) {
+        if (!(error instanceof fastify.multipartErrors.FilesLimitError)) {
+          throw error;
+        }
+
+        limitReached = true;
       }
 
       if (fileCount === 0) {
@@ -148,13 +167,19 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
         );
       }
 
-      const response: ApiResponse<DocumentUploadResult[]> = {
+      const response: DocumentUploadResponse = {
         success: true,
         data: results,
+        ...(limitReached
+          ? {
+              limit: { reached: true, maximumFiles: maximumUploadFiles }
+            }
+          : {}),
         timestamp: new Date().toISOString()
       };
 
-      const statusCode = results.every((result) => result.success) ? 201 : 207;
+      const statusCode =
+        !limitReached && results.every((result) => result.success) ? 201 : 207;
       return reply.status(statusCode).send(response);
     }
   );
