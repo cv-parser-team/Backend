@@ -63,6 +63,10 @@ function createService(): DocumentsService {
       deleted: 0,
       failures: []
     }),
+    cleanupOrphanedObjects: vi.fn().mockResolvedValue({
+      deleted: 0,
+      failures: []
+    }),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     getDocument: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
@@ -83,6 +87,7 @@ function createRepository(
   return {
     createDocument: vi.fn().mockResolvedValue(documentRecord),
     listDeletingDocuments: vi.fn().mockResolvedValue([]),
+    listStorageKeys: vi.fn().mockResolvedValue([documentRecord.storageKey]),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
     updateDocumentStatus: vi.fn().mockResolvedValue(documentRecord),
@@ -101,6 +106,8 @@ function createStorage(
       sha256: 'a'.repeat(64)
     }),
     openStaged: vi.fn().mockResolvedValue(Readable.from('staged document')),
+    cleanupStaged: vi.fn().mockResolvedValue(0),
+    listStoredObjects: vi.fn().mockResolvedValue([]),
     commit: vi
       .fn()
       .mockResolvedValue('33333333-3333-4333-8333-333333333333'),
@@ -213,6 +220,65 @@ describe('documents service', () => {
       secondDocument.ownerUserId,
       secondDocument.documentId
     );
+  });
+
+  it('deletes old stored objects that have no document metadata', async () => {
+    const referencedStorageKey = '44444444-4444-4444-8444-444444444444';
+    const orphanedStorageKey = '55555555-5555-4555-8555-555555555555';
+    const cutoff = new Date('2026-01-02T00:00:00.000Z');
+    const repository = createRepository({
+      listStorageKeys: vi.fn().mockResolvedValue([referencedStorageKey])
+    });
+    const storage = createStorage({
+      listStoredObjects: vi.fn().mockResolvedValue([
+        { storageKey: referencedStorageKey, modifiedAt: timestamp },
+        { storageKey: orphanedStorageKey, modifiedAt: timestamp }
+      ])
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(service.cleanupOrphanedObjects(cutoff)).resolves.toEqual({
+      deleted: 1,
+      failures: []
+    });
+    expect(storage.listStoredObjects).toHaveBeenCalledWith(cutoff);
+    expect(storage.delete).toHaveBeenCalledOnce();
+    expect(storage.delete).toHaveBeenCalledWith(orphanedStorageKey);
+  });
+
+  it('continues orphan cleanup when one object cannot be deleted', async () => {
+    const firstStorageKey = '44444444-4444-4444-8444-444444444444';
+    const secondStorageKey = '55555555-5555-4555-8555-555555555555';
+    const storageError = new Error('storage unavailable');
+    const storage = createStorage({
+      listStoredObjects: vi.fn().mockResolvedValue([
+        { storageKey: firstStorageKey, modifiedAt: timestamp },
+        { storageKey: secondStorageKey, modifiedAt: timestamp }
+      ]),
+      delete: vi
+        .fn()
+        .mockRejectedValueOnce(storageError)
+        .mockResolvedValueOnce(undefined)
+    });
+    const service = createDocumentsService({
+      repository: createRepository({
+        listStorageKeys: vi.fn().mockResolvedValue([])
+      }),
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.cleanupOrphanedObjects(new Date('2026-01-02T00:00:00.000Z'))
+    ).resolves.toEqual({
+      deleted: 1,
+      failures: [{ storageKey: firstStorageKey, error: storageError }]
+    });
+    expect(storage.delete).toHaveBeenCalledTimes(2);
   });
 
   it('lists only the requested owner documents with the supplied filters', async () => {

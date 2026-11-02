@@ -26,6 +26,17 @@ export function extractPositiveIntegerOrThrow(name: string): number {
   return value;
 }
 
+export function extractPositiveIntegerOrDefault(
+  name: string,
+  defaultValue: number
+): number {
+  const rawValue = process.env[name];
+
+  return rawValue === undefined || rawValue === ''
+    ? defaultValue
+    : extractPositiveIntegerOrThrow(name);
+}
+
 export function extractPrivateDirectoryOrThrow(name: string): string {
   const directory = resolve(extractOrThrow(name));
 
@@ -64,6 +75,14 @@ export const config = {
     ),
     maximumUploadByteSize: extractPositiveIntegerOrThrow(
       'DOCUMENT_MAX_UPLOAD_BYTES'
+    ),
+    stagingMaximumAgeSeconds: extractPositiveIntegerOrDefault(
+      'DOCUMENT_STAGING_MAX_AGE_SECONDS',
+      86_400
+    ),
+    orphanGracePeriodSeconds: extractPositiveIntegerOrDefault(
+      'DOCUMENT_ORPHAN_GRACE_PERIOD_SECONDS',
+      86_400
     )
   }
 } as const;

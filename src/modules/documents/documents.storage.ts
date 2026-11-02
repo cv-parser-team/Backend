@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, Transform, TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -18,10 +18,21 @@ export function assertValidStorageKey(key: string): void {
     }
 }
 
+function isMissingFileError(error: unknown): boolean {
+    return (
+        error instanceof Error && 'code' in error && error.code === 'ENOENT'
+    );
+}
+
 export interface StagedDocument {
     stagingKey: string;
     byteSize: number;
     sha256: string;
+}
+
+export interface StoredDocumentObject {
+    storageKey: string;
+    modifiedAt: Date;
 }
 
 export interface DocumentStorage {
@@ -29,6 +40,8 @@ export interface DocumentStorage {
     openStaged(stagingKey: string): Promise<Readable>;
     commit(stagingKey: string): Promise<string>;
     discard(stagingKey: string): Promise<void>;
+    cleanupStaged(olderThan: Date): Promise<number>;
+    listStoredObjects(olderThan: Date): Promise<StoredDocumentObject[]>;
     open(storageKey: string): Promise<Readable>;
     delete(storageKey: string): Promise<void>;
 }
@@ -108,6 +121,74 @@ export function createLocalDocumentStorage(
         async discard(stagingKey) {
             assertValidStorageKey(stagingKey);
             await rm(join(stagingDirectory, stagingKey), { force: true });
+        },
+        async cleanupStaged(olderThan) {
+            await mkdir(stagingDirectory, { recursive: true });
+            const entries = await readdir(stagingDirectory, {
+                withFileTypes: true
+            });
+            let deleted = 0;
+
+            for (const entry of entries) {
+                if (!entry.isFile() || !storageKeyPattern.test(entry.name)) {
+                    continue;
+                }
+
+                const stagingPath = join(stagingDirectory, entry.name);
+
+                try {
+                    const metadata = await stat(stagingPath);
+
+                    if (metadata.mtime >= olderThan) {
+                        continue;
+                    }
+
+                    await rm(stagingPath, { force: true });
+                    deleted += 1;
+                } catch (error) {
+                    if (isMissingFileError(error)) {
+                        continue;
+                    }
+
+                    throw error;
+                }
+            }
+
+            return deleted;
+        },
+        async listStoredObjects(olderThan) {
+            await mkdir(objectsDirectory, { recursive: true });
+            const entries = await readdir(objectsDirectory, {
+                withFileTypes: true
+            });
+            const objects: StoredDocumentObject[] = [];
+
+            for (const entry of entries) {
+                if (!entry.isFile() || !storageKeyPattern.test(entry.name)) {
+                    continue;
+                }
+
+                try {
+                    const metadata = await stat(
+                        join(objectsDirectory, entry.name)
+                    );
+
+                    if (metadata.mtime < olderThan) {
+                        objects.push({
+                            storageKey: entry.name,
+                            modifiedAt: metadata.mtime
+                        });
+                    }
+                } catch (error) {
+                    if (isMissingFileError(error)) {
+                        continue;
+                    }
+
+                    throw error;
+                }
+            }
+
+            return objects;
         },
         async open(storageKey) {
             assertValidStorageKey(storageKey);

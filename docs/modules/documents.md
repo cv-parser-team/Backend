@@ -19,7 +19,11 @@ candidate-owned source and evidence documents.
 - Store only the server-verified `media_type`; discard the client MIME type.
 - Stream files with hard size/count limits and validate their actual content type.
 - Keep original bytes; use an opaque storage key and SHA-256 checksum.
-- Hide local paths behind a `DocumentStorage` interface for a later S3 adapter.
+- Use a `DocumentStorage` adapter to hide filesystem details and simplify a
+  future transition to S3.
+- Send upload `purpose` as a required query parameter because it applies to the
+  entire file batch. This avoids repeating batch metadata in multipart fields
+  and allows the request purpose to be validated before processing file streams.
 - Process every uploaded file independently; one failure does not roll back
   successful files from the same request.
 - Keep workflow-specific metadata in later one-to-one tables, not `documents`.
@@ -202,6 +206,10 @@ stateDiagram-v2
   bytes, and then deleting its metadata.
 - [x] Retry cleanup of documents left in `deleting` status when the application
   starts, continuing past individual storage failures.
+- [x] Remove UUID-named staging files older than the configured maximum age when
+  the application starts, without touching recent uploads.
+- [x] Reconcile old committed objects with database storage keys at application
+  startup and remove unreferenced objects after a configurable grace period.
 - [x] Cover storage, validation, service, route, and table behavior with focused
   automated tests and manual HTTP requests.
 
@@ -211,8 +219,8 @@ stateDiagram-v2
   establishes that PDF, DOCX, JPEG, and PNG files are genuinely readable.
 - [ ] Reconcile multipart count and size-limit errors with per-file batch
   results; a parser limit can currently occur after earlier files were stored.
-- [ ] Add cleanup for stale temporary files and orphan storage objects.
-- [ ] Remove filesystem objects when account deletion cascades document rows.
+- [ ] Remove filesystem objects immediately when account deletion cascades
+  document rows instead of waiting for orphan cleanup.
 - [ ] Identify dependent profile claims and explain their impact before deleting
   a source document.
 - [ ] Add claim evidence attachment, reuse, detachment, and dependent cleanup.

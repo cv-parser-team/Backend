@@ -18,6 +18,26 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   const service = createDocumentsService({ repository, storage, validator });
 
   fastify.addHook('onListen', async () => {
+    const stagingCutoff = new Date(
+      Date.now() - config.documents.stagingMaximumAgeSeconds * 1000
+    );
+    const orphanCutoff = new Date(
+      Date.now() - config.documents.orphanGracePeriodSeconds * 1000
+    );
+
+    try {
+      const deletedStagedFiles = await storage.cleanupStaged(stagingCutoff);
+
+      if (deletedStagedFiles > 0) {
+        fastify.log.info(
+          { deletedStagedFiles },
+          'Cleaned up stale staged documents'
+        );
+      }
+    } catch (error) {
+      fastify.log.warn({ err: error }, 'Failed to clean up staged documents');
+    }
+
     try {
       const cleanup = await service.cleanupDeletingDocuments();
 
@@ -38,6 +58,29 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
       fastify.log.warn(
         { err: error },
         'Failed to query documents left in deleting status'
+      );
+    }
+
+    try {
+      const cleanup = await service.cleanupOrphanedObjects(orphanCutoff);
+
+      if (cleanup.deleted > 0) {
+        fastify.log.info(
+          { deletedOrphanedObjects: cleanup.deleted },
+          'Cleaned up orphaned document objects'
+        );
+      }
+
+      for (const failure of cleanup.failures) {
+        fastify.log.warn(
+          { err: failure.error, storageKey: failure.storageKey },
+          'Failed to clean up orphaned document object'
+        );
+      }
+    } catch (error) {
+      fastify.log.warn(
+        { err: error },
+        'Failed to reconcile document objects with metadata'
       );
     }
   });

@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  utimes,
+  writeFile
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -165,9 +172,72 @@ describe('local document storage staging', () => {
       await rm(storageRoot, { recursive: true, force: true });
     }
   });
+
+  it('cleans up only staged documents older than the cutoff', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'luminacv-storage-'));
+    const storage = createLocalDocumentStorage({
+      storageRoot,
+      maximumByteSize: Number.MAX_SAFE_INTEGER
+    });
+
+    try {
+      const stale = await storage.stage(Readable.from('stale document'));
+      const recent = await storage.stage(Readable.from('recent document'));
+      const staleTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+
+      await utimes(
+        join(storageRoot, 'staging', stale.stagingKey),
+        staleTime,
+        staleTime
+      );
+
+      await expect(storage.cleanupStaged(cutoff)).resolves.toBe(1);
+      await expect(
+        readFile(join(storageRoot, 'staging', stale.stagingKey))
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        readFile(join(storageRoot, 'staging', recent.stagingKey), 'utf8')
+      ).resolves.toBe('recent document');
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('local committed document storage', () => {
+  it('lists only stored objects older than the cutoff', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'luminacv-storage-'));
+    const storage = createLocalDocumentStorage({
+      storageRoot,
+      maximumByteSize: Number.MAX_SAFE_INTEGER
+    });
+
+    try {
+      const staleStaged = await storage.stage(Readable.from('stale object'));
+      const staleKey = await storage.commit(staleStaged.stagingKey);
+      const recentStaged = await storage.stage(Readable.from('recent object'));
+      await storage.commit(recentStaged.stagingKey);
+      const staleTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+
+      await utimes(
+        join(storageRoot, 'objects', staleKey),
+        staleTime,
+        staleTime
+      );
+      await writeFile(join(storageRoot, 'objects', 'unexpected.txt'), 'keep');
+
+      const objects = await storage.listStoredObjects(cutoff);
+
+      expect(objects).toEqual([
+        { storageKey: staleKey, modifiedAt: expect.any(Date) }
+      ]);
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
+  });
+
   it('opens a committed document without changing its contents', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'luminacv-storage-'));
     const storage = createLocalDocumentStorage({

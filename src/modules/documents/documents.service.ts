@@ -31,8 +31,19 @@ export interface DocumentCleanupResult {
   failures: DocumentCleanupFailure[];
 }
 
+export interface OrphanCleanupFailure {
+  storageKey: string;
+  error: unknown;
+}
+
+export interface OrphanCleanupResult {
+  deleted: number;
+  failures: OrphanCleanupFailure[];
+}
+
 export interface DocumentsService {
   cleanupDeletingDocuments(): Promise<DocumentCleanupResult>;
+  cleanupOrphanedObjects(olderThan: Date): Promise<OrphanCleanupResult>;
   listDocuments(
     ownerUserId: string,
     filters?: DocumentFilters
@@ -79,6 +90,29 @@ export function createDocumentsService({
           deleted += 1;
         } catch (error) {
           failures.push({ documentId: document.documentId, error });
+        }
+      }
+
+      return { deleted, failures };
+    },
+    async cleanupOrphanedObjects(olderThan) {
+      const referencedStorageKeys = new Set(
+        await repository.listStorageKeys()
+      );
+      const storedObjects = await storage.listStoredObjects(olderThan);
+      const failures: OrphanCleanupFailure[] = [];
+      let deleted = 0;
+
+      for (const object of storedObjects) {
+        if (referencedStorageKeys.has(object.storageKey)) {
+          continue;
+        }
+
+        try {
+          await storage.delete(object.storageKey);
+          deleted += 1;
+        } catch (error) {
+          failures.push({ storageKey: object.storageKey, error });
         }
       }
 
