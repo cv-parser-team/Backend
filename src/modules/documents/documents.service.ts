@@ -16,19 +16,46 @@ export interface UploadDocumentInput {
   stream: Readable;
 }
 
+export interface UploadDocumentResult {
+  document: DocumentRecord;
+  deduplicated: boolean;
+}
+
 export interface DocumentContent {
   document: DocumentRecord;
   stream: Readable;
 }
 
+export interface DocumentCleanupFailure {
+  documentId: string;
+  error: unknown;
+}
+
+export interface DocumentCleanupResult {
+  deleted: number;
+  failures: DocumentCleanupFailure[];
+}
+
+export interface OrphanCleanupFailure {
+  storageKey: string;
+  error: unknown;
+}
+
+export interface OrphanCleanupResult {
+  deleted: number;
+  failures: OrphanCleanupFailure[];
+}
+
 export interface DocumentsService {
+  cleanupDeletingDocuments(): Promise<DocumentCleanupResult>;
+  cleanupOrphanedObjects(olderThan: Date): Promise<OrphanCleanupResult>;
   listDocuments(
     ownerUserId: string,
     filters?: DocumentFilters
   ): Promise<DocumentRecord[]>;
   getDocument(ownerUserId: string, documentId: string): Promise<DocumentRecord>;
   deleteDocument(ownerUserId: string, documentId: string): Promise<void>;
-  uploadDocument(input: UploadDocumentInput): Promise<DocumentRecord>;
+  uploadDocument(input: UploadDocumentInput): Promise<UploadDocumentResult>;
   openDocument(
     ownerUserId: string,
     documentId: string
@@ -47,6 +74,55 @@ export function createDocumentsService({
   validator
 }: DocumentsServiceDependencies): DocumentsService {
   return {
+    async cleanupDeletingDocuments() {
+      const documents = await repository.listDeletingDocuments();
+      const failures: DocumentCleanupFailure[] = [];
+      let deleted = 0;
+
+      for (const document of documents) {
+        try {
+          await storage.delete(document.storageKey);
+
+          const metadataDeleted = await repository.deleteDocument(
+            document.ownerUserId,
+            document.documentId
+          );
+
+          if (!metadataDeleted) {
+            throw new RecordNotFoundError('Document', document.documentId);
+          }
+
+          deleted += 1;
+        } catch (error) {
+          failures.push({ documentId: document.documentId, error });
+        }
+      }
+
+      return { deleted, failures };
+    },
+    async cleanupOrphanedObjects(olderThan) {
+      const referencedStorageKeys = new Set(
+        await repository.listStorageKeys()
+      );
+      const storedObjects = await storage.listStoredObjects(olderThan);
+      const failures: OrphanCleanupFailure[] = [];
+      let deleted = 0;
+
+      for (const object of storedObjects) {
+        if (referencedStorageKeys.has(object.storageKey)) {
+          continue;
+        }
+
+        try {
+          await storage.delete(object.storageKey);
+          deleted += 1;
+        } catch (error) {
+          failures.push({ storageKey: object.storageKey, error });
+        }
+      }
+
+      return { deleted, failures };
+    },
     async listDocuments(ownerUserId, filters) {
       return repository.listDocuments(ownerUserId, filters);
     },
@@ -98,9 +174,22 @@ export function createDocumentsService({
           stream: validationStream
         });
 
+        const checksumInput = {
+          ownerUserId: input.ownerUserId,
+          purpose: input.purpose,
+          sha256: staged.sha256
+        };
+        const existingDocument =
+          await repository.findDocumentByChecksum(checksumInput);
+
+        if (existingDocument) {
+          await storage.discard(staged.stagingKey);
+          return { document: existingDocument, deduplicated: true };
+        }
+
         storageKey = await storage.commit(staged.stagingKey);
 
-        return await repository.createDocument({
+        const document = await repository.createDocument({
           ownerUserId: input.ownerUserId,
           purpose: input.purpose,
           originalFilename: input.originalFilename,
@@ -109,6 +198,24 @@ export function createDocumentsService({
           sha256: staged.sha256,
           storageKey
         });
+
+        if (document) {
+          return { document, deduplicated: false };
+        }
+
+        await storage.delete(storageKey);
+        storageKey = undefined;
+
+        const concurrentDocument =
+          await repository.findDocumentByChecksum(checksumInput);
+
+        if (!concurrentDocument) {
+          throw new Error(
+            'Duplicate document was not found after insert conflict'
+          );
+        }
+
+        return { document: concurrentDocument, deduplicated: true };
       } catch (error) {
         try {
           if (storageKey === undefined) {

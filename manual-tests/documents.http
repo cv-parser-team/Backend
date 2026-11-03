@@ -16,7 +16,7 @@ Content-Type: application/json
 ###
 @accessToken = {{signIn.response.body.data.accessToken}}
 
-### Upload two valid source documents (201; both results succeed)
+### Upload the same source twice (201; second result is deduplicated)
 # @name uploadDocument
 POST {{baseUrl}}/api/candidates/me/documents?purpose=source
 Authorization: Bearer {{accessToken}}
@@ -26,17 +26,17 @@ Content-Type: multipart/form-data; boundary=LuminaCVBoundary
 Content-Disposition: form-data; name="file"; filename="resume-v1.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVBoundary
 Content-Disposition: form-data; name="file"; filename="resume-v2.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVBoundary--
 
 ###
 @documentId = {{uploadDocument.response.body.data[0].document.documentId}}
-@secondDocumentId = {{uploadDocument.response.body.data[1].document.documentId}}
+# The second result has deduplicated=true and references the same document ID.
 
 ### Upload one valid and one disguised invalid PDF (207; mixed results)
 # @name mixedUpload
@@ -48,20 +48,17 @@ Content-Type: multipart/form-data; boundary=LuminaCVMixedBoundary
 Content-Disposition: form-data; name="file"; filename="valid-resume.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVMixedBoundary
 Content-Disposition: form-data; name="file"; filename="disguised-invalid.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/invalid.pdf
+< ./documents/invalid.pdf
 --LuminaCVMixedBoundary--
 
-###
-@mixedDocumentId = {{mixedUpload.response.body.data[0].document.documentId}}
-
-### Exceed the five-file request limit (413)
-# This intentionally sends six files. Successful parts encountered before the
-# parser raises its limit error may already have been stored; delete them after testing.
+### Exceed the five-file request limit (207; first five results are kept)
+# This intentionally sends six files. The response includes
+# limit.reached=true and maximumFiles=5.
 POST {{baseUrl}}/api/candidates/me/documents?purpose=source
 Authorization: Bearer {{accessToken}}
 Content-Type: multipart/form-data; boundary=LuminaCVLimitBoundary
@@ -70,32 +67,32 @@ Content-Type: multipart/form-data; boundary=LuminaCVLimitBoundary
 Content-Disposition: form-data; name="file"; filename="resume-1.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVLimitBoundary
 Content-Disposition: form-data; name="file"; filename="resume-2.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVLimitBoundary
 Content-Disposition: form-data; name="file"; filename="resume-3.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVLimitBoundary
 Content-Disposition: form-data; name="file"; filename="resume-4.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVLimitBoundary
 Content-Disposition: form-data; name="file"; filename="resume-5.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVLimitBoundary
 Content-Disposition: form-data; name="file"; filename="resume-6.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVLimitBoundary--
 
 ### List source documents (200)
@@ -120,7 +117,7 @@ Content-Type: multipart/form-data; boundary=LuminaCVBoundary
 Content-Disposition: form-data; name="file"; filename="resume.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVBoundary--
 
 ### Upload with an invalid purpose (400)
@@ -132,17 +129,9 @@ Content-Type: multipart/form-data; boundary=LuminaCVBoundary
 Content-Disposition: form-data; name="file"; filename="resume.pdf"
 Content-Type: application/pdf
 
-< ./manual-tests/documents/valid.pdf
+< ./documents/valid.pdf
 --LuminaCVBoundary--
 
 ### Delete the uploaded document and metadata (204)
 DELETE {{baseUrl}}/api/candidates/me/documents/{{documentId}}
-Authorization: Bearer {{accessToken}}
-
-### Delete the second successful batch document (204)
-DELETE {{baseUrl}}/api/candidates/me/documents/{{secondDocumentId}}
-Authorization: Bearer {{accessToken}}
-
-### Delete the successful document from the mixed batch (204)
-DELETE {{baseUrl}}/api/candidates/me/documents/{{mixedDocumentId}}
 Authorization: Bearer {{accessToken}}

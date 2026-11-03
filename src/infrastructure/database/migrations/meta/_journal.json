@@ -29,6 +29,13 @@
       "when": 1793358650541,
       "tag": "0003_hot_shatterstar",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793626825798,
+      "tag": "0004_salty_jack_power",
+      "breakpoints": true
     }
   ]
 }
