@@ -19,7 +19,13 @@ candidate-owned source and evidence documents.
 - Store only the server-verified `media_type`; discard the client MIME type.
 - Stream files with hard size/count limits and validate their actual content type.
 - Keep original bytes; use an opaque storage key and SHA-256 checksum.
-- Hide local paths behind a `DocumentStorage` interface for a later S3 adapter.
+- Deduplicate identical content per owner and purpose by SHA-256, returning the
+  existing document instead of storing another object.
+- Use a `DocumentStorage` adapter to hide filesystem details and simplify a
+  future transition to S3.
+- Send upload `purpose` as a required query parameter because it applies to the
+  entire file batch. This avoids repeating batch metadata in multipart fields
+  and allows the request purpose to be validated before processing file streams.
 - Process every uploaded file independently; one failure does not roll back
   successful files from the same request.
 - Keep workflow-specific metadata in later one-to-one tables, not `documents`.
@@ -38,7 +44,11 @@ All routes require an active candidate account and scope queries by authenticate
 | `DELETE` | `/api/candidates/me/documents/:documentId` | Delete document |
 
 The upload response reports a success or failure for each file so clients can
-retry only failed files.
+retry only failed files. If a request exceeds the configured file-count limit,
+the API keeps the first permitted files and returns `207 Multi-Status` with
+`limit.reached = true`; later file parts are rejected by the multipart parser.
+An upload matching an existing owner, purpose, and SHA-256 returns that document
+with `deduplicated: true` instead of creating another row or storage object.
 
 ## Validation and integrity requirements
 
@@ -112,8 +122,8 @@ erDiagram
 - `document_purpose`: `source`, `evidence`
 - `document_status`: `stored`, `processing`, `ready`, `failed`, `deleting`
 - `media_type`: server-verified media type; no separate `mime_type` column
-- Index `(owner_user_id, created_at)` and `(owner_user_id, sha256)`; make
-  `storage_key` unique.
+- Index `(owner_user_id, created_at)`; make `storage_key` and
+  `(owner_user_id, purpose, sha256)` unique.
 
 ## Module boundaries
 
@@ -195,11 +205,21 @@ stateDiagram-v2
   escape the private storage root.
 - [x] Discard staged files and delete committed files idempotently.
 - [x] Upload one or more files with independent success or failure results.
+- [x] Prevent duplicate content per owner and purpose, including concurrent
+  uploads, and clean up the losing request's staged or committed object.
+- [x] Keep files up to the configured per-request count limit and report
+  multipart overflow as a partial `207 Multi-Status` result.
 - [x] List owned document metadata with optional purpose and status filters.
 - [x] Read metadata and stream original file bytes through authenticated,
   owner-scoped endpoints.
 - [x] Delete an owned document by marking it `deleting`, removing its stored
   bytes, and then deleting its metadata.
+- [x] Retry cleanup of documents left in `deleting` status when the application
+  starts, continuing past individual storage failures.
+- [x] Remove UUID-named staging files older than the configured maximum age when
+  the application starts, without touching recent uploads.
+- [x] Reconcile old committed objects with database storage keys at application
+  startup and remove unreferenced objects after a configurable grace period.
 - [x] Cover storage, validation, service, route, and table behavior with focused
   automated tests and manual HTTP requests.
 
@@ -207,10 +227,9 @@ stateDiagram-v2
 
 - [ ] Replace lightweight marker checks with parser-backed validation that
   establishes that PDF, DOCX, JPEG, and PNG files are genuinely readable.
-- [ ] Reconcile multipart count and size-limit errors with per-file batch
-  results; a parser limit can currently occur after earlier files were stored.
-- [ ] Add cleanup for stale temporary files, orphan objects, and `deleting` rows.
-- [ ] Remove filesystem objects when account deletion cascades document rows.
+- [ ] Reconcile multipart size-limit errors with per-file batch results.
+- [ ] Remove filesystem objects immediately when account deletion cascades
+  document rows instead of waiting for orphan cleanup.
 - [ ] Identify dependent profile claims and explain their impact before deleting
   a source document.
 - [ ] Add claim evidence attachment, reuse, detachment, and dependent cleanup.

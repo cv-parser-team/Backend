@@ -59,12 +59,20 @@ function createGuards(): AuthGuards {
 
 function createService(): DocumentsService {
   return {
+    cleanupDeletingDocuments: vi.fn().mockResolvedValue({
+      deleted: 0,
+      failures: []
+    }),
+    cleanupOrphanedObjects: vi.fn().mockResolvedValue({
+      deleted: 0,
+      failures: []
+    }),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     getDocument: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
     uploadDocument: vi.fn().mockImplementation(async (input) => {
       await buffer(input.stream);
-      return documentRecord;
+      return { document: documentRecord, deduplicated: false };
     }),
     openDocument: vi.fn().mockResolvedValue({
       document: documentRecord,
@@ -78,6 +86,9 @@ function createRepository(
 ): DocumentsRepository {
   return {
     createDocument: vi.fn().mockResolvedValue(documentRecord),
+    findDocumentByChecksum: vi.fn().mockResolvedValue(null),
+    listDeletingDocuments: vi.fn().mockResolvedValue([]),
+    listStorageKeys: vi.fn().mockResolvedValue([documentRecord.storageKey]),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
     updateDocumentStatus: vi.fn().mockResolvedValue(documentRecord),
@@ -96,6 +107,8 @@ function createStorage(
       sha256: 'a'.repeat(64)
     }),
     openStaged: vi.fn().mockResolvedValue(Readable.from('staged document')),
+    cleanupStaged: vi.fn().mockResolvedValue(0),
+    listStoredObjects: vi.fn().mockResolvedValue([]),
     commit: vi
       .fn()
       .mockResolvedValue('33333333-3333-4333-8333-333333333333'),
@@ -145,6 +158,130 @@ function multipartFile(
 }
 
 describe('documents service', () => {
+  it('cleans up documents left in deleting status', async () => {
+    const deletingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'deleting'
+    };
+    const repository = createRepository({
+      listDeletingDocuments: vi.fn().mockResolvedValue([deletingDocument])
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(service.cleanupDeletingDocuments()).resolves.toEqual({
+      deleted: 1,
+      failures: []
+    });
+    expect(storage.delete).toHaveBeenCalledWith(deletingDocument.storageKey);
+    expect(repository.deleteDocument).toHaveBeenCalledWith(
+      deletingDocument.ownerUserId,
+      deletingDocument.documentId
+    );
+  });
+
+  it('continues cleanup when one deleting document fails', async () => {
+    const storageError = new Error('storage unavailable');
+    const firstDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'deleting'
+    };
+    const secondDocument: DocumentRecord = {
+      ...firstDocument,
+      documentId: '33333333-3333-4333-8333-333333333333',
+      storageKey: 'documents/second'
+    };
+    const repository = createRepository({
+      listDeletingDocuments: vi
+        .fn()
+        .mockResolvedValue([firstDocument, secondDocument])
+    });
+    const storage = createStorage({
+      delete: vi
+        .fn()
+        .mockRejectedValueOnce(storageError)
+        .mockResolvedValueOnce(undefined)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(service.cleanupDeletingDocuments()).resolves.toEqual({
+      deleted: 1,
+      failures: [{ documentId: firstDocument.documentId, error: storageError }]
+    });
+    expect(repository.deleteDocument).toHaveBeenCalledOnce();
+    expect(repository.deleteDocument).toHaveBeenCalledWith(
+      secondDocument.ownerUserId,
+      secondDocument.documentId
+    );
+  });
+
+  it('deletes old stored objects that have no document metadata', async () => {
+    const referencedStorageKey = '44444444-4444-4444-8444-444444444444';
+    const orphanedStorageKey = '55555555-5555-4555-8555-555555555555';
+    const cutoff = new Date('2026-01-02T00:00:00.000Z');
+    const repository = createRepository({
+      listStorageKeys: vi.fn().mockResolvedValue([referencedStorageKey])
+    });
+    const storage = createStorage({
+      listStoredObjects: vi.fn().mockResolvedValue([
+        { storageKey: referencedStorageKey, modifiedAt: timestamp },
+        { storageKey: orphanedStorageKey, modifiedAt: timestamp }
+      ])
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(service.cleanupOrphanedObjects(cutoff)).resolves.toEqual({
+      deleted: 1,
+      failures: []
+    });
+    expect(storage.listStoredObjects).toHaveBeenCalledWith(cutoff);
+    expect(storage.delete).toHaveBeenCalledOnce();
+    expect(storage.delete).toHaveBeenCalledWith(orphanedStorageKey);
+  });
+
+  it('continues orphan cleanup when one object cannot be deleted', async () => {
+    const firstStorageKey = '44444444-4444-4444-8444-444444444444';
+    const secondStorageKey = '55555555-5555-4555-8555-555555555555';
+    const storageError = new Error('storage unavailable');
+    const storage = createStorage({
+      listStoredObjects: vi.fn().mockResolvedValue([
+        { storageKey: firstStorageKey, modifiedAt: timestamp },
+        { storageKey: secondStorageKey, modifiedAt: timestamp }
+      ]),
+      delete: vi
+        .fn()
+        .mockRejectedValueOnce(storageError)
+        .mockResolvedValueOnce(undefined)
+    });
+    const service = createDocumentsService({
+      repository: createRepository({
+        listStorageKeys: vi.fn().mockResolvedValue([])
+      }),
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.cleanupOrphanedObjects(new Date('2026-01-02T00:00:00.000Z'))
+    ).resolves.toEqual({
+      deleted: 1,
+      failures: [{ storageKey: firstStorageKey, error: storageError }]
+    });
+    expect(storage.delete).toHaveBeenCalledTimes(2);
+  });
+
   it('lists only the requested owner documents with the supplied filters', async () => {
     const repository = createRepository();
     const service = createDocumentsService({
@@ -283,7 +420,7 @@ describe('documents service', () => {
         originalFilename: 'resume.pdf',
         stream
       })
-    ).resolves.toEqual(documentRecord);
+    ).resolves.toEqual({ document: documentRecord, deduplicated: false });
 
     expect(storage.stage).toHaveBeenCalledWith(stream);
     expect(validator.validate).toHaveBeenCalledWith(
@@ -302,6 +439,66 @@ describe('documents service', () => {
       sha256: 'a'.repeat(64),
       storageKey: '33333333-3333-4333-8333-333333333333'
     });
+  });
+
+  it('discards a staged duplicate and returns the existing document', async () => {
+    const repository = createRepository({
+      findDocumentByChecksum: vi.fn().mockResolvedValue(documentRecord)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.uploadDocument({
+        ownerUserId,
+        purpose: 'source',
+        originalFilename: 'duplicate.pdf',
+        stream: Readable.from('duplicate')
+      })
+    ).resolves.toEqual({ document: documentRecord, deduplicated: true });
+    expect(repository.findDocumentByChecksum).toHaveBeenCalledWith({
+      ownerUserId,
+      purpose: 'source',
+      sha256: 'a'.repeat(64)
+    });
+    expect(storage.discard).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    expect(storage.commit).not.toHaveBeenCalled();
+    expect(repository.createDocument).not.toHaveBeenCalled();
+  });
+
+  it('removes the losing object when a concurrent duplicate wins', async () => {
+    const repository = createRepository({
+      findDocumentByChecksum: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(documentRecord),
+      createDocument: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.uploadDocument({
+        ownerUserId,
+        purpose: 'source',
+        originalFilename: 'duplicate.pdf',
+        stream: Readable.from('duplicate')
+      })
+    ).resolves.toEqual({ document: documentRecord, deduplicated: true });
+    expect(storage.delete).toHaveBeenCalledWith(
+      '33333333-3333-4333-8333-333333333333'
+    );
+    expect(repository.findDocumentByChecksum).toHaveBeenCalledTimes(2);
   });
 
   it('discards a staged document when validation fails', async () => {
@@ -364,12 +561,16 @@ describe('documents routes', () => {
     app = undefined;
   });
 
-  async function createRoutes(service: DocumentsService) {
+  async function createRoutes(
+    service: DocumentsService,
+    maximumUploadFiles = 5
+  ) {
     app = Fastify();
     await app.register(multipart);
     await app.register(documentsRoutes, {
       service,
-      guards: createGuards()
+      guards: createGuards(),
+      maximumUploadFiles
     });
   }
 
@@ -420,6 +621,38 @@ describe('documents routes', () => {
         {
           success: true,
           filename: 'resume.pdf',
+          deduplicated: false,
+          document: { documentId }
+        }
+      ]
+    });
+  });
+
+  it('reports a duplicate upload without creating another document', async () => {
+    const service = createService();
+    service.uploadDocument = vi.fn().mockImplementation(async (input) => {
+      await buffer(input.stream);
+      return { document: documentRecord, deduplicated: true };
+    });
+    await createRoutes(service);
+    const request = createMultipartPayload([
+      multipartFile('file', 'duplicate.pdf', Buffer.from('same document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        {
+          success: true,
+          filename: 'duplicate.pdf',
+          deduplicated: true,
           document: { documentId }
         }
       ]
@@ -451,6 +684,33 @@ describe('documents routes', () => {
     });
   });
 
+  it('keeps permitted files and reports when the file limit is reached', async () => {
+    const service = createService();
+    await createRoutes(service, 2);
+    const request = createMultipartPayload([
+      multipartFile('file', 'first.pdf', Buffer.from('first document')),
+      multipartFile('file', 'second.pdf', Buffer.from('second document')),
+      multipartFile('file', 'third.pdf', Buffer.from('third document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(207);
+    expect(service.uploadDocument).toHaveBeenCalledTimes(2);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        { success: true, filename: 'first.pdf' },
+        { success: true, filename: 'second.pdf' }
+      ],
+      limit: { reached: true, maximumFiles: 2 }
+    });
+  });
+
   it('reports mixed upload results without rolling back valid files', async () => {
     const service = createService();
     service.uploadDocument = vi.fn().mockImplementation(async (input) => {
@@ -458,7 +718,7 @@ describe('documents routes', () => {
       if (input.originalFilename === 'invalid.pdf') {
         throw new UnsupportedDocumentTypeError();
       }
-      return documentRecord;
+      return { document: documentRecord, deduplicated: false };
     });
     await createRoutes(service);
     const request = createMultipartPayload([

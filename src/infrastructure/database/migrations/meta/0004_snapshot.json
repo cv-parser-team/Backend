@@ -1,5 +1,5 @@
 {
-  "id": "d30beac8-9487-4549-92bc-ee8c5463712c",
+  "id": "b526d8ac-bcce-4caf-92b9-bacaddd46c65",
   "prevId": "535ff6ce-78e0-41f2-8ed2-0a72fbfb8ea3",
   "version": "7",
   "dialect": "postgresql",
@@ -737,11 +737,17 @@
           "method": "btree",
           "with": {}
         },
-        "documents_owner_sha256_idx": {
-          "name": "documents_owner_sha256_idx",
+        "documents_owner_purpose_sha256_unique": {
+          "name": "documents_owner_purpose_sha256_unique",
           "columns": [
             {
               "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "purpose",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -753,7 +759,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -805,120 +811,6 @@
         "documents_failure_code_status": {
           "name": "documents_failure_code_status",
           "value": "(\n                \"documents\".\"status\" = 'failed' and \"documents\".\"failure_code\" is not null\n            ) or (\n                \"documents\".\"status\" <> 'failed' and \"documents\".\"failure_code\" is null\n            )"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.document_extractions": {
-      "name": "document_extractions",
-      "schema": "",
-      "columns": {
-        "extraction_id": {
-          "name": "extraction_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "document_id": {
-          "name": "document_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "extraction_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "format": {
-          "name": "format",
-          "type": "document_format",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "page_count": {
-          "name": "page_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "content": {
-          "name": "content",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "failures": {
-          "name": "failures",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "parser_version": {
-          "name": "parser_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "document_extractions_document_id_unique": {
-          "name": "document_extractions_document_id_unique",
-          "columns": [
-            {
-              "expression": "document_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "document_extractions_document_id_documents_document_id_fk": {
-          "name": "document_extractions_document_id_documents_document_id_fk",
-          "tableFrom": "document_extractions",
-          "tableTo": "documents",
-          "columnsFrom": [
-            "document_id"
-          ],
-          "columnsTo": [
-            "document_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "document_extractions_page_count_positive": {
-          "name": "document_extractions_page_count_positive",
-          "value": "\"document_extractions\".\"page_count\" is null or \"document_extractions\".\"page_count\" > 0"
         }
       },
       "isRLSEnabled": false
@@ -1068,23 +960,6 @@
         "ready",
         "failed",
         "deleting"
-      ]
-    },
-    "public.document_format": {
-      "name": "document_format",
-      "schema": "public",
-      "values": [
-        "pdf",
-        "docx"
-      ]
-    },
-    "public.extraction_status": {
-      "name": "extraction_status",
-      "schema": "public",
-      "values": [
-        "succeeded",
-        "partial",
-        "failed"
       ]
     },
     "public.account_status": {

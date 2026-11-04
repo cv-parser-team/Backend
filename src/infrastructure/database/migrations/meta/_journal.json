@@ -33,8 +33,15 @@
     {
       "idx": 4,
       "version": "7",
-      "when": 1793525251894,
-      "tag": "0004_clumsy_zombie",
+      "when": 1793626825798,
+      "tag": "0004_salty_jack_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793782229814,
+      "tag": "0005_mighty_solo",
       "breakpoints": true
     }
   ]
