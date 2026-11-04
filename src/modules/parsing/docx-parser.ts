@@ -1,11 +1,12 @@
 import { createRequire } from 'node:module';
 import mammoth from 'mammoth';
+import { readDocxHtml } from './docx-html.js';
 import { hasTooMuchArabic, removeArabic } from './language.js';
 import {
+  DocumentBlock,
   DocumentParser,
   ExtractionFailure,
-  ExtractionResult,
-  ParsedParagraph
+  ExtractionResult
 } from './parsing.types.js';
 
 const { version } = createRequire(import.meta.url)('mammoth/package.json') as {
@@ -19,10 +20,35 @@ function failedResult(code: ExtractionFailure['code']): ExtractionResult {
     format: 'docx',
     pageCount: null,
     pages: [],
-    paragraphs: [],
+    blocks: [],
     failures: [{ pageNumber: null, code }],
     parserVersion
   };
+}
+
+function blockTexts(block: DocumentBlock): string[] {
+  return block.type === 'paragraph'
+    ? [block.text]
+    : [...(block.columns ?? []), ...block.rows.flat()];
+}
+
+function clean(text: string): string {
+  return removeArabic(text).replace(/\s+/g, ' ').trim();
+}
+
+// Removes small Arabic fragments and drops blocks left without text.
+function withoutArabic(blocks: DocumentBlock[]): DocumentBlock[] {
+  const kept = blocks.flatMap((block): DocumentBlock[] => {
+    if (block.type === 'paragraph') {
+      const text = clean(block.text);
+      return text.length > 0 ? [{ ...block, text }] : [];
+    }
+    const rows = block.rows
+      .map((row) => row.map(clean))
+      .filter((row) => row.some((cell) => cell.length > 0));
+    return rows.length > 0 ? [{ ...block, columns: block.columns?.map(clean) ?? null, rows }] : [];
+  });
+  return kept.map((block, index) => ({ ...block, index }));
 }
 
 export function createDocxParser(): DocumentParser {
@@ -31,33 +57,26 @@ export function createDocxParser(): DocumentParser {
     mediaTypes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
 
     async parse(content) {
-      let text: string;
+      let html: string;
       try {
-        const result = await mammoth.extractRawText({ buffer: Buffer.from(content) });
-        text = result.value;
+        const result = await mammoth.convertToHtml({ buffer: Buffer.from(content) });
+        html = result.value;
       } catch {
         return failedResult('UNREADABLE');
       }
 
-      // Each paragraph and table cell is a separate line in the raw text.
-      const lines = text
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
+      const blocks = readDocxHtml(html);
+      const texts = blocks.flatMap(blockTexts).filter((text) => text.trim().length > 0);
 
-      if (lines.length === 0) {
+      if (texts.length === 0) {
         return failedResult('NO_TEXT_LAYER');
       }
-      if (hasTooMuchArabic(lines)) {
+      if (hasTooMuchArabic(texts)) {
         return failedResult('UNSUPPORTED_LANGUAGE');
       }
 
-      const paragraphs: ParsedParagraph[] = lines
-        .map((line) => removeArabic(line).replace(/\s+/g, ' ').trim())
-        .filter((line) => line.length > 0)
-        .map((line, index) => ({ index, text: line }));
-
-      if (paragraphs.length === 0) {
+      const kept = withoutArabic(blocks);
+      if (kept.length === 0) {
         return failedResult('NO_TEXT_LAYER');
       }
 
@@ -66,7 +85,7 @@ export function createDocxParser(): DocumentParser {
         format: 'docx',
         pageCount: null,
         pages: [],
-        paragraphs,
+        blocks: kept,
         failures: [],
         parserVersion
       };

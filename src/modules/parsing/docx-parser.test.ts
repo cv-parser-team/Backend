@@ -9,7 +9,7 @@ async function parseFixture(name: string): Promise<ExtractionResult> {
 }
 
 describe('docx parser', () => {
-  it('extracts ordered paragraphs without pages', async () => {
+  it('extracts ordered paragraph blocks without pages', async () => {
     const result = await parseFixture('resume.docx');
 
     expect(result).toMatchObject({
@@ -19,30 +19,49 @@ describe('docx parser', () => {
       pages: [],
       failures: []
     });
-    expect(result.paragraphs).toEqual([
-      { index: 0, text: 'Sample Candidate' },
-      { index: 1, text: 'Backend Developer' },
-      { index: 2, text: 'Experience' },
-      { index: 3, text: 'Backend Developer at Example Corp' },
-      { index: 4, text: 'Skills' },
-      { index: 5, text: 'Python, Node.js' }
+    expect(result.blocks.map((block) => block.type === 'paragraph' && block.text)).toEqual([
+      'Sample Candidate',
+      'Backend Developer',
+      'Experience',
+      'Backend Developer at Example Corp',
+      'Skills',
+      'Python, Node.js'
     ]);
+    expect(result.blocks.map((block) => block.index)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(result.parserVersion).toMatch(/^mammoth@\d+\.\d+\.\d+$/);
   });
 
-  it('extracts table cells in reading order', async () => {
+  it('keeps table rows and cells together', async () => {
     const result = await parseFixture('table.docx');
 
-    expect(result.paragraphs.map((paragraph) => paragraph.text)).toEqual([
-      'Sample Candidate',
-      'Skill',
-      'Level',
-      'Python',
-      'Advanced',
-      'Docker',
-      'Intermediate',
-      'References available on request'
+    expect(result.blocks).toEqual([
+      expect.objectContaining({ type: 'paragraph', text: 'Sample Candidate' }),
+      {
+        type: 'table',
+        index: 1,
+        columns: null,
+        rows: [
+          ['Skill', 'Level'],
+          ['Python', 'Advanced'],
+          ['Docker', 'Intermediate']
+        ]
+      },
+      expect.objectContaining({ type: 'paragraph', text: 'References available on request' })
     ]);
+  });
+
+  it('keeps column headings only when Word marks a header row', async () => {
+    const result = await parseFixture('table-header.docx');
+
+    expect(result.blocks[1]).toEqual({
+      type: 'table',
+      index: 1,
+      columns: ['Position', 'Company', 'Period'],
+      rows: [
+        ['Backend Developer', 'ABC Company', '2021 - 2023'],
+        ['Intern', 'XYZ Ltd', '2020 - 2021']
+      ]
+    });
   });
 
   it('fails documents without text', async () => {
@@ -50,7 +69,7 @@ describe('docx parser', () => {
 
     expect(result).toMatchObject({
       status: 'failed',
-      paragraphs: [],
+      blocks: [],
       failures: [{ pageNumber: null, code: 'NO_TEXT_LAYER' }]
     });
   });
@@ -60,7 +79,7 @@ describe('docx parser', () => {
 
     expect(result).toMatchObject({
       status: 'failed',
-      paragraphs: [],
+      blocks: [],
       failures: [{ pageNumber: null, code: 'UNSUPPORTED_LANGUAGE' }]
     });
   });

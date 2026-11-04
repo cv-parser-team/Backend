@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
-import { documentExtractions } from './parsing.table.js';
+import { documentExtractions, EXTRACTION_CONTENT_VERSION } from './parsing.table.js';
 import { ExtractionResult } from './parsing.types.js';
 
 export type ExtractionRecord = typeof documentExtractions.$inferSelect;
@@ -20,7 +20,11 @@ export function createParsingRepository(database: AppDatabase): ParsingRepositor
           status: result.status,
           format: result.format,
           pageCount: result.pageCount,
-          content: { pages: result.pages, paragraphs: result.paragraphs },
+          content: {
+            version: EXTRACTION_CONTENT_VERSION,
+            pages: result.pages,
+            blocks: result.blocks
+          },
           failures: result.failures,
           parserVersion: result.parserVersion
         };

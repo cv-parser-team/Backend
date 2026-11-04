@@ -6,7 +6,7 @@ import { createDocxParser } from './docx-parser.js';
 import { UnsupportedDocumentTypeError } from './parsing.errors.js';
 import { ExtractionRecord, ParsingRepository } from './parsing.repository.js';
 import { createParsingService } from './parsing.service.js';
-import { documentExtractions } from './parsing.table.js';
+import { documentExtractions, EXTRACTION_CONTENT_VERSION } from './parsing.table.js';
 import { DocumentFormat, DocumentParser, ExtractionResult } from './parsing.types.js';
 import { createPdfParser } from './pdf-parser.js';
 
@@ -21,7 +21,7 @@ function createParserDouble(format: DocumentFormat, mediaType: string): Document
     format,
     pageCount: null,
     pages: [],
-    paragraphs: [],
+    blocks: [],
     failures: [],
     parserVersion: `${format}-double`
   };
@@ -37,7 +37,11 @@ function createRepositoryDouble(): ParsingRepository {
         status: result.status,
         format: result.format,
         pageCount: result.pageCount,
-        content: { pages: result.pages, paragraphs: result.paragraphs },
+        content: {
+          version: EXTRACTION_CONTENT_VERSION,
+          pages: result.pages,
+          blocks: result.blocks
+        },
         failures: result.failures,
         parserVersion: result.parserVersion,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -150,6 +154,6 @@ describe('parsing service', () => {
     expect(pdf).toMatchObject({ status: 'succeeded', format: 'pdf', pageCount: 3 });
     expect(pdf.content.pages).toHaveLength(3);
     expect(docx).toMatchObject({ status: 'succeeded', format: 'docx', pageCount: null });
-    expect(docx.content.paragraphs[0]?.text).toBe('Sample Candidate');
+    expect(docx.content.blocks[0]).toMatchObject({ type: 'paragraph', text: 'Sample Candidate' });
   });
 });

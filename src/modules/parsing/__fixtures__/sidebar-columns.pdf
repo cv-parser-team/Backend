@@ -1,0 +1,52 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1053 >>
+stream
+BT /F1 14 Tf 40 740 Td (Contact) Tj ET
+BT /F1 11 Tf 40 723 Td (sample@example.com) Tj ET
+BT /F1 11 Tf 40 706 Td (+1 555 0100) Tj ET
+BT /F1 11 Tf 40 689 Td (Springfield) Tj ET
+BT /F1 14 Tf 40 672 Td (Skills) Tj ET
+BT /F1 11 Tf 40 655 Td (Node.js) Tj ET
+BT /F1 11 Tf 40 638 Td (PostgreSQL) Tj ET
+BT /F1 11 Tf 40 621 Td (Docker) Tj ET
+BT /F1 11 Tf 40 604 Td (Git) Tj ET
+BT /F1 18 Tf 220 745 Td (Sample Candidate) Tj ET
+BT /F1 11 Tf 220 730 Td (Backend Developer) Tj ET
+BT /F1 14 Tf 220 715 Td (Experience) Tj ET
+BT /F1 11 Tf 220 700 Td (Backend Developer at Example Corp) Tj ET
+BT /F1 11 Tf 220 685 Td (2021 - 2023) Tj ET
+BT /F1 11 Tf 220 670 Td (Built REST APIs for the payments team and) Tj ET
+BT /F1 11 Tf 220 655 Td (improved slow database queries.) Tj ET
+BT /F1 11 Tf 220 640 Td (Junior Developer at Sample Labs) Tj ET
+BT /F1 11 Tf 220 625 Td (2019 - 2021) Tj ET
+BT /F1 11 Tf 220 610 Td (Maintained internal tools and wrote tests.) Tj ET
+BT /F1 14 Tf 220 595 Td (Education) Tj ET
+BT /F1 11 Tf 220 580 Td (BSc Computer Science, Sample University) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1416
+%%EOF

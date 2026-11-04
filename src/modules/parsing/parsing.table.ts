@@ -11,11 +11,16 @@ import {
   uuid
 } from 'drizzle-orm/pg-core';
 import { documents } from '../documents/documents.table.js';
-import { ExtractionFailure, ParsedPage, ParsedParagraph } from './parsing.types.js';
+import { DocumentBlock, ExtractionFailure, ParsedPage } from './parsing.types.js';
+
+// Increase when the shape of `content` changes, so readers can tell stored
+// results of different shapes apart.
+export const EXTRACTION_CONTENT_VERSION = 3;
 
 export interface ExtractionContent {
+  version: number;
   pages: ParsedPage[];
-  paragraphs: ParsedParagraph[];
+  blocks: DocumentBlock[];
 }
 
 export const extractionStatus = pgEnum('extraction_status', [

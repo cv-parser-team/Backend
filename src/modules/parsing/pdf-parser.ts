@@ -2,19 +2,19 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
   getDocument,
+  OPS,
   PasswordException,
   VerbosityLevel,
   version
 } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type { TextItem } from 'pdfjs-dist/types/src/display/api.js';
+import type { PDFPageProxy, TextItem } from 'pdfjs-dist/types/src/display/api.js';
 import { hasTooMuchArabic, removeArabic } from './language.js';
+import { buildPages, PositionedPage, round, SPACED_LETTERS } from './layout.js';
 import {
   BoundingBox,
   DocumentParser,
   ExtractionFailure,
   ExtractionResult,
-  ParsedPage,
-  TextLine,
   TextPiece
 } from './parsing.types.js';
 
@@ -40,88 +40,213 @@ function multiply(m1: Matrix, m2: Matrix): Matrix {
   ];
 }
 
-function round(value: number): number {
-  return Math.round(value * 100) / 100;
+function toPagePoint(m: Matrix, x: number, y: number): [number, number] {
+  return [m[0]! * x + m[2]! * y + m[4]!, m[1]! * x + m[3]! * y + m[5]!];
 }
 
 function isTextItem(item: object): item is TextItem {
   return 'str' in item && 'transform' in item;
 }
 
-// Converts a text item from PDF space (bottom-left origin) to page space
-// (top-left origin) using the page viewport.
-function toPiece(item: TextItem, viewportTransform: Matrix): TextPiece {
-  const matrix = multiply(viewportTransform, item.transform);
-  const fontHeight = Math.hypot(matrix[2]!, matrix[3]!);
-  const height = item.height > 0 ? item.height : fontHeight;
+// Weight and slant words in font names, such as "Calibri-Bold", "Lato-Black",
+// or "Montserrat-MediumItalic".
+const BOLD_FONT_NAME = /bold|black|heavy|semibold|demibold/i;
+const ITALIC_FONT_NAME = /italic|oblique/i;
+// Short forms, such as "CenturyGothic-Bd", "Minion-BoldIt", or "MyriadPro-It",
+// are read only in the style after the last "-" or ",", so they never match
+// inside a family name.
+const BOLD_STYLE = /^(bd|blk|hvy?|semibd|xbd|extrabd)(it)?$/i;
+const ITALIC_STYLE = /(it|obl)$/i;
+
+interface FontStyle {
+  bold: boolean;
+  italic: boolean;
+}
+
+// Font names are only available after the page's operator list is loaded.
+// Fonts without a weight or slant in their name, or drawn bold or slanted by
+// other means, read as regular.
+function fontStyle(page: PDFPageProxy, fontName: string): FontStyle {
+  const font: unknown = page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
+  const name =
+    typeof font === 'object' && font !== null && 'name' in font && typeof font.name === 'string'
+      ? font.name
+      : '';
+  const separator = Math.max(name.lastIndexOf('-'), name.lastIndexOf(','));
+  const style = separator >= 0 ? name.slice(separator + 1) : '';
   return {
-    text: item.str,
-    box: {
-      x: round(matrix[4]!),
-      y: round(matrix[5]! - height),
-      width: round(item.width),
-      height: round(height)
-    }
+    bold: BOLD_FONT_NAME.test(name) || BOLD_STYLE.test(style),
+    italic: ITALIC_FONT_NAME.test(name) || ITALIC_STYLE.test(style)
   };
 }
 
-function unionBox(boxes: BoundingBox[]): BoundingBox {
-  const left = Math.min(...boxes.map((box) => box.x));
-  const top = Math.min(...boxes.map((box) => box.y));
-  const right = Math.max(...boxes.map((box) => box.x + box.width));
-  const bottom = Math.max(...boxes.map((box) => box.y + box.height));
-  return { x: round(left), y: round(top), width: round(right - left), height: round(bottom - top) };
+interface OperatorList {
+  fnArray: number[];
+  argsArray: unknown[];
 }
 
-function toLine(pieces: TextPiece[]): TextLine {
+// The page text in drawing order, glyph by glyph. Unlike text extraction, it
+// keeps the real spaces of text whose letters are spaced out.
+function drawnText(operators: OperatorList): string {
   let text = '';
-  pieces.forEach((piece, index) => {
-    const previous = pieces[index - 1];
-    if (previous) {
-      const gap = piece.box.x - (previous.box.x + previous.box.width);
-      const needsSpace = gap > piece.box.height * 0.15 && !text.endsWith(' ') && !piece.text.startsWith(' ');
-      text += needsSpace ? ' ' : '';
+  operators.fnArray.forEach((fn, index) => {
+    const args = operators.argsArray[index];
+    if (fn !== OPS.showText || !Array.isArray(args) || !Array.isArray(args[0])) {
+      return;
     }
-    text += piece.text;
-  });
-  return { text: text.trim(), box: unionBox(pieces.map((piece) => piece.box)), pieces };
-}
-
-// Pieces at the same height form a row. A wide horizontal gap splits a row
-// into separate lines, so columns side by side are not merged.
-function groupLines(pieces: TextPiece[]): TextLine[] {
-  const sorted = [...pieces].sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
-  const rows: TextPiece[][] = [];
-
-  for (const piece of sorted) {
-    const row = rows[rows.length - 1];
-    const anchor = row?.[0];
-    const sameRow =
-      anchor !== undefined &&
-      Math.abs(anchor.box.y + anchor.box.height / 2 - (piece.box.y + piece.box.height / 2)) <=
-        Math.min(anchor.box.height, piece.box.height) / 2;
-    if (row && sameRow) {
-      row.push(piece);
-    } else {
-      rows.push([piece]);
-    }
-  }
-
-  return rows.flatMap((row) => {
-    const ordered = row.sort((a, b) => a.box.x - b.box.x);
-    const lines: TextPiece[][] = [[ordered[0]!]];
-    for (const piece of ordered.slice(1)) {
-      const current = lines[lines.length - 1]!;
-      const previous = current[current.length - 1]!;
-      const gap = piece.box.x - (previous.box.x + previous.box.width);
-      if (gap > Math.max(previous.box.height, piece.box.height) * 2) {
-        lines.push([piece]);
-      } else {
-        current.push(piece);
+    for (const glyph of args[0] as unknown[]) {
+      if (typeof glyph === 'object' && glyph !== null && 'unicode' in glyph && typeof glyph.unicode === 'string') {
+        text += glyph.unicode;
       }
     }
-    return lines.map(toLine);
   });
+  return text;
+}
+
+// Shapes up to this size, in points, may be list bullets drawn as dots.
+const MAX_MARK_SIZE = 10;
+
+// Operator arguments come as plain or typed number arrays.
+function toNumbers(value: unknown, length: number): number[] | null {
+  if (typeof value !== 'object' || value === null || !('length' in value) || value.length !== length) {
+    return null;
+  }
+  const numbers = Array.from(value as ArrayLike<unknown>);
+  return numbers.every((item) => typeof item === 'number') ? (numbers as number[]) : null;
+}
+
+// Small drawn shapes in page space. Shapes are drawn in their own coordinates,
+// so the drawing transform is followed through saved and restored states and
+// embedded forms.
+function drawnMarks(operators: OperatorList, viewportTransform: Matrix): BoundingBox[] {
+  const marks: BoundingBox[] = [];
+  const saved: Matrix[] = [];
+  let transform: Matrix = [1, 0, 0, 1, 0, 0];
+
+  operators.fnArray.forEach((fn, index) => {
+    const args = operators.argsArray[index];
+    if (fn === OPS.save) {
+      saved.push(transform);
+    } else if (fn === OPS.restore || fn === OPS.paintFormXObjectEnd) {
+      transform = saved.pop() ?? transform;
+    } else if (fn === OPS.transform) {
+      const matrix = toNumbers(args, 6);
+      transform = matrix ? multiply(transform, matrix) : transform;
+    } else if (fn === OPS.paintFormXObjectBegin) {
+      saved.push(transform);
+      const formMatrix = toNumbers(Array.isArray(args) ? args[0] : null, 6);
+      transform = formMatrix ? multiply(transform, formMatrix) : transform;
+    } else if (fn === OPS.constructPath && Array.isArray(args)) {
+      const corners = toNumbers(args.at(-1), 4);
+      if (!corners) {
+        return;
+      }
+      const toPage = multiply(viewportTransform, transform);
+      const [left, top] = toPagePoint(toPage, corners[0]!, corners[1]!);
+      const [right, bottom] = toPagePoint(toPage, corners[2]!, corners[3]!);
+      const box = {
+        x: round(Math.min(left, right)),
+        y: round(Math.min(top, bottom)),
+        width: round(Math.abs(right - left)),
+        height: round(Math.abs(bottom - top))
+      };
+      if (box.width > 0 && box.height > 0 && box.width <= MAX_MARK_SIZE && box.height <= MAX_MARK_SIZE) {
+        marks.push(box);
+      }
+    }
+  });
+  return marks;
+}
+
+// Text extraction puts a space between every spaced-out letter, so
+// "ABOUT ME" reads "A B O U T M E". The drawn text has the same letters with
+// the real word breaks.
+function withDrawnSpacing(text: string, drawn: string): string {
+  if (!SPACED_LETTERS.test(text)) {
+    return text;
+  }
+  const letters = text.replaceAll(' ', '');
+  const positions: number[] = [];
+  let compact = '';
+  for (let index = 0; index < drawn.length; index++) {
+    if (drawn[index]!.trim() !== '') {
+      positions.push(index);
+      compact += drawn[index];
+    }
+  }
+  const start = compact.indexOf(letters);
+  if (start < 0) {
+    return text;
+  }
+  return drawn
+    .slice(positions[start], positions[start + letters.length - 1]! + 1)
+    .replace(/\s+/g, ' ');
+}
+
+interface PageLink {
+  url: string;
+  box: BoundingBox;
+}
+
+function isUrlLink(annotation: unknown): annotation is { url: string; rect: number[] } {
+  return (
+    typeof annotation === 'object' &&
+    annotation !== null &&
+    'subtype' in annotation &&
+    annotation.subtype === 'Link' &&
+    'url' in annotation &&
+    typeof annotation.url === 'string' &&
+    'rect' in annotation &&
+    Array.isArray(annotation.rect) &&
+    annotation.rect.length === 4
+  );
+}
+
+// Link targets are stored apart from the text, as clickable rectangles.
+async function readLinks(page: PDFPageProxy, viewportTransform: Matrix): Promise<PageLink[]> {
+  const annotations: unknown[] = await page.getAnnotations();
+  return annotations.filter(isUrlLink).map(({ url, rect }) => {
+    const [x1, y1, x2, y2] = rect.map(Number);
+    const [left, top] = toPagePoint(viewportTransform, x1!, y1!);
+    const [right, bottom] = toPagePoint(viewportTransform, x2!, y2!);
+    return {
+      url,
+      box: {
+        x: Math.min(left, right),
+        y: Math.min(top, bottom),
+        width: Math.abs(right - left),
+        height: Math.abs(bottom - top)
+      }
+    };
+  });
+}
+
+// A link belongs to a piece when its rectangle covers part of the piece's
+// width and most of its height.
+function linksOver(box: BoundingBox, links: PageLink[]): string[] {
+  return links
+    .filter((link) => {
+      const width = Math.min(box.x + box.width, link.box.x + link.box.width) - Math.max(box.x, link.box.x);
+      const height = Math.min(box.y + box.height, link.box.y + link.box.height) - Math.max(box.y, link.box.y);
+      return width > 0 && height >= Math.min(box.height, link.box.height) / 2;
+    })
+    .sort((a, b) => a.box.x - b.box.x)
+    .map((link) => link.url);
+}
+
+// Converts a text item from PDF space (bottom-left origin) to page space
+// (top-left origin) using the page viewport.
+function toPiece(item: TextItem, viewportTransform: Matrix, style: FontStyle, links: PageLink[]): TextPiece {
+  const matrix = multiply(viewportTransform, item.transform);
+  const fontHeight = Math.hypot(matrix[2]!, matrix[3]!);
+  const height = item.height > 0 ? item.height : fontHeight;
+  const box = {
+    x: round(matrix[4]!),
+    y: round(matrix[5]! - height),
+    width: round(item.width),
+    height: round(height)
+  };
+  return { text: item.str, box, ...style, links: linksOver(box, links) };
 }
 
 function failedResult(
@@ -133,7 +258,7 @@ function failedResult(
     format: 'pdf',
     pageCount,
     pages: [],
-    paragraphs: [],
+    blocks: [],
     failures: [{ pageNumber: null, code }],
     parserVersion
   };
@@ -148,6 +273,7 @@ export function createPdfParser(): DocumentParser {
       const task = getDocument({
         data: new Uint8Array(content),
         standardFontDataUrl,
+        fontExtraProperties: true,
         verbosity: VerbosityLevel.ERRORS
       });
 
@@ -166,7 +292,7 @@ export function createPdfParser(): DocumentParser {
           return failedResult('TOO_MANY_PAGES', pdf.numPages);
         }
 
-        const readPages: (Omit<ParsedPage, 'lines'> & { pieces: TextPiece[] })[] = [];
+        const readPages: PositionedPage[] = [];
         const failures: ExtractionFailure[] = [];
 
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
@@ -174,10 +300,16 @@ export function createPdfParser(): DocumentParser {
             const page = await pdf.getPage(pageNumber);
             const viewport = page.getViewport({ scale: 1 });
             const textContent = await page.getTextContent();
+            const operators = await page.getOperatorList();
+            const drawn = drawnText(operators);
+            const links = await readLinks(page, viewport.transform);
             const pieces = textContent.items
               .filter(isTextItem)
               .filter((item) => item.str.trim().length > 0)
-              .map((item) => toPiece(item, viewport.transform));
+              .map((item) => ({
+                ...toPiece(item, viewport.transform, fontStyle(page, item.fontName), links),
+                text: withDrawnSpacing(item.str, drawn)
+              }));
 
             if (pieces.length === 0) {
               failures.push({ pageNumber, code: 'NO_TEXT_LAYER' });
@@ -188,7 +320,8 @@ export function createPdfParser(): DocumentParser {
               pageNumber,
               width: round(viewport.width),
               height: round(viewport.height),
-              pieces
+              pieces,
+              marks: drawnMarks(operators, viewport.transform)
             });
           } catch {
             failures.push({ pageNumber, code: 'PAGE_UNREADABLE' });
@@ -200,26 +333,27 @@ export function createPdfParser(): DocumentParser {
           return failedResult('UNSUPPORTED_LANGUAGE', pdf.numPages);
         }
 
-        const pages: ParsedPage[] = [];
-        for (const { pieces, ...page } of readPages) {
-          const kept = pieces
+        const keptPages: PositionedPage[] = [];
+        for (const page of readPages) {
+          const pieces: TextPiece[] = page.pieces
             .map((piece) => ({ ...piece, text: removeArabic(piece.text) }))
             .filter((piece) => piece.text.trim().length > 0);
 
-          if (kept.length === 0) {
+          if (pieces.length === 0) {
             failures.push({ pageNumber: page.pageNumber, code: 'NO_TEXT_LAYER' });
             continue;
           }
-          pages.push({ ...page, lines: groupLines(kept) });
+          keptPages.push({ ...page, pieces });
         }
         failures.sort((a, b) => (a.pageNumber ?? 0) - (b.pageNumber ?? 0));
+        const pages = buildPages(keptPages);
 
         return {
           status: failures.length === 0 ? 'succeeded' : pages.length > 0 ? 'partial' : 'failed',
           format: 'pdf',
           pageCount: pdf.numPages,
           pages,
-          paragraphs: [],
+          blocks: [],
           failures,
           parserVersion
         };
