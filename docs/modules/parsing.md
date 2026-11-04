@@ -32,6 +32,24 @@ CV's layout from geometry; AI interprets the meaning of each region in Part 2.
 - Use `pdfjs-dist` for PDF. It returns text with page numbers and coordinates.
 - Group PDF text into lines. A wide horizontal gap splits a line, so
   side-by-side columns are not merged.
+- Read what the text extraction of `pdfjs-dist` leaves out from the page's
+  drawing instructions, which are already loaded for font names:
+  - **Bold and italic** come from font names, such as `Calibri-Bold` or
+    `Montserrat-MediumItalic`. Short forms, such as `CenturyGothic-Bd` or
+    `MyriadPro-It`, are read only in the style part after the last `-` or `,`,
+    so they never match inside a family name. Text drawn bold or slanted by
+    other means reads as regular.
+  - **Spaced-out letters**, such as a heading drawn as `A B O U T M E`, get
+    their real word breaks back from the drawn text: `ABOUT ME`.
+  - **List bullets drawn as shapes**, which many design tools and browsers use
+    instead of a `•` character, are found as small shapes just before a line.
+  - **Link targets** hidden behind text, such as "LinkedIn", come from the
+    page's link areas.
+- Text drawn twice at almost the same place, for a shadow or outline effect,
+  is kept once.
+- A line is a heading only when its font is larger than body text. Bold is
+  stored but never starts a section, because bold body-size lines are often
+  job titles or company names.
 - Group lines into layout regions with recursive region detection, described
   below. Regions are read in order, so the lines of one column are no longer
   interleaved with the lines of another.
@@ -170,6 +188,22 @@ table in one region:
 - A real column gutter runs through the whole region, while table gaps stop
   where the table ends.
 
+### Areas above columns
+
+A band of whitespace across the whole region can separate a full-width area,
+such as a header, from the columns below it. The area is read first only when
+it really is full width:
+
+- It crosses the gap between the columns, such as a centred name or a contact
+  line, or
+- it sits on one side of the gap only, such as a name above the main column
+  beside a photo.
+
+Text on both sides of the gap that does not cross it continues the columns,
+even when its lines share rows: a row of section headings, such as `CONTACT`
+above the sidebar and `ABOUT ME` above the main column, or two short sections
+side by side. Each part is read with the column below it.
+
 ### Multi-line text
 
 A job description that wraps over several lines must stay together.
@@ -178,14 +212,33 @@ A job description that wraps over several lines must stay together.
   normal line spacing, about twice the usual gap, so wrapped lines are never
   split into separate regions.
 - Wrapped lines stay separate in the stored result. They are joined only in
-  the AI input, and only when several signals agree, never because of one
-  signal alone:
-  - the gap between them is normal line spacing;
-  - they line up, or the second is indented under a bullet;
-  - the first line does not end with `.` or `:`;
-  - the second line does not start with a bullet, a date, or a heading.
-- A lowercase first letter can support a merge, but it is never enough on its
-  own.
+  the AI input, and only when every signal agrees. A missed join keeps two
+  lines apart; a wrong join would mix two facts, so joins are kept strict.
+- Two lines are always required to:
+  - be separated by normal line spacing;
+  - have the same size, bold, and italic style;
+  - not be headings;
+  - not end the first line with `.` or `:`;
+  - not start the second line with a bullet, a date, an email address, a
+    link, or a phone number.
+- On top of that, one of these must hold:
+  - **Wrapped text:** the lines line up, or the second is indented under a
+    bullet character; the next line's first word would not have fitted at the
+    end of the first line, measured by the width of its own column; and the
+    sentence visibly continues: the next line starts in lowercase or with an
+    opening bracket, or the first line ends with a comma or a joining word,
+    such as "and" or "with". Short items in a narrow sidebar, such as a phone
+    number above a city, never pass this check.
+  - **Rest of a list item:** the first line starts a list item, the second has
+    no bullet and lines up with the item's text, and another bullet sits
+    nearby in the same column. A lone dot, such as a timeline marker beside a
+    job title, is not a list, so the line under it is not joined.
+- A heading too long for one line, such as a name in large letters, is joined
+  with the next line when that line is a heading of the same size, right
+  below, and starts or is centred at the same place.
+- In a grid, such as a skills list in three columns, a wrapped cell continues
+  the cell above it in the same column, not the line before it in reading
+  order.
 
 ### When recursion stops
 
@@ -208,11 +261,13 @@ education, or skills is meaning, and AI handles it in Part 2.
 
 1. **Text extraction:** PDF and DOCX with page numbers and coordinates (done).
 2. **Region detection:** columns and full-width areas, with scored
-   boundaries.
-3. **Section boundaries:** headings and vertical gaps inside regions.
+   boundaries (done).
+3. **Section boundaries:** headings and vertical gaps inside regions (done).
 4. **AI input:** compact grouped text with line references, joining wrapped
-   lines.
-5. **Real-world testing:** 5 to 10 real CVs with different layouts.
+   lines (done).
+5. **Real-world testing:** done on the CVs listed under
+   [Testing approach](#testing-approach); CVs from the team, especially
+   two-column CVs made outside Canva, are still to come.
 
 ## Testing approach
 
@@ -245,9 +300,29 @@ How each part is tested:
   directly in the test, for example a line at `x = 50, y = 100`. No PDF is
   needed, so every layout is precise, fast, and easy to read, and the expected
   regions are exact.
-- **PDF tests** use two or three generated PDFs to confirm that reading a file
-  and detecting regions work together.
-- **Real CVs** from the team are checked manually and are not committed.
+- **PDF tests** use small generated PDFs to confirm that reading a file and
+  detecting regions work together: two columns, a sidebar, a header above
+  columns, a row of headings above a sidebar, hidden links, spaced-out
+  headings, bullets drawn as shapes, and font names with bold and italic
+  styles.
+- **Real CVs** are checked outside the repository and never committed. Each
+  change is compared before and after on all of them, and every changed
+  output is reviewed by eye.
+
+Real CVs used so far:
+
+| Set | What it covers |
+| --- | --- |
+| A team member's CV, PDF and DOCX | One column, hidden links, Arabic rejection |
+| Three Canva templates | Sidebars, rows of headings, spaced-out headings, drawn bullets, cards side by side |
+| 30 CVs from a public dataset, 3 from each of 10 fields | Real wording, tables, grids of skills, rendered from HTML to PDF |
+
+The dataset CVs come with their original HTML, which marks section titles and
+paragraphs. It serves as an answer key: every section title must be found as
+a heading, and every joined line must come from one HTML paragraph. Results
+on the 30 CVs: all 172 section titles found, all text kept, and every join
+correct after review. About 75 wrapped lines in total stay unjoined because
+nothing shows that the sentence continues.
 
 ## AI input
 
@@ -256,37 +331,51 @@ positions. AI receives a compact text built from it on demand, which is not
 stored:
 
 ```text
+[P1 R0]
+## L1-2 LORNA ALVARADO
+## L3 Sales Representative
 [P1 R1]
-L1 Sample Candidate
-L2 Backend Developer
-[P1 R2]
-## L3 Skills
-L4 Python, Node.js, Docker
-[P1 R3]
-## L5 Experience
-L6 Backend Developer · Example Corp · 2021 – 2023
-L7 • Built REST APIs with Node.js and PostgreSQL.
+## L4 CONTACT
+L5 123-456-7890
+L6 Links: LinkedIn · GitHub (links: https://www.linkedin.com/in/sample)
+[P1 R5]
+## L28 EXPERIENCE
+L29 *Product Designer*
+L30-31 _Arowwai Industries_ | 2016 - 2020
+L32-34 • Led the redesign of the booking flow with engineering and design, cutting drop-off by a third.
+L35 • Ran user interviews and usability tests.
+L39-41,44 • Client Acquisition | • Negotiation Skills | • Relationship Management
 ```
 
-- `[P1 R2]` marks page 1, region 2; `##` marks a heading.
+- `[P1 R5]` marks page 1, region 5. Regions are numbered from 0, as stored.
+- `##` marks a heading, `*text*` bold, `_text_` italic, and `•` the start of
+  a list item.
 - `L5` is the line's reading order: the stored line with `order = 5`. No
   separate map is needed. AI returns line references with each extracted value,
   and the system finds the line's original text, page, coordinates, and region
   in the stored result, so AI never writes coordinates.
-- When wrapped lines are joined, the reference covers all of them, for example
-  `L5-6`.
-- Coordinates and text pieces are left out, which cuts the tokens sent to AI
-  to roughly a quarter of the stored JSON.
-- DOCX paragraphs use the same format without page markers.
+- When lines are joined, the reference covers all of them: `L32-34` for lines
+  in a row, or `L39-41,44` when a wrapped cell of a grid continues further
+  down.
+- Cells on the same row are kept on one line, separated by `|`: a title and
+  its right-aligned date, table cells, a grid of skills, or two cards side by
+  side. The parser does not guess whether a grid is a table or separate
+  columns; AI reads the grid as it is drawn.
+- Link targets hidden behind text are listed after it; links already written
+  in the text are not repeated.
+- Coordinates and text pieces are left out. On a real CV, the AI text is about
+  a third of the stored JSON.
+- DOCX blocks use references starting with `B`: `B3` for block 3, and `B4.1`
+  for the first row of the table in block 4. DOCX has no pages, so there are
+  no page markers.
 - Each DOCX table row becomes one line with its cells separated by `|`, so the
   facts in a row stay together. When the table has column headings, they are
   listed first, so AI does not have to guess what each cell means:
 
 ```text
-Table 1
 Columns: Position | Company | Period
-L8 Developer | ABC Company | 2023 – 2025
-L9 Intern | XYZ Ltd | 2022 – 2023
+B4.1 Developer | ABC Company | 2023 – 2025
+B4.2 Intern | XYZ Ltd | 2022 – 2023
 ```
 
   A table without headings has no `Columns` line.
@@ -315,19 +404,21 @@ and verification module.
 - `status`: `succeeded`, `partial`, or `failed`
 - `format`: `pdf` or `docx`
 - `pageCount`: number of pages, or `null` for DOCX
-- `content.version`: the version of the content shape, starting at `2`, so code
-  can tell results of different shapes apart when the shape changes again
+- `content.version`: the version of the content shape, now `3`, so code can
+  tell results of different shapes apart when the shape changes again
 - `pages`: for each page, its number, width, height, and ordered regions; each
   region has its index, bounding box, split confidence, and lines; each line
-  has its text, bounding box, reading order, and whether it is a heading
+  has its text, bounding box, reading order, and whether it is a heading,
+  bold, italic, or the start of a list item, and its link targets
 - Reading order runs across the whole document, so each line's order is
   unique and serves as its AI reference.
 - Split confidence is the score of the boundary that created the region. It is
   `null` when the region was not created by a split, such as a page that stays
   whole.
-- `blocks`: for DOCX, ordered blocks; a paragraph block has its text, and a
-  table block has its column headings when present and its rows, each row a
-  list of cell texts
+- `blocks`: for DOCX, ordered blocks; a paragraph block has its text, whether
+  it is a heading, bold, or italic, and its link targets; a table block has
+  its column headings when present and its rows, each row a list of cell
+  texts
 - `failures`: failed page numbers with an error code
 - `parserVersion`: library name and version
 
@@ -386,13 +477,38 @@ sequenceDiagram
     Parser-->>Caller: Extraction result
 ```
 
+## Known limitations
+
+- **Cards side by side**, such as two references, are kept as a grid: one
+  line per row, with the cells separated by `|`. AI pairs each column. The
+  parser does not split them, because geometry cannot tell them apart from a
+  table such as `Skill | Level`, whose rows must stay together.
+- **Rows that happen to line up:** text on both sides of a gap counts as one
+  row when the centres of the lines are within half a line height. A dense
+  column beside a sparse one can then look like a table and stay one region.
+  This did not happen on the real CVs tested; comparing baselines more
+  strictly is a possible next step.
+- **A lone dot**, such as a timeline marker, marks the line beside it as a
+  list item (`•`), although it does not join lines.
+- **Unjoined wrapped lines** remain when nothing shows that the sentence
+  continues, for example a line ending in "a Full" followed by "Stack". AI
+  still reads both lines.
+- **Word breaks of spaced-out letters** are lost when the file does not keep
+  them; `A B O U T M E` then becomes `ABOUTME`.
+- **Bold and italic** come from font names only. Fonts without a weight or
+  slant in their names, or text made bold by drawing it twice, read as
+  regular.
+- **Scanned CVs** fail with `NO_TEXT_LAYER` until OCR is added. `layout.ts`
+  works on positioned text pieces, so OCR output can use it unchanged.
+- **Arabic** is not supported yet.
+
 ## Open questions
 
-- Which real CVs do we test with? Region detection needs 5 to 10 real CVs with
-  different layouts (one column, sidebar, two or three columns, tables).
+- More real CVs from the team are needed, especially two-column CVs made
+  outside Canva and multi-page CVs.
 - Is leaving job-entry splitting to AI acceptable?
-- Are the starting weights and thresholds for the confidence score acceptable?
-  They are tuned on real CVs.
+- The starting weights and thresholds for the confidence score were not
+  changed after testing on real CVs. They stay in `LAYOUT_SETTINGS`.
 
 ## Implementation
 
@@ -406,18 +522,30 @@ sequenceDiagram
 - [x] Share `parsingService` with other modules.
 - [x] Update the data model documentation.
 - [x] Review the layout detection plan with the team.
-- [ ] Move line building from `pdf-parser.ts` to `layout.ts` without changing
+- [x] Move line building from `pdf-parser.ts` to `layout.ts` without changing
   its behavior; existing tests must still pass.
-- [ ] Add fixtures and expected regions for the eight test layouts.
-- [ ] Add checks that no line is lost, duplicated, or placed in the wrong region.
-- [ ] Add regions, reading order, split confidence, and `content.version` to
+- [x] Add fixtures and expected regions for the eight test layouts.
+- [x] Add checks that no line is lost, duplicated, or placed in the wrong region.
+- [x] Add regions, reading order, split confidence, and `content.version` to
   the output types, and stop storing text pieces.
-- [ ] Add recursive region detection for columns and full-width areas, with
+- [x] Add recursive region detection for columns and full-width areas, with
   boundaries scored from combined signals.
-- [ ] Make the reading direction a parameter.
-- [ ] Add section boundaries from headings and vertical gaps.
-- [ ] Keep DOCX headings, table rows, and cells by reading mammoth's HTML.
-- [ ] Add the compact AI input with line references, joining wrapped lines.
+- [x] Make the reading direction a parameter.
+- [x] Add section boundaries from headings and vertical gaps.
+- [x] Keep DOCX headings, table rows, and cells by reading mammoth's HTML.
+- [x] Add the compact AI input with line references, joining wrapped lines.
+- [x] Read hidden link targets from PDF link areas.
+- [x] Keep rows of section headings and side-by-side sections with the columns
+  below them.
+- [x] Read bold and italic from font names, including short forms.
+- [x] Restore word breaks of spaced-out letters and keep one copy of text drawn
+  twice.
+- [x] Find list bullets drawn as shapes and join the rest of a list item.
+- [x] Keep cells of one row on one AI input line and continue wrapped cells in
+  their own column.
+- [ ] Before committing, regenerate the `document_extractions` migration on top
+  of the latest `Main`: another branch also adds a migration numbered `0004`.
+- [ ] Update the open pull request with this work.
 
 ## Verification
 
@@ -430,17 +558,20 @@ sequenceDiagram
 - [x] Test that partial results keep successful pages.
 - [x] Test saving, reading, and deleting an extraction with the documents API.
 - [x] Run focused tests, `npm test`, and `npm run build`.
-- [ ] Test that two- and three-column CVs are read one column at a time.
-- [ ] Test that a full-width header stays above the columns.
-- [ ] Test that right-aligned dates stay with their entries.
-- [ ] Test that a column of short skills beside long sentences is split
+- [x] Test that two- and three-column CVs are read one column at a time.
+- [x] Test that a full-width header stays above the columns.
+- [x] Test that a row of headings and side-by-side sections stay with the
+  columns below them.
+- [x] Test that right-aligned dates stay with their entries.
+- [x] Test that a column of short skills beside long sentences is split
   correctly, and that a low-confidence boundary keeps the region intact.
-- [ ] Test that PDF tables stay in one region, including cells that span
+- [x] Test that PDF tables stay in one region, including cells that span
   several lines.
-- [ ] Test that DOCX tables keep their column headings, rows, and cells.
-- [ ] Test that nested splits keep earlier splits intact.
-- [ ] Test that multi-line job descriptions stay together.
-- [ ] Test that no line is lost or duplicated in every layout.
-- [ ] Test the compact AI input and its line references.
-- [ ] Test with real CVs of different layouts.
+- [x] Test that DOCX tables keep their column headings, rows, and cells.
+- [x] Test that nested splits keep earlier splits intact.
+- [x] Test that multi-line job descriptions stay together.
+- [x] Test that no line is lost or duplicated in every layout.
+- [x] Test the compact AI input and its line references.
+- [x] Test with real CVs of different layouts.
+- [ ] Test with more real CVs from the team.
 - [ ] Have another team member test and review the code.

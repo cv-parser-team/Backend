@@ -338,9 +338,9 @@ Owned by the `parsing` module and defined in
 [Document parsing](../modules/parsing.md) for the design.
 
 `document_extractions` stores the text extracted from one source document.
-PDF results keep pages, lines, and on-page coordinates; DOCX results keep
-ordered paragraphs. Parsing a document again replaces its row. Deleting a
-document deletes its extraction.
+PDF results keep pages, layout regions, lines, and on-page coordinates; DOCX
+results keep ordered paragraph and table blocks. Parsing a document again
+replaces its row. Deleting a document deletes its extraction.
 
 ```mermaid
 erDiagram
@@ -365,7 +365,7 @@ erDiagram
 | `status` | `extraction_status` | Required | Whether every page, some pages, or nothing was extracted |
 | `format` | `document_format` | Required | Parsed file format |
 | `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
-| `content` | JSONB | Required | `{ pages, paragraphs }`: PDF lines with coordinates, or DOCX paragraphs |
+| `content` | JSONB | Required | `{ version, pages, blocks }`, described below |
 | `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code, such as `NO_TEXT_LAYER` or `UNSUPPORTED_LANGUAGE` |
 | `parser_version` | Text | Required | Library and version that produced the result |
 | `created_at` | Timestamp with time zone | Required, generated | First extraction time |
@@ -375,6 +375,24 @@ erDiagram
 
 - `extraction_status`: `succeeded`, `partial`, `failed`
 - `document_format`: `pdf`, `docx`
+
+### Content shape
+
+`content.version` is `3`. Code that reads `content` checks the version, so
+results saved in an older shape can be told apart.
+
+- `pages` (PDF; empty for DOCX): each page has `pageNumber`, `width`,
+  `height`, and ordered `regions`.
+  - A region has `index` (from 0), `box`, `confidence` (the score of the split
+    that created it, or `null` when not split), and ordered `lines`.
+  - A line has `order` (reading order across the whole document, unique, from
+    1), `text`, `box`, `heading`, `bold`, `italic`, `bullet`, and `links`.
+  - A `box` is `{ x, y, width, height }` in PDF points from the page's
+    top-left corner.
+- `blocks` (DOCX; empty for PDF): ordered blocks with an `index`.
+  - A paragraph has `text`, `heading`, `bold`, `italic`, and `links`.
+  - A table has `columns` (the header row when Word marks one, else `null`)
+    and `rows`, each a list of cell texts.
 
 ## Maintenance rules
 
