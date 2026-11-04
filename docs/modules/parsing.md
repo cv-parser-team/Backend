@@ -271,6 +271,21 @@ education, or skills is meaning, and AI handles it in Part 2.
 
 ## Testing approach
 
+For quick manual inspection, run the interactive inspector:
+
+```bash
+npm run parsing:inspect
+```
+
+Paste or drag a PDF/DOCX path into the prompt. The command writes a
+`<document>.parsing.html` report beside the selected file with extraction
+failures, positioned PDF regions and lines or DOCX blocks, AI input, and raw
+JSON. A path and optional report destination can also be passed directly:
+
+```bash
+npm run parsing:inspect -- path/to/resume.pdf /tmp/resume-parsing.html
+```
+
 Fixtures and expected results are written before the algorithm, so "correct"
 is defined first. A correct split is not enough; every test checks that no
 information is lost or misplaced:
