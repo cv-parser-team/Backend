@@ -121,7 +121,11 @@ stays in one region. This makes the parser safer than aggressive splitting.
 5. **Collect contained text.** Every line inside a region's rectangle belongs
    to that region, whatever its alignment.
 6. **Repeat recursively** on each new region while confident boundaries exist.
-7. **Order the result:** regions top to bottom; side-by-side regions in the
+7. **Restore section ownership.** When recursive splitting leaves a confirmed
+   section heading alone above child regions in the same horizontal lane,
+   combine them and recompute the section's union box. A document title does
+   not own sections, and a new section boundary or earlier lane ends ownership.
+8. **Order the result:** regions top to bottom; side-by-side regions in the
    reading direction, each read completely before the next.
 
 ### Boundary signals

@@ -1,4 +1,14 @@
 import { BoundingBox, ParsedPage, Region, TextLine, TextPiece } from './parsing.types.js';
+import {
+  HEADING_SETTINGS,
+  scoreHeading,
+  type HeadingScore
+} from './heading-classifier.js';
+import {
+  headingLayoutAction,
+  type HeadingClassification,
+  type HeadingLayoutAction
+} from './heading-layout-policy.js';
 
 // Layout works on text pieces with page coordinates and knows nothing about
 // the file format, so any source of positioned text can use it.
@@ -12,7 +22,7 @@ export interface PositionedPage {
   marks: BoundingBox[];
 }
 
-type LineDraft = Omit<TextLine, 'order'>;
+type LineDraft = Omit<TextLine, 'order'> & { layoutAction: HeadingLayoutAction };
 
 // A bullet character or a list number at the start of a line.
 export const BULLET = /^([•●▪◦‣∙·*\-–—]|\d+[.)])\s/;
@@ -52,6 +62,7 @@ function toLine(pieces: TextPiece[]): LineDraft {
     text: text.trim(),
     box: unionBox(pieces.map((piece) => piece.box)),
     heading: false,
+    layoutAction: 'none',
     bold: styledLength('bold') * 2 > text.length,
     italic: styledLength('italic') * 2 > text.length,
     bullet: BULLET.test(text.trim()),
@@ -397,7 +408,11 @@ function findFullWidthSplit(lines: LineDraft[], usualGap: number): Split | null 
 // A band followed by a heading starts a new section. Bold body-size lines do
 // not, because they can be job titles or company names inside a section.
 function findSectionSplit(lines: LineDraft[], usualGap: number): Split | null {
-  return findBandSplit(lines, usualGap, (_parts, firstBelow) => firstBelow.heading);
+  return findBandSplit(
+    lines,
+    usualGap,
+    (_parts, firstBelow) => firstBelow.layoutAction === 'section-boundary'
+  );
 }
 
 // Splits a region recursively: full-width areas first, then columns, then
@@ -427,12 +442,174 @@ function splitRegion(
   return [{ lines: [...lines].sort(byReadingPosition), confidence }];
 }
 
-// A heading is not a list item, even when a small part of an icon sits
-// before it.
-function markHeadings(lines: LineDraft[], usualHeight: number): LineDraft[] {
-  return lines.map((line) => {
-    const heading = line.box.height >= usualHeight * LAYOUT_SETTINGS.headingHeightRatio;
-    return { ...line, heading, bullet: line.bullet && !heading };
+function startsWithSectionBoundary(region: RegionDraft): boolean {
+  return region.lines[0]?.layoutAction === 'section-boundary';
+}
+
+function isStandaloneSectionBoundary(region: RegionDraft): boolean {
+  return (
+    region.lines.length > 0 &&
+    region.lines.every((line) => line.layoutAction === 'section-boundary')
+  );
+}
+
+function leftEdge(region: RegionDraft): number {
+  return Math.min(...region.lines.map((line) => line.box.x));
+}
+
+// A full-width section heading can be separated from columns below it during
+// recursive splitting. Reattach those flat child regions after layout so the
+// stored section box encloses its contents. Ownership remains conservative:
+// another section boundary or a region starting in an earlier lane ends it.
+function applySectionOwnership(regions: RegionDraft[], usualHeight: number): RegionDraft[] {
+  const owned: RegionDraft[] = [];
+  for (let index = 0; index < regions.length; ) {
+    const owner = regions[index]!;
+    if (!isStandaloneSectionBoundary(owner)) {
+      owned.push(owner);
+      index++;
+      continue;
+    }
+
+    const ownerLeft = leftEdge(owner);
+    const children: RegionDraft[] = [];
+    let childIndex = index + 1;
+    while (childIndex < regions.length) {
+      const candidate = regions[childIndex]!;
+      if (
+        startsWithSectionBoundary(candidate) ||
+        leftEdge(candidate) < ownerLeft - Math.max(usualHeight, LAYOUT_SETTINGS.alignmentTolerance)
+      ) {
+        break;
+      }
+      children.push(candidate);
+      childIndex++;
+    }
+
+    if (children.length === 0) {
+      owned.push(owner);
+      index++;
+      continue;
+    }
+
+    const confidenceValues = [owner, ...children]
+      .map((region) => region.confidence)
+      .filter((confidence): confidence is number => confidence !== null);
+    owned.push({
+      lines: [owner, ...children].flatMap((region) => region.lines),
+      confidence: confidenceValues.length > 0 ? Math.min(...confidenceValues) : null
+    });
+    index = childIndex;
+  }
+  return owned;
+}
+
+function horizontallyRelated(first: LineDraft, second: LineDraft): boolean {
+  return (
+    first.box.x <= right(second.box) &&
+    second.box.x <= right(first.box)
+  );
+}
+
+function hasWhitespaceAbove(
+  line: LineDraft,
+  lines: LineDraft[],
+  usualGap: number
+): boolean {
+  const previousBottom = Math.max(
+    ...lines
+      .filter(
+        (candidate) =>
+          candidate !== line &&
+          candidate.box.y + candidate.box.height <= line.box.y &&
+          horizontallyRelated(candidate, line)
+      )
+      .map((candidate) => candidate.box.y + candidate.box.height),
+    Number.NEGATIVE_INFINITY
+  );
+  return (
+    Number.isFinite(previousBottom) &&
+    line.box.y - previousBottom >= usualGap * LAYOUT_SETTINGS.sectionGapRatio
+  );
+}
+
+function sameHeadingStyle(first: LineDraft, second: LineDraft): boolean {
+  return (
+    first.bold === second.bold &&
+    Math.abs(first.box.height - second.box.height) <=
+      Math.min(first.box.height, second.box.height) * 0.05
+  );
+}
+
+function hasIndependentSupport(score: HeadingScore): boolean {
+  return score.signals.commonSection || score.signals.largerThanBody || score.signals.bold;
+}
+
+function titleClassification(
+  line: LineDraft,
+  lines: LineDraft[],
+  usualHeight: number,
+  pageIndex: number,
+  pageHeight: number
+): HeadingClassification | null {
+  const titleAreaBottom = pageHeight * 0.2;
+  if (
+    pageIndex !== 0 ||
+    line.box.y > titleAreaBottom ||
+    line.box.height < usualHeight * 1.5
+  ) {
+    return null;
+  }
+  const topLines = lines.filter((candidate) => candidate.box.y <= titleAreaBottom);
+  const largestHeight = Math.max(...topLines.map((candidate) => candidate.box.height));
+  return line.box.height >= largestHeight * 0.9
+    ? { role: 'document-title', confidence: 0.9 }
+    : null;
+}
+
+// Classifies headings in two scoring passes. The first pass finds independently
+// strong lines; the second may use another such line as repeated-style evidence.
+// Only roles authorized by the layout policy set the persisted heading boolean.
+function markHeadings(
+  lines: LineDraft[],
+  usualHeight: number,
+  usualGap: number,
+  pageIndex: number,
+  pageHeight: number
+): LineDraft[] {
+  const baseScores = lines.map((line) =>
+    scoreHeading({
+      text: line.text,
+      height: line.box.height,
+      localBodyHeight: usualHeight,
+      bold: line.bold,
+      bullet: line.bullet && BULLET.test(line.text),
+      whitespaceAbove: hasWhitespaceAbove(line, lines, usualGap)
+    })
+  );
+
+  return lines.map((line, index) => {
+    const repeatedStyle = lines.some(
+      (candidate, candidateIndex) =>
+        candidateIndex !== index &&
+        sameHeadingStyle(line, candidate) &&
+        baseScores[candidateIndex]!.confidence >= HEADING_SETTINGS.candidateThreshold &&
+        hasIndependentSupport(baseScores[candidateIndex]!)
+    );
+    const score = scoreHeading({
+      text: line.text,
+      height: line.box.height,
+      localBodyHeight: usualHeight,
+      bold: line.bold,
+      bullet: line.bullet && BULLET.test(line.text),
+      whitespaceAbove: hasWhitespaceAbove(line, lines, usualGap),
+      repeatedStyle
+    });
+    const classification =
+      titleClassification(line, lines, usualHeight, pageIndex, pageHeight) ?? score;
+    const layoutAction = headingLayoutAction(classification);
+    const heading = layoutAction !== 'none';
+    return { ...line, heading, layoutAction, bullet: line.bullet && !heading };
   });
 }
 
@@ -448,13 +625,23 @@ export function buildPages(pages: PositionedPage[]): ParsedPage[] {
   let order = 0;
 
   return pages.map(({ pieces: _pieces, marks: _marks, ...page }, pageIndex) => {
-    const lines = markHeadings(pageLines[pageIndex]!, usualHeight);
-    const regions: Region[] = splitRegion(lines, null, usualGap).map(
+    const lines = markHeadings(
+      pageLines[pageIndex]!,
+      usualHeight,
+      usualGap,
+      pageIndex,
+      page.height
+    );
+    const drafts = applySectionOwnership(splitRegion(lines, null, usualGap), usualHeight);
+    const regions: Region[] = drafts.map(
       (draft, index) => ({
         index,
         box: unionBox(draft.lines.map((line) => line.box)),
         confidence: draft.confidence === null ? null : round(draft.confidence),
-        lines: draft.lines.map((line) => ({ order: ++order, ...line }))
+        lines: draft.lines.map(({ layoutAction: _layoutAction, ...line }) => ({
+          order: ++order,
+          ...line
+        }))
       })
     );
     return { ...page, regions };

@@ -349,6 +349,34 @@ describe('headings and sections', () => {
     expect(page.regions[0]!.lines.every((line) => !line.heading)).toBe(true);
   });
 
+  it('gives layout authority only to confirmed section headings', () => {
+    const page = layout([
+      piece('Skills', 72, 80, 18),
+      piece('People skills', 72, 110, 14),
+      piece('Teamwork', 72, 128, 14),
+      piece('Education', 72, 180, 18),
+      piece('University of Farland', 72, 210, 14),
+      piece('GPA: 3.7', 72, 228, 14),
+      ...lines(['Additional body text', 'More body text'], 246)
+    ]);
+
+    expect(
+      page.regions.flatMap((region) =>
+        region.lines.filter((line) => line.heading).map((line) => line.text)
+      )
+    ).toEqual(['Skills', 'Education']);
+  });
+
+  it('keeps a large two-line name as a document title', () => {
+    const page = layout([
+      piece('Divya', 72, 40, 30),
+      piece('Gupta', 72, 75, 30),
+      ...lines(['Copywriter', 'sample@example.com', 'Professional summary text'], 120)
+    ]);
+
+    expect(page.regions[0]!.lines.slice(0, 2).map((line) => line.heading)).toEqual([true, true]);
+  });
+
   it('keeps a multi-line description together', () => {
     const description = [
       'Built REST APIs and background services for the shipping',
@@ -358,6 +386,45 @@ describe('headings and sections', () => {
     expectRegions(layout([piece('Experience', 72, 80, 14), ...lines(description, 100)]), [
       ['Experience', ...description]
     ]);
+  });
+
+  it('reattaches columns below a standalone section heading', () => {
+    const page = layout([
+      piece('Work Experience', 218, 200, 24),
+      ...column(218, 250, ['Copywriter', 'Landford Publications', 'Remote', '2020 - Present'], 18),
+      ...column(
+        410,
+        260,
+        [
+          'Created website copy',
+          'for product pages',
+          'Edited social posts',
+          'for three platforms',
+          'Researched topics',
+          'with the content team'
+        ],
+        15
+      ),
+      piece('References available on request', 40, 500)
+    ]);
+
+    expectRegions(page, [
+      [
+        'Work Experience',
+        'Copywriter',
+        'Landford Publications',
+        'Remote',
+        '2020 - Present',
+        'Created website copy',
+        'for product pages',
+        'Edited social posts',
+        'for three platforms',
+        'Researched topics',
+        'with the content team'
+      ],
+      ['References available on request']
+    ]);
+    expect(page.regions[0]!.box).toEqual({ x: 218, y: 200, width: 318, height: 147 });
   });
 
   it('marks a line bold when most of its characters are bold', () => {
