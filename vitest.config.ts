@@ -15,7 +15,8 @@ export default defineConfig({
       JWT_ISSUER: 'luminacv-test',
       JWT_AUDIENCE: 'luminacv-test-api',
       DOCUMENT_STORAGE_ROOT: '.data/test-documents',
-      DOCUMENT_MAX_UPLOAD_BYTES: '10485760'
+      DOCUMENT_MAX_UPLOAD_BYTES: '10485760',
+      DOCUMENT_MAX_UPLOAD_FILES: '5'
     }
   }
 });

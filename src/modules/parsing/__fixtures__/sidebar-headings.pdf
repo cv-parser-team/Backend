@@ -1,0 +1,48 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 863 >>
+stream
+BT /F1 20 Tf 220 740 Td (Sample Candidate) Tj ET
+BT /F1 11 Tf 220 716 Td (Backend Developer) Tj ET
+BT /F1 14 Tf 40 660 Td (Contact) Tj ET
+BT /F1 14 Tf 220 660 Td (About Me) Tj ET
+BT /F1 11 Tf 40 626 Td (+1 555 0100) Tj ET
+BT /F1 11 Tf 40 600 Td (sample@example.com) Tj ET
+BT /F1 11 Tf 40 574 Td (Springfield) Tj ET
+BT /F1 14 Tf 40 548 Td (Skills) Tj ET
+BT /F1 11 Tf 40 522 Td (Node.js) Tj ET
+BT /F1 11 Tf 40 496 Td (Docker) Tj ET
+BT /F1 11 Tf 220 632 Td (Backend developer with five years of experience) Tj ET
+BT /F1 11 Tf 220 618 Td (building REST APIs and services for logistics) Tj ET
+BT /F1 11 Tf 220 604 Td (and retail companies.) Tj ET
+BT /F1 14 Tf 220 590 Td (Experience) Tj ET
+BT /F1 11 Tf 220 576 Td (Backend Developer at Example Corp) Tj ET
+BT /F1 11 Tf 220 562 Td (2021 - 2023) Tj ET
+BT /F1 11 Tf 220 548 Td (Built tracking and billing services.) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1225
+%%EOF

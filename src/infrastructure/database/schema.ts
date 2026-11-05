@@ -3,4 +3,5 @@
 export * from '../../modules/auth/auth.table.js';
 export * from '../../modules/candidates/candidates.table.js';
 export * from '../../modules/documents/documents.table.js';
+export * from '../../modules/parsing/parsing.table.js';
 export * from '../../modules/users/users.table.js';

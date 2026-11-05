@@ -102,10 +102,23 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    DOCUMENT_EXTRACTIONS {
+        uuid extraction_id PK
+        uuid document_id FK, UK
+        extraction_status status
+        document_format format
+        integer page_count "nullable"
+        jsonb content
+        jsonb failures
+        text parser_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
     USERS ||--o| CANDIDATES : "has profile"
     USERS ||--o{ DOCUMENTS : owns
+    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
     CLAIMS ||--o| EMPLOYMENT_DETAILS : "type employment"
@@ -317,6 +330,69 @@ features and are intentionally not part of the current schema:
 - `source_occurrences`, which links extracted claims to their source document
   and location, arrives with document upload and parsing. Exported claims
   already include an empty `sources` array for these references.
+
+## Document extractions
+
+Owned by the `parsing` module and defined in
+`src/modules/parsing/parsing.table.ts`. See
+[Document parsing](../modules/parsing.md) for the design.
+
+`document_extractions` stores the text extracted from one source document.
+PDF results keep pages, layout regions, lines, and on-page coordinates; DOCX
+results keep ordered paragraph and table blocks. Parsing a document again
+replaces its row. Deleting a document deletes its extraction.
+
+```mermaid
+erDiagram
+    DOCUMENT_EXTRACTIONS {
+        uuid extraction_id PK
+        uuid document_id FK, UK
+        extraction_status status
+        document_format format
+        integer page_count "nullable"
+        jsonb content
+        jsonb failures
+        text parser_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+```
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `extraction_id` | UUID | Primary key, generated | Stable extraction identifier |
+| `document_id` | UUID | Required, unique, document FK, cascade delete | Parsed document |
+| `status` | `extraction_status` | Required | Whether every page, some pages, or nothing was extracted |
+| `format` | `document_format` | Required | Parsed file format |
+| `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
+| `content` | JSONB | Required | `{ version, pages, blocks }`, described below |
+| `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code, such as `NO_TEXT_LAYER` or `UNSUPPORTED_LANGUAGE` |
+| `parser_version` | Text | Required | Library and version that produced the result |
+| `created_at` | Timestamp with time zone | Required, generated | First extraction time |
+| `updated_at` | Timestamp with time zone | Required, generated | Latest extraction time |
+
+### Enumerations
+
+- `extraction_status`: `succeeded`, `partial`, `failed`
+- `document_format`: `pdf`, `docx`
+
+### Content shape
+
+`content.version` is `3`. Code that reads `content` checks the version, so
+results saved in an older shape can be told apart.
+
+- `pages` (PDF; empty for DOCX): each page has `pageNumber`, `width`,
+  `height`, and ordered `regions`.
+  - A region has `index` (from 0), `box`, `confidence` (the score of the split
+    that created it, or `null` when not split), and ordered `lines`.
+  - A line has `order` (reading order across the whole document, unique, from
+    1), `text`, `box`, `heading`, `bold`, `italic`, `bullet`, and `links`.
+  - A `box` is `{ x, y, width, height }` in PDF points from the page's
+    top-left corner.
+- `blocks` (DOCX; empty for PDF): ordered blocks with an `index`.
+  - A paragraph has `text`, `heading`, `bold`, `italic`, and `links`.
+  - A table has `columns` (the header row when Word marks one, else `null`)
+    and `rows`, each a list of cell texts.
 
 ## Maintenance rules
 

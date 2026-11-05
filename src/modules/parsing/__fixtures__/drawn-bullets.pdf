@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 6 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 460 >>
+stream
+BT /F1 11 Tf 72 730 Td (KEY SKILLS) Tj ET
+q 1 0 0 1 80 702 cm 0 0 4 4 re f Q
+BT /F1 11 Tf 90 700 Td (Client Acquisition) Tj ET
+/Fm1 Do
+BT /F1 11 Tf 300 700 Td (Relationship) Tj ET
+q 1 0 0 1 80 686 cm 0 0 4 4 re f Q
+BT /F1 11 Tf 90 684 Td (B2B Sales) Tj ET
+BT /F1 11 Tf 300 684 Td (Management) Tj ET
+q 1 0 0 1 80 670 cm 0 0 4 4 re f Q
+BT /F1 11 Tf 90 668 Td (Negotiation) Tj ET
+q 1 0 0 1 290 670 cm 0 0 4 4 re f Q
+BT /F1 11 Tf 300 668 Td (Market Analysis) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /XObject /Subtype /Form /BBox [0 0 4 4] /Matrix [1 0 0 1 290 702] /Length 12 >>
+stream
+0 0 4 4 re f
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000267 00000 n 
+0000000337 00000 n 
+0000000848 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+982
+%%EOF

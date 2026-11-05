@@ -10,6 +10,7 @@ import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.j
 import { authModule } from './modules/auth/index.js';
 import { candidatesModule } from './modules/candidates/index.js';
 import { documentsModule } from './modules/documents/index.js';
+import { parsingModule } from './modules/parsing/index.js';
 import { usersModule } from './modules/users/index.js';
 
 export interface CreateAppOptions {
@@ -60,6 +61,7 @@ export async function createApp(
   await app.register(candidatesModule, {
     prefix: '/api/candidates'
   });
+  await app.register(parsingModule);
 
   return app;
 }

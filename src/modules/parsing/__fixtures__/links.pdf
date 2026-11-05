@@ -1,0 +1,47 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R /Annots [6 0 R 7 0 R 8 0 R] >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 190 >>
+stream
+BT /F1 18 Tf 72 720 Td (Sample Candidate) Tj ET
+BT /F1 11 Tf 72 696 Td (Email: sample@example.com) Tj ET
+BT /F1 11 Tf 72 680 Td (Links: LinkedIn) Tj ET
+BT /F1 11 Tf 160 680 Td (GitHub) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Link /Rect [70 694 210 707] /Border [0 0 0] /A << /S /URI /URI (mailto:sample@example.com) >> >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Link /Rect [104 678 148 691] /Border [0 0 0] /A << /S /URI /URI (https://www.linkedin.com/in/sample) >> >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [158 678 196 691] /Border [0 0 0] /A << /S /URI /URI (https://github.com/sample) >> >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000269 00000 n 
+0000000339 00000 n 
+0000000580 00000 n 
+0000000718 00000 n 
+0000000866 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1005
+%%EOF
