@@ -49,6 +49,16 @@ describe('heading scoring', () => {
     expect(score('Bachelor of Education').signals.commonSection).toBe(false);
   });
 
+  it('increases repeated-style evidence per match up to a cap', () => {
+    const options = { bold: true } as const;
+
+    expect(score('Custom Heading', options).confidence).toBe(0.3);
+    expect(score('Custom Heading', { ...options, repeatedStyleMatches: 1 }).confidence).toBe(0.45);
+    expect(score('Custom Heading', { ...options, repeatedStyleMatches: 2 }).confidence).toBe(0.6);
+    expect(score('Custom Heading', { ...options, repeatedStyleMatches: 3 }).confidence).toBe(0.65);
+    expect(score('Custom Heading', { ...options, repeatedStyleMatches: 10 }).confidence).toBe(0.65);
+  });
+
   it.each([
     'Sep 2020 - Present',
     'divya@example.com',

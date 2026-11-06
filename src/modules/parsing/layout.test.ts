@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPages } from './layout.js';
+import { buildPages, reconstructLines } from './layout.js';
 import { ParsedPage, TextPiece } from './parsing.types.js';
 
 // Each layout is written as positioned text pieces, so the expected regions
@@ -14,7 +14,9 @@ function column(x: number, startY: number, texts: string[], step = 20): TextPiec
 }
 
 function layout(pieces: TextPiece[]): ParsedPage {
-  return buildPages([{ pageNumber: 1, width: 612, height: 792, pieces, marks: [] }])[0]!;
+  return buildPages([
+    { pageNumber: 1, width: 612, height: 792, pieces, marks: [], separators: [] }
+  ])[0]!;
 }
 
 // Checks that no line is lost or duplicated and that every line sits in its
@@ -27,6 +29,72 @@ function expectRegions(page: ParsedPage, expected: string[][]): void {
   expect([...actualLines].sort(), 'no line lost or duplicated').toEqual([...expectedLines].sort());
   expect(actual, 'every line in its expected region').toEqual(expected);
 }
+
+describe('visual line reconstruction', () => {
+  it('merges PDF fragments and retains aggregate style and links without layout authority', () => {
+    const first = {
+      ...piece('Built', 100, 100, 10, true),
+      links: ['https://example.com/profile']
+    };
+    const second = { ...piece('tools', 128, 100, 10, true), italic: true };
+
+    const lines = reconstructLines([first, second], []);
+
+    expect(lines).toEqual([{
+      text: 'Built tools',
+      box: { x: 100, y: 100, width: 53, height: 10 },
+      bold: true,
+      italic: false,
+      bullet: false,
+      links: ['https://example.com/profile']
+    }]);
+    expect(lines[0]).not.toHaveProperty('heading');
+    expect(lines[0]).not.toHaveProperty('layoutAction');
+  });
+
+  it('keeps repeated same-row lanes as separate visual lines', () => {
+    const lines = reconstructLines([
+      piece('Stakeholder', 100, 100, 10),
+      piece('Leadership', 168, 100, 10),
+      piece('Commercial', 100, 116, 10),
+      piece('Forecasting', 168, 116, 10)
+    ], []);
+
+    expect(lines.map((line) => line.text)).toEqual([
+      'Stakeholder',
+      'Leadership',
+      'Commercial',
+      'Forecasting'
+    ]);
+  });
+
+  it('removes overlaid copies without dropping distinct lines', () => {
+    const lines = reconstructLines([
+      piece('EDUCATION', 72, 100),
+      piece('EDUCATION', 72, 101),
+      piece('Sample University', 72, 120)
+    ], []);
+
+    expect(lines.map((line) => line.text)).toEqual(['EDUCATION', 'Sample University']);
+  });
+
+  it('attaches nearby drawn marks and preserves written bullet characters', () => {
+    const lines = reconstructLines(
+      [
+        piece('Leadership', 90, 100),
+        piece('• Analytics', 80, 116),
+        piece('Unmarked', 300, 100)
+      ],
+      [{ x: 80, y: 104, width: 4, height: 4 }]
+    );
+
+    expect(lines.map((line) => [line.text, line.bullet])).toEqual([
+      ['Leadership', true],
+      ['Unmarked', false],
+      ['• Analytics', true]
+    ]);
+  });
+});
 
 describe('layout regions', () => {
   it('keeps a one-column page as one region', () => {
@@ -92,7 +160,8 @@ describe('layout regions', () => {
       ...column(50, 100, ['Backend Developer', 'Software Intern', 'Teaching Assistant']),
       ...column(300, 100, ['Example Corp, Amman', 'Sample Labs, Gaza', 'Example University'])
     ];
-    expectRegions(layout(pieces), [
+    const page = layout(pieces);
+    expectRegions(page, [
       [
         'Backend Developer',
         'Example Corp, Amman',
@@ -118,7 +187,8 @@ describe('layout regions', () => {
       piece('XYZ Ltd', 260, 170),
       piece('2020 - 2021', 440, 170)
     ];
-    expectRegions(layout(pieces), [
+    const page = layout(pieces);
+    expectRegions(page, [
       [
         'Work History',
         'Position',
@@ -132,6 +202,32 @@ describe('layout regions', () => {
         'XYZ Ltd',
         '2020 - 2021'
       ]
+    ]);
+  });
+
+  it('preserves narrow grid cells when their column starts repeat across rows', () => {
+    const pieces = [
+      piece('Stakeholder', 100, 100, 10),
+      piece('Leadership', 168, 100, 10),
+      piece('Commercial', 100, 116, 10),
+      piece('Forecasting', 168, 116, 10)
+    ];
+
+    expectRegions(layout(pieces), [
+      ['Stakeholder', 'Leadership', 'Commercial', 'Forecasting']
+    ]);
+  });
+
+  it('still joins one-off PDF fragments within prose lines', () => {
+    const pieces = [
+      piece('Built', 100, 100, 10),
+      piece('reliable services.', 130, 100, 10),
+      piece('Improved', 100, 116, 10),
+      piece('database performance.', 145, 116, 10)
+    ];
+
+    expectRegions(layout(pieces), [
+      ['Built reliable services.', 'Improved database performance.']
     ]);
   });
 
@@ -156,6 +252,62 @@ describe('layout regions', () => {
         'Sample Labs'
       ]
     ]);
+  });
+
+  it('splits repeated emphasized entry headings with their dates and bodies', () => {
+    const pieces = [
+      piece('WORK EXPERIENCE', 72, 70, 16, true),
+      piece('Backend Developer', 72, 100, 13, true),
+      piece('2021 - Present', 470, 100, 13, true),
+      piece('Built APIs for the shipping system.', 72, 118, 10),
+      piece('Improved database query performance.', 72, 132, 10),
+      piece('Software Intern', 72, 170, 13, true),
+      piece('2019 - 2020', 470, 170, 13, true),
+      piece('Maintained internal reporting tools.', 72, 188, 10)
+    ];
+
+    const page = layout(pieces);
+    expectRegions(page, [
+      [
+        'WORK EXPERIENCE',
+        'Backend Developer',
+        '2021 - Present',
+        'Built APIs for the shipping system.',
+        'Improved database query performance.'
+      ],
+      ['Software Intern', '2019 - 2020', 'Maintained internal reporting tools.']
+    ]);
+  });
+
+  it('splits repeated larger entry headings when dates are absent', () => {
+    const pieces = [
+      piece('PROJECTS', 72, 70, 16, true),
+      piece('Inventory Platform', 72, 100, 13, true),
+      piece('Designed the order management workflow.', 72, 118, 10),
+      piece('Reporting Portal', 72, 160, 13, true),
+      piece('Built dashboards for operations teams.', 72, 178, 10)
+    ];
+
+    expectRegions(layout(pieces), [
+      ['PROJECTS', 'Inventory Platform', 'Designed the order management workflow.'],
+      ['Reporting Portal', 'Built dashboards for operations teams.']
+    ]);
+  });
+
+  it('does not split at an isolated emphasized label', () => {
+    const pieces = [
+      piece('PROFILE', 72, 70, 16, true),
+      piece('Product Engineer', 72, 100, 13, true),
+      piece('Builds reliable tools for operations teams.', 72, 118, 10),
+      piece('Additional profile detail.', 72, 160, 10)
+    ];
+
+    expectRegions(layout(pieces), [[
+      'PROFILE',
+      'Product Engineer',
+      'Builds reliable tools for operations teams.',
+      'Additional profile detail.'
+    ]]);
   });
 
   it('splits short skills beside long paragraphs', () => {
@@ -281,6 +433,99 @@ describe('areas above columns', () => {
     ]);
   });
 
+  it('reads synchronized section lanes heading first and then their contents', () => {
+    const page = layout([
+      piece('EDUCATION', 50, 200, 16, true),
+      piece('CONTACT', 400, 200, 16, true),
+      // This extends beyond the heading gutter's midpoint but not across the
+      // right-hand heading, so it still belongs to the education lane.
+      piece('International Sample University | 2020 - 2024', 50, 230, 10),
+      piece('+1 555 0100', 400, 230, 10),
+      piece('Bachelor of Accounting', 50, 246, 10),
+      piece('sample@example.com', 400, 246, 10),
+      piece('WORK EXPERIENCE', 50, 320, 16, true),
+      piece('SKILLS', 400, 320, 16, true),
+      piece('Example Corp | 2024 - Present', 50, 350, 10),
+      piece('Auditing', 400, 350, 10),
+      piece('Senior Accountant', 50, 366, 11, true),
+      piece('Financial Reporting', 400, 366, 10),
+      piece('Prepared monthly financial reports.', 50, 382, 10),
+      piece('Time Management', 400, 382, 10)
+    ]);
+
+    expectRegions(page, [
+      ['EDUCATION', 'International Sample University | 2020 - 2024', 'Bachelor of Accounting'],
+      [
+        'WORK EXPERIENCE',
+        'Example Corp | 2024 - Present',
+        'Senior Accountant',
+        'Prepared monthly financial reports.'
+      ],
+      ['CONTACT', '+1 555 0100', 'sample@example.com'],
+      ['SKILLS', 'Auditing', 'Financial Reporting', 'Time Management']
+    ]);
+  });
+
+  it('makes equivalent section headings decisive across an existing gutter', () => {
+    const page = layout([
+      piece('AWARDS', 50, 200, 13, true),
+      piece('EDUCATION', 350, 200, 13, true),
+      piece('Employee Excellence (2036)', 50, 224, 10, true),
+      piece('Liberty State University | 2031-2035', 350, 225, 10, true),
+      piece('Marketing Solutions Agency', 50, 241, 10),
+      piece('Bachelor of Arts in Marketing', 350, 241, 10),
+      piece('Writing Award (2034)', 50, 272, 10, true),
+      piece('GPA 3.9', 350, 258, 10),
+      piece('Editorial Staff', 50, 289, 10),
+      piece('University Marketing Society', 350, 275, 10)
+    ]);
+
+    expectRegions(page, [
+      [
+        'AWARDS',
+        'Employee Excellence (2036)',
+        'Marketing Solutions Agency'
+      ],
+      ['Writing Award (2034)', 'Editorial Staff'],
+      [
+        'EDUCATION',
+        'Liberty State University | 2031-2035',
+        'Bachelor of Arts in Marketing',
+        'GPA 3.9',
+        'University Marketing Society'
+      ]
+    ]);
+  });
+
+  it('ends parallel section lanes at a later standalone section heading', () => {
+    const page = layout([
+      piece('WORK EXPERIENCE', 50, 200, 16, true),
+      piece('EDUCATION', 320, 200, 16, true),
+      piece('Example Corp | 2020 - Present', 50, 230, 10),
+      piece('Sample University | 2016 - 2020', 320, 230, 10),
+      piece('Senior Accountant', 50, 246, 11, true),
+      piece('Bachelor of Accounting', 320, 246, 11, true),
+      piece('Prepared monthly financial reports.', 50, 262, 10),
+      piece('Graduated with honors.', 320, 262, 10),
+      piece('AWARDS', 50, 330, 16, true),
+      piece('01', 50, 365, 14, true),
+      piece('Employee of the year', 50, 388, 10),
+      piece('02', 240, 365, 14, true),
+      piece('Accounting excellence', 240, 388, 10)
+    ]);
+
+    expectRegions(page, [
+      [
+        'WORK EXPERIENCE',
+        'Example Corp | 2020 - Present',
+        'Senior Accountant',
+        'Prepared monthly financial reports.'
+      ],
+      ['EDUCATION', 'Sample University | 2016 - 2020', 'Bachelor of Accounting', 'Graduated with honors.'],
+      ['AWARDS', '01', '02', 'Employee of the year', 'Accounting excellence']
+    ]);
+  });
+
   it('reads a header and a summary that cross the column gap before the columns', () => {
     const skills = ['Skills', 'Python', 'Docker'];
     const experience = [
@@ -310,6 +555,96 @@ describe('areas above columns', () => {
       experience
     ]);
   });
+
+  it.each([
+    ['left', 50, 220],
+    ['right', 430, 50]
+  ])(
+    'keeps section headings on the %s with bodies in the adjacent column',
+    (_side, headingX, bodyX) => {
+      const page = layout([
+        piece('EXPERIENCE', headingX, 200, 16, true),
+        piece('Example Corp', bodyX, 200, 10),
+        piece('Backend Developer', bodyX, 216, 10),
+        piece('Built billing and reporting services.', bodyX, 232, 10),
+        piece('EDUCATION', headingX, 310, 16, true),
+        piece('Example University', bodyX, 310, 10),
+        piece('BSc Computer Science', bodyX, 326, 10)
+      ]);
+
+      expectRegions(page, [
+        [
+          'EXPERIENCE',
+          'Example Corp',
+          'Backend Developer',
+          'Built billing and reporting services.'
+        ],
+        ['EDUCATION', 'Example University', 'BSc Computer Science']
+      ]);
+    }
+  );
+
+  it.each([
+    ['left', 50, 220],
+    ['right', 430, 50]
+  ])(
+    'keeps entry headings on the %s with bodies in the adjacent column',
+    (_side, headingX, bodyX) => {
+      const page = layout([
+        piece('WORK EXPERIENCE', 50, 180, 16, true),
+        piece('Backend Developer', headingX, 220, 11, true),
+        piece('Example Corp | 2021 - Present', bodyX, 220, 10),
+        piece('Built billing services.', bodyX, 236, 10),
+        piece('Software Intern', headingX, 300, 11, true),
+        piece('Sample Labs | 2019 - 2020', bodyX, 300, 10),
+        piece('Maintained reporting tools.', bodyX, 316, 10)
+      ]);
+
+      expectRegions(page, [
+        [
+          'WORK EXPERIENCE',
+          'Backend Developer',
+          'Example Corp | 2021 - Present',
+          'Built billing services.'
+        ],
+        ['Software Intern', 'Sample Labs | 2019 - 2020', 'Maintained reporting tools.']
+      ]);
+    }
+  );
+
+  it.each([
+    ['left', 50, 220],
+    ['right', 430, 50]
+  ])(
+    'links titles and metadata on the %s with bodies in the adjacent lane',
+    (_side, sideX, bodyX) => {
+      const page = layout([
+        piece('EXPERIENCE', sideX, 200, 16, true),
+        piece('2021 - Present', sideX, 222, 10),
+        piece('Example Corp', bodyX, 200, 10),
+        piece('Built billing services.', bodyX, 222, 10),
+        piece('EDUCATION', sideX, 300, 16, true),
+        piece('2019 - 2020', sideX, 322, 10),
+        piece('Sample University', bodyX, 300, 10),
+        piece('BSc Computer Science', bodyX, 322, 10)
+      ]);
+
+      expectRegions(page, [
+        [
+          'EXPERIENCE',
+          ...(sideX < bodyX
+            ? ['Example Corp', '2021 - Present', 'Built billing services.']
+            : ['Example Corp', 'Built billing services.', '2021 - Present'])
+        ],
+        [
+          'EDUCATION',
+          ...(sideX < bodyX
+            ? ['Sample University', '2019 - 2020', 'BSc Computer Science']
+            : ['Sample University', 'BSc Computer Science', '2019 - 2020'])
+        ]
+      ]);
+    }
+  );
 });
 
 describe('headings and sections', () => {
@@ -365,6 +700,46 @@ describe('headings and sections', () => {
         region.lines.filter((line) => line.heading).map((line) => line.text)
       )
     ).toEqual(['Skills', 'Education']);
+  });
+
+  it('repeats heading styles only within the tolerant horizontal lane', () => {
+    const page = layout([
+      piece('Context before first heading', 72, 184, 10),
+      piece('First Topic', 72, 200, 12, true),
+      piece('First topic detail', 72, 216, 10),
+      piece('Context before second heading', 74, 244, 10),
+      piece('Second Topic', 74, 260, 12, true),
+      piece('Second topic detail', 74, 276, 10),
+      piece('Context in another lane', 300, 304, 10),
+      piece('Unrelated Topic', 300, 320, 12, true),
+      piece('Unrelated topic detail', 300, 336, 10)
+    ]);
+
+    expect(
+      page.regions.flatMap((region) =>
+        region.lines.filter((line) => line.heading).map((line) => line.text)
+      )
+    ).toEqual(['First Topic', 'Second Topic']);
+  });
+
+  it('promotes a custom heading as same-lane style evidence accumulates', () => {
+    const page = layout([
+      piece('SUMMARY', 72, 100, 12, true),
+      piece('Summary body text', 72, 128, 11),
+      piece('PROJECTS', 72, 180, 12, true),
+      piece('Projects body text', 72, 208, 11),
+      piece('EDUCATION', 72, 260, 12, true),
+      piece('Education body text', 72, 288, 11),
+      piece('KEY SKILLS', 72, 340, 12, true),
+      piece('Languages: TypeScript, Python, SQL', 72, 368, 11, true),
+      piece('Backend: Node.js, Express', 72, 384, 11, true)
+    ]);
+
+    expect(
+      page.regions.flatMap((region) =>
+        region.lines.filter((line) => line.heading).map((line) => line.text)
+      )
+    ).toEqual(['SUMMARY', 'PROJECTS', 'EDUCATION', 'KEY SKILLS']);
   });
 
   it('keeps a large two-line name as a document title', () => {
@@ -427,6 +802,32 @@ describe('headings and sections', () => {
     expect(page.regions[0]!.box).toEqual({ x: 218, y: 200, width: 318, height: 147 });
   });
 
+  it('does not give a section ownership of a later region above it', () => {
+    const page = layout([
+      piece('WORK EXPERIENCE', 50, 220, 16, true),
+      piece('Earlier sidebar detail', 320, 170, 10),
+      piece('Another earlier detail', 320, 186, 10)
+    ]);
+
+    expectRegions(page, [
+      ['WORK EXPERIENCE'],
+      ['Earlier sidebar detail', 'Another earlier detail']
+    ]);
+  });
+
+  it('allows small vertical coordinate jitter in forward ownership', () => {
+    const page = layout([
+      piece('WORK EXPERIENCE', 50, 220, 16, true),
+      piece('First detail', 320, 217, 10),
+      piece('Second detail', 320, 234, 10),
+      piece('Third detail', 320, 250, 10)
+    ]);
+
+    expectRegions(page, [
+      ['WORK EXPERIENCE', 'First detail', 'Second detail', 'Third detail']
+    ]);
+  });
+
   it('marks a line bold when most of its characters are bold', () => {
     const page = layout([
       piece('GPA:', 72, 100),
@@ -467,7 +868,8 @@ describe('list bullets', () => {
         width: 612,
         height: 792,
         pieces,
-        marks: marks.map(({ x, y }) => ({ x, y, width: 4, height: 4 }))
+        marks: marks.map(({ x, y }) => ({ x, y, width: 4, height: 4 })),
+        separators: []
       }
     ])[0]!;
   }

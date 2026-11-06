@@ -24,6 +24,15 @@ export interface BoundingBox {
   height: number;
 }
 
+// A thin axis-aligned shape drawn on a PDF page. Separators are extraction
+// evidence only until a later layout stage decides whether they support a
+// boundary.
+export interface DrawnSeparator {
+  orientation: 'horizontal' | 'vertical';
+  box: BoundingBox;
+  thickness: number;
+}
+
 // A piece of text as the file stores it; used to build lines, not stored.
 export interface TextPiece {
   text: string;

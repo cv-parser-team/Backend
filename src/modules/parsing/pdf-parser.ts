@@ -9,10 +9,18 @@ import {
 } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFPageProxy, TextItem } from 'pdfjs-dist/types/src/display/api.js';
 import { hasTooMuchArabic, removeArabic } from './language.js';
-import { buildPages, PositionedPage, round, SPACED_LETTERS } from './layout.js';
+import {
+  buildPages,
+  buildPagesWithTrace,
+  type LayoutTrace,
+  PositionedPage,
+  round,
+  SPACED_LETTERS
+} from './layout.js';
 import {
   BoundingBox,
   DocumentParser,
+  DrawnSeparator,
   ExtractionFailure,
   ExtractionResult,
   TextPiece
@@ -105,6 +113,8 @@ function drawnText(operators: OperatorList): string {
 
 // Shapes up to this size, in points, may be list bullets drawn as dots.
 const MAX_MARK_SIZE = 10;
+const MIN_SEPARATOR_LENGTH = 20;
+const MAX_SEPARATOR_THICKNESS = 3;
 
 // Operator arguments come as plain or typed number arrays.
 function toNumbers(value: unknown, length: number): number[] | null {
@@ -115,47 +125,204 @@ function toNumbers(value: unknown, length: number): number[] | null {
   return numbers.every((item) => typeof item === 'number') ? (numbers as number[]) : null;
 }
 
-// Small drawn shapes in page space. Shapes are drawn in their own coordinates,
-// so the drawing transform is followed through saved and restored states and
-// embedded forms.
-function drawnMarks(operators: OperatorList, viewportTransform: Matrix): BoundingBox[] {
+export interface DrawnPrimitives {
+  marks: BoundingBox[];
+  separators: DrawnSeparator[];
+}
+
+interface DrawingState {
+  transform: Matrix;
+  lineWidth: number;
+}
+
+interface PendingPath {
+  box: BoundingBox;
+  lineWidth: number;
+}
+
+const STROKE_OPERATORS = new Set<number>([
+  OPS.stroke,
+  OPS.closeStroke,
+  OPS.fillStroke,
+  OPS.eoFillStroke
+]);
+const FILL_OPERATORS = new Set<number>([
+  OPS.fill,
+  OPS.eoFill,
+  OPS.fillStroke,
+  OPS.eoFillStroke
+]);
+const PAINT_OPERATORS = new Set<number>([...STROKE_OPERATORS, ...FILL_OPERATORS]);
+
+function transformedBox(corners: number[], transform: Matrix): BoundingBox {
+  const [x1, y1, x2, y2] = corners;
+  const points = [
+    toPagePoint(transform, x1!, y1!),
+    toPagePoint(transform, x1!, y2!),
+    toPagePoint(transform, x2!, y1!),
+    toPagePoint(transform, x2!, y2!)
+  ];
+  const xs = points.map(([x]) => x);
+  const ys = points.map(([, y]) => y);
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  return {
+    x: round(left),
+    y: round(top),
+    width: round(Math.max(...xs) - left),
+    height: round(Math.max(...ys) - top)
+  };
+}
+
+function transformedLineWidth(transform: Matrix, lineWidth: number): number {
+  const scale = Math.max(
+    Math.hypot(transform[0]!, transform[1]!),
+    Math.hypot(transform[2]!, transform[3]!)
+  );
+  // PDF hairlines have a width of zero and render at the thinnest visible
+  // device width. One page point keeps them visible in the inspection trace.
+  return Math.max(1, round(lineWidth * scale));
+}
+
+function withStrokeThickness(box: BoundingBox, thickness: number): BoundingBox {
+  if (box.height === 0 && box.width > 0) {
+    return { ...box, y: round(box.y - thickness / 2), height: thickness };
+  }
+  if (box.width === 0 && box.height > 0) {
+    return { ...box, x: round(box.x - thickness / 2), width: thickness };
+  }
+  return box;
+}
+
+function separatorFromPath(path: PendingPath, stroked: boolean): DrawnSeparator | null {
+  const box = stroked ? withStrokeThickness(path.box, path.lineWidth) : path.box;
+  const horizontal =
+    box.width >= MIN_SEPARATOR_LENGTH &&
+    box.height > 0 &&
+    box.height <= MAX_SEPARATOR_THICKNESS;
+  const vertical =
+    box.height >= MIN_SEPARATOR_LENGTH &&
+    box.width > 0 &&
+    box.width <= MAX_SEPARATOR_THICKNESS;
+
+  if (!horizontal && !vertical) {
+    return null;
+  }
+  const orientation = horizontal ? 'horizontal' : 'vertical';
+  return {
+    orientation,
+    box,
+    thickness: orientation === 'horizontal' ? box.height : box.width
+  };
+}
+
+function overlapShare(first: DrawnSeparator, second: DrawnSeparator): number {
+  if (first.orientation !== second.orientation) {
+    return 0;
+  }
+  const horizontal = first.orientation === 'horizontal';
+  const firstStart = horizontal ? first.box.x : first.box.y;
+  const firstEnd = firstStart + (horizontal ? first.box.width : first.box.height);
+  const secondStart = horizontal ? second.box.x : second.box.y;
+  const secondEnd = secondStart + (horizontal ? second.box.width : second.box.height);
+  const overlap = Math.max(0, Math.min(firstEnd, secondEnd) - Math.max(firstStart, secondStart));
+  return overlap / Math.min(firstEnd - firstStart, secondEnd - secondStart);
+}
+
+function sameSeparatorLane(first: DrawnSeparator, second: DrawnSeparator): boolean {
+  const firstCenter = first.orientation === 'horizontal'
+    ? first.box.y + first.box.height / 2
+    : first.box.x + first.box.width / 2;
+  const secondCenter = second.orientation === 'horizontal'
+    ? second.box.y + second.box.height / 2
+    : second.box.x + second.box.width / 2;
+  return Math.abs(firstCenter - secondCenter) <= Math.max(first.thickness, second.thickness);
+}
+
+function addSeparator(separators: DrawnSeparator[], separator: DrawnSeparator): void {
+  const duplicate = separators.some(
+    (existing) => sameSeparatorLane(existing, separator) && overlapShare(existing, separator) >= 0.9
+  );
+  if (!duplicate) {
+    separators.push(separator);
+  }
+}
+
+// Drawn primitives in page space. Shapes are drawn in their own coordinates,
+// so the drawing transform and stroke width are followed through saved states
+// and embedded forms. Thin rules remain inert extraction evidence in Stage 1.
+export function extractDrawnPrimitives(
+  operators: OperatorList,
+  viewportTransform: Matrix
+): DrawnPrimitives {
   const marks: BoundingBox[] = [];
-  const saved: Matrix[] = [];
-  let transform: Matrix = [1, 0, 0, 1, 0, 0];
+  const separators: DrawnSeparator[] = [];
+  const saved: DrawingState[] = [];
+  const pendingPaths: PendingPath[] = [];
+  let state: DrawingState = { transform: [1, 0, 0, 1, 0, 0], lineWidth: 1 };
+
+  const finishPaths = (stroked: boolean, filled: boolean) => {
+    for (const path of pendingPaths) {
+      const separator = separatorFromPath(path, stroked);
+      if (separator) {
+        addSeparator(separators, separator);
+      }
+      const box = stroked ? withStrokeThickness(path.box, path.lineWidth) : path.box;
+      if (
+        (stroked || filled) &&
+        box.width > 0 &&
+        box.height > 0 &&
+        box.width <= MAX_MARK_SIZE &&
+        box.height <= MAX_MARK_SIZE
+      ) {
+        marks.push(box);
+      }
+    }
+    pendingPaths.length = 0;
+  };
 
   operators.fnArray.forEach((fn, index) => {
     const args = operators.argsArray[index];
     if (fn === OPS.save) {
-      saved.push(transform);
+      saved.push({ transform: state.transform, lineWidth: state.lineWidth });
     } else if (fn === OPS.restore || fn === OPS.paintFormXObjectEnd) {
-      transform = saved.pop() ?? transform;
+      state = saved.pop() ?? state;
     } else if (fn === OPS.transform) {
       const matrix = toNumbers(args, 6);
-      transform = matrix ? multiply(transform, matrix) : transform;
+      state = matrix ? { ...state, transform: multiply(state.transform, matrix) } : state;
+    } else if (fn === OPS.setLineWidth) {
+      const values = toNumbers(args, 1);
+      state = values ? { ...state, lineWidth: values[0]! } : state;
     } else if (fn === OPS.paintFormXObjectBegin) {
-      saved.push(transform);
+      saved.push({ transform: state.transform, lineWidth: state.lineWidth });
       const formMatrix = toNumbers(Array.isArray(args) ? args[0] : null, 6);
-      transform = formMatrix ? multiply(transform, formMatrix) : transform;
+      state = formMatrix
+        ? { ...state, transform: multiply(state.transform, formMatrix) }
+        : state;
     } else if (fn === OPS.constructPath && Array.isArray(args)) {
       const corners = toNumbers(args.at(-1), 4);
       if (!corners) {
         return;
       }
-      const toPage = multiply(viewportTransform, transform);
-      const [left, top] = toPagePoint(toPage, corners[0]!, corners[1]!);
-      const [right, bottom] = toPagePoint(toPage, corners[2]!, corners[3]!);
-      const box = {
-        x: round(Math.min(left, right)),
-        y: round(Math.min(top, bottom)),
-        width: round(Math.abs(right - left)),
-        height: round(Math.abs(bottom - top))
-      };
-      if (box.width > 0 && box.height > 0 && box.width <= MAX_MARK_SIZE && box.height <= MAX_MARK_SIZE) {
-        marks.push(box);
+      const toPage = multiply(viewportTransform, state.transform);
+      pendingPaths.push({
+        box: transformedBox(corners, toPage),
+        lineWidth: transformedLineWidth(toPage, state.lineWidth)
+      });
+      // pdfjs normally folds the paint operation into constructPath as its
+      // first argument. Keep support for a following paint operator as well,
+      // which makes the extractor tolerant of uncombined operator lists.
+      const pathPaint = typeof args[0] === 'number' ? args[0] : null;
+      if (pathPaint !== null && PAINT_OPERATORS.has(pathPaint)) {
+        finishPaths(STROKE_OPERATORS.has(pathPaint), FILL_OPERATORS.has(pathPaint));
       }
+    } else if (PAINT_OPERATORS.has(fn)) {
+      finishPaths(STROKE_OPERATORS.has(fn), FILL_OPERATORS.has(fn));
+    } else if (fn === OPS.endPath) {
+      pendingPaths.length = 0;
     }
   });
-  return marks;
+  return { marks, separators };
 }
 
 // Text extraction puts a space between every spaced-out letter, so
@@ -264,7 +431,11 @@ function failedResult(
   };
 }
 
-export function createPdfParser(): DocumentParser {
+export interface PdfParserOptions {
+  onLayoutTrace?: (trace: LayoutTrace) => void;
+}
+
+export function createPdfParser(options: PdfParserOptions = {}): DocumentParser {
   return {
     format: 'pdf',
     mediaTypes: ['application/pdf'],
@@ -316,12 +487,14 @@ export function createPdfParser(): DocumentParser {
               continue;
             }
 
+            const primitives = extractDrawnPrimitives(operators, viewport.transform);
+
             readPages.push({
               pageNumber,
               width: round(viewport.width),
               height: round(viewport.height),
               pieces,
-              marks: drawnMarks(operators, viewport.transform)
+              ...primitives
             });
           } catch {
             failures.push({ pageNumber, code: 'PAGE_UNREADABLE' });
@@ -346,7 +519,14 @@ export function createPdfParser(): DocumentParser {
           keptPages.push({ ...page, pieces });
         }
         failures.sort((a, b) => (a.pageNumber ?? 0) - (b.pageNumber ?? 0));
-        const pages = buildPages(keptPages);
+        let pages;
+        if (options.onLayoutTrace) {
+          const built = buildPagesWithTrace(keptPages);
+          options.onLayoutTrace(built.trace);
+          pages = built.pages;
+        } else {
+          pages = buildPages(keptPages);
+        }
 
         return {
           status: failures.length === 0 ? 'succeeded' : pages.length > 0 ? 'partial' : 'failed',

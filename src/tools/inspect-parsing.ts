@@ -3,6 +3,7 @@ import { basename, extname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { buildParsingInspectionReport } from '../modules/parsing/inspection-report.js';
+import type { LayoutTrace } from '../modules/parsing/layout.js';
 import type { DocumentParser } from '../modules/parsing/parsing.types.js';
 
 function cleanPastedPath(value: string): string {
@@ -32,15 +33,28 @@ async function selectInputPath(argument: string | undefined): Promise<string> {
   }
 }
 
-async function parserFor(filename: string): Promise<DocumentParser> {
+interface InspectionParser {
+  parser: DocumentParser;
+  layoutTrace: () => LayoutTrace | undefined;
+}
+
+async function parserFor(filename: string): Promise<InspectionParser> {
   const extension = extname(filename).toLowerCase();
   if (extension === '.pdf') {
     const { createPdfParser } = await import('../modules/parsing/pdf-parser.js');
-    return createPdfParser();
+    let trace: LayoutTrace | undefined;
+    return {
+      parser: createPdfParser({
+        onLayoutTrace: (value) => {
+          trace = value;
+        }
+      }),
+      layoutTrace: () => trace
+    };
   }
   if (extension === '.docx') {
     const { createDocxParser } = await import('../modules/parsing/docx-parser.js');
-    return createDocxParser();
+    return { parser: createDocxParser(), layoutTrace: () => undefined };
   }
   throw new Error(`Unsupported file extension '${extension || '(none)'}'; use PDF or DOCX`);
 }
@@ -48,12 +62,12 @@ async function parserFor(filename: string): Promise<DocumentParser> {
 const [, , inputArgument, outputArgument] = process.argv;
 const inputPath = resolve(await selectInputPath(inputArgument));
 const outputPath = resolve(outputArgument ?? `${inputPath}.parsing.html`);
-const parser = await parserFor(inputPath);
-const result = await parser.parse(new Uint8Array(await readFile(inputPath)));
+const inspection = await parserFor(inputPath);
+const result = await inspection.parser.parse(new Uint8Array(await readFile(inputPath)));
 
 await writeFile(
   outputPath,
-  buildParsingInspectionReport(result, basename(inputPath)),
+  buildParsingInspectionReport(result, basename(inputPath), inspection.layoutTrace()),
   'utf8'
 );
 

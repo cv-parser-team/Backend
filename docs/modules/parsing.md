@@ -128,6 +128,42 @@ stays in one region. This makes the parser safer than aggressive splitting.
 8. **Order the result:** regions top to bottom; side-by-side regions in the
    reading direction, each read completely before the next.
 
+When two confirmed, row-aligned section headings start opposite sides of a
+persistent gutter, that gutter becomes a decisive column boundary even if
+other geometric signals are weak or much of their content shares rows. This
+is the narrow exception to the shared-row table safeguard.
+Each lane is recursively split at its own later section headings and emitted
+completely in reading direction, so a heading always precedes the content it
+owns. A later standalone section heading closes all parallel lanes above it;
+another aligned row of section headings starts or continues parallel lanes.
+Ordinary tables and title/date pairs do not receive this exception.
+
+A title or compact metadata value may sit on either side of the body it
+describes. The parser keeps these **cross-lane ownership links** intact instead
+of splitting them at the vertical gutter. A title links across only when it has
+no nearby body in its own lane, so independent parallel sections remain
+separate. Dates and contact-like metadata link to same-row content. This works
+in either direction, and a semantic title is emitted before its linked body
+even when the title is geometrically to the right.
+
+### Entry boundaries
+
+Section headings and lower-level entry headings have different authority. A
+confirmed section heading starts a section. A lower heading may split entries
+inside that section only when the pattern repeats in the same lane, nearby body
+text follows, and the short bold anchor is either larger than that body or is
+aligned with a date. The date is optional when the size contrast is present.
+
+The first entry stays with its section heading. Each later entry anchor starts
+a region containing its aligned date or metadata and its following body up to
+the next entry. A lone bold label never creates an entry boundary, and entry
+pairing never crosses a confirmed section boundary.
+
+Repeated entry anchors may use nearby body text in an adjacent lane as entry
+evidence when the same anchor-to-body direction and body alignment repeat.
+This permits a compact entry-title rail beside descriptions without promoting
+an isolated bold label or an unrelated parallel column.
+
 ### Boundary signals
 
 | Signal | Interpretation |
@@ -273,26 +309,26 @@ education, or skills is meaning, and AI handles it in Part 2.
    [Testing approach](#testing-approach); CVs from the team, especially
    two-column CVs made outside Canva, are still to come.
 
+### Inspecting every parsing level
+
+Run `npm run parsing:inspect -- path/to/resume.pdf` to generate an HTML report
+beside the document. For PDFs, the **Parsing levels** section shows the same
+page after each deterministic stage:
+
+1. extracted PDF text pieces;
+2. pieces reconstructed into lines;
+3. section and entry boundary classification;
+4. recursive region splits before ownership repair;
+5. final regions after section ownership.
+
+Each stage includes positioned boxes and an exact text/coordinate list.
+Section boundaries, entry boundaries, and region outlines use different
+colors. The stored parsed content and compact AI input follow these diagnostic
+views. Layout traces exist only in the inspection command and are not added to
+the extraction result.
+
 ## Testing approach
 
-<<<<<<< HEAD
-=======
-For quick manual inspection, run the interactive inspector:
-
-```bash
-npm run parsing:inspect
-```
-
-Paste or drag a PDF/DOCX path into the prompt. The command writes a
-`<document>.parsing.html` report beside the selected file with extraction
-failures, positioned PDF regions and lines or DOCX blocks, AI input, and raw
-JSON. A path and optional report destination can also be passed directly:
-
-```bash
-npm run parsing:inspect -- path/to/resume.pdf /tmp/resume-parsing.html
-```
-
->>>>>>> Mohammed
 Fixtures and expected results are written before the algorithm, so "correct"
 is defined first. A correct split is not enough; every test checks that no
 information is lost or misplaced:

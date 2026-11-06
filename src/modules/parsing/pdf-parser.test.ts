@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
+import { OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describe, expect, it } from 'vitest';
-import { createPdfParser, MAX_PDF_PAGES } from './pdf-parser.js';
+import {
+  createPdfParser,
+  extractDrawnPrimitives,
+  MAX_PDF_PAGES
+} from './pdf-parser.js';
 import { ExtractionResult, ParsedPage, TextLine } from './parsing.types.js';
 
 async function parseFixture(name: string): Promise<ExtractionResult> {
@@ -16,6 +21,108 @@ function lineTexts(result: ExtractionResult, pageNumber: number): string[] {
   const page = result.pages.find((candidate) => candidate.pageNumber === pageNumber);
   return page ? pageLines(page).map((line) => line.text) : [];
 }
+
+const IDENTITY = [1, 0, 0, 1, 0, 0];
+
+function pathArgs(
+  box: [number, number, number, number],
+  paintOperator?: number
+): unknown[] {
+  return [paintOperator ?? [], [], box];
+}
+
+describe('PDF drawn primitives', () => {
+  it('extracts horizontal and vertical stroked separators with transformed thickness', () => {
+    const horizontal = extractDrawnPrimitives(
+      {
+        fnArray: [OPS.setLineWidth, OPS.constructPath, OPS.stroke],
+        argsArray: [[2], pathArgs([10, 20, 110, 20]), null]
+      },
+      IDENTITY
+    );
+    const vertical = extractDrawnPrimitives(
+      {
+        fnArray: [
+          OPS.save,
+          OPS.transform,
+          OPS.setLineWidth,
+          OPS.constructPath,
+          OPS.stroke,
+          OPS.restore
+        ],
+        argsArray: [null, [2, 0, 0, 2, 5, 7], [1], pathArgs([10, 10, 10, 60]), null, null]
+      },
+      IDENTITY
+    );
+
+    expect(horizontal.separators).toEqual([{
+      orientation: 'horizontal',
+      box: { x: 10, y: 19, width: 100, height: 2 },
+      thickness: 2
+    }]);
+    expect(vertical.separators).toEqual([{
+      orientation: 'vertical',
+      box: { x: 24, y: 27, width: 2, height: 100 },
+      thickness: 2
+    }]);
+  });
+
+  it('keeps thin filled rectangles separate from small bullet marks', () => {
+    const primitives = extractDrawnPrimitives(
+      {
+        fnArray: [
+          OPS.constructPath,
+          OPS.constructPath,
+          OPS.fill
+        ],
+        argsArray: [pathArgs([10, 40, 110, 42], OPS.fill), pathArgs([5, 5, 9, 9]), null]
+      },
+      IDENTITY
+    );
+
+    expect(primitives.separators).toEqual([{
+      orientation: 'horizontal',
+      box: { x: 10, y: 40, width: 100, height: 2 },
+      thickness: 2
+    }]);
+    expect(primitives.marks).toEqual([{ x: 5, y: 5, width: 4, height: 4 }]);
+  });
+
+  it('ignores diagonal and background shapes and deduplicates overlapping rules', () => {
+    const primitives = extractDrawnPrimitives(
+      {
+        fnArray: [
+          OPS.constructPath,
+          OPS.stroke,
+          OPS.constructPath,
+          OPS.fill,
+          OPS.constructPath,
+          OPS.fill,
+          OPS.constructPath,
+          OPS.fill
+        ],
+        argsArray: [
+          pathArgs([10, 10, 100, 100]),
+          null,
+          pathArgs([0, 0, 600, 800]),
+          null,
+          pathArgs([10, 40, 110, 42]),
+          null,
+          pathArgs([10.5, 40, 110.5, 42]),
+          null
+        ]
+      },
+      IDENTITY
+    );
+
+    expect(primitives.separators).toEqual([{
+      orientation: 'horizontal',
+      box: { x: 10, y: 40, width: 100, height: 2 },
+      thickness: 2
+    }]);
+    expect(primitives.marks).toEqual([]);
+  });
+});
 
 describe('pdf parser', () => {
   it('extracts ordered lines from a single page', async () => {

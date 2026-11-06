@@ -29,7 +29,7 @@ export interface HeadingScoreInput {
   bold: boolean;
   bullet: boolean;
   whitespaceAbove?: boolean;
-  repeatedStyle?: boolean;
+  repeatedStyleMatches?: number;
 }
 
 export interface HeadingScore {
@@ -84,6 +84,7 @@ export const HEADING_SETTINGS = {
   largerHeightRatio: 1.15,
   shortWordCount: 5,
   longSentenceWordCount: 12,
+  repeatedStyleMaxWeight: 0.35,
   candidateThreshold: 0.35,
   sectionThreshold: 0.65
 } as const;
@@ -121,6 +122,7 @@ function roundConfidence(value: number): number {
 export function scoreHeading(input: HeadingScoreInput): HeadingScore {
   const normalized = normalizeHeadingText(input.text);
   const words = normalized.split(/\s+/u).filter(Boolean);
+  const repeatedStyleMatches = Math.max(0, Math.floor(input.repeatedStyleMatches ?? 0));
   const signals: HeadingSignals = {
     commonSection: COMMON_SECTIONS.has(normalized),
     largerThanBody:
@@ -130,7 +132,7 @@ export function scoreHeading(input: HeadingScoreInput): HeadingScore {
     headingCase: hasHeadingCase(input.text),
     short: words.length > 0 && words.length <= HEADING_SETTINGS.shortWordCount,
     whitespaceAbove: input.whitespaceAbove ?? false,
-    repeatedStyle: input.repeatedStyle ?? false,
+    repeatedStyle: repeatedStyleMatches > 0,
     bullet: input.bullet,
     date: DATE.test(normalized),
     contact: CONTACT.test(normalized),
@@ -140,11 +142,17 @@ export function scoreHeading(input: HeadingScoreInput): HeadingScore {
       words.length >= HEADING_SETTINGS.longSentenceWordCount || /[.!?]$/u.test(input.text.trim())
   };
 
+  const repeatedStyleWeight = Math.min(
+    HEADING_SETTINGS.repeatedStyleMaxWeight,
+    repeatedStyleMatches * HEADING_SETTINGS.weights.repeatedStyle
+  );
   const confidence = roundConfidence(
-    (Object.keys(signals) as (keyof HeadingSignals)[]).reduce(
-      (total, signal) => total + (signals[signal] ? HEADING_SETTINGS.weights[signal] : 0),
-      0
-    )
+    (Object.keys(signals) as (keyof HeadingSignals)[]).reduce((total, signal) => {
+      if (signal === 'repeatedStyle') {
+        return total + repeatedStyleWeight;
+      }
+      return total + (signals[signal] ? HEADING_SETTINGS.weights[signal] : 0);
+    }, 0)
   );
   const independentSupport =
     signals.largerThanBody || signals.bold || signals.whitespaceAbove || signals.repeatedStyle;
