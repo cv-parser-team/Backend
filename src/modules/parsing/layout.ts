@@ -21,6 +21,10 @@ import {
   type BoundaryCandidate,
   type NonTextBoundaryCandidate
 } from './boundary-candidates.js';
+import {
+  generateLayoutZoneCandidates,
+  type LayoutZoneCandidate
+} from './macro-layout.js';
 
 // Layout works on text pieces with page coordinates and knows nothing about
 // the file format, so any source of positioned text can use it.
@@ -106,6 +110,7 @@ export interface LayoutTracePage {
   metrics: PageMetrics;
   boundaryCandidates: BoundaryCandidate[];
   nonTextBoundaryCandidates: NonTextBoundaryCandidate[];
+  layoutZoneCandidates: LayoutZoneCandidate[];
   classifiedLines: LayoutTraceLine[];
   splitRegions: LayoutTraceRegion[];
   ownedRegions: LayoutTraceRegion[];
@@ -1357,6 +1362,15 @@ function buildPagesInternal(
       pageIndex,
       pageHeight: page.height
     });
+    const layoutZoneCandidates = generateLayoutZoneCandidates({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      boundaryCandidates: candidates.lines,
+      nonTextBoundaryCandidates: candidates.nonText,
+      pageIndex,
+      pageWidth: page.width,
+      pageHeight: page.height
+    });
     const lines = markHeadings(
       pageLines[pageIndex]!,
       usualHeight,
@@ -1377,6 +1391,7 @@ function buildPagesInternal(
         metrics: pageMetrics[pageIndex]!,
         boundaryCandidates: candidates.lines,
         nonTextBoundaryCandidates: candidates.nonText,
+        layoutZoneCandidates,
         classifiedLines: entries,
         splitRegions: splitDrafts.map(traceRegion),
         ownedRegions: drafts.map(traceRegion)

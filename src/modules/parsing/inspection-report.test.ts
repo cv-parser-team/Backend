@@ -97,6 +97,19 @@ describe('parsing inspection report', () => {
           box: { x: 40, y: 90, width: 220, height: 1 },
           evidence: { score: 0.75, reasons: ['thin relative to body text'] }
         }],
+        layoutZoneCandidates: [{
+          kind: 'full-width-section',
+          box: traceLine.box,
+          boundaryBox: { x: 40, y: 90, width: 220, height: 1 },
+          confidence: 0.76,
+          reasons: ['nearby horizontal evidence spans the active content width'],
+          participatingLineIndexes: [0],
+          parts: [{
+            label: 'full-width-section',
+            box: traceLine.box,
+            lineIndexes: [0]
+          }]
+        }],
         classifiedLines: [traceLine],
         splitRegions: [{ box: traceLine.box, confidence: 0.8, lines: [traceLine] }],
         ownedRegions: [{ box: traceLine.box, confidence: 0.8, lines: [traceLine] }]
@@ -114,6 +127,8 @@ describe('parsing inspection report', () => {
     expect(report).toContain('1. Extracted pieces');
     expect(report).toContain('3. Page metrics');
     expect(report).toContain('4. Scored boundary candidates');
+    expect(report).toContain('5. Provisional macro layout hypotheses');
+    expect(report).toContain('full-width-section');
     expect(report).toContain('Usual body height: <code>20</code>');
     expect(report).toContain('1 active-content coverage');
     expect(report).toContain('title-area prominence');

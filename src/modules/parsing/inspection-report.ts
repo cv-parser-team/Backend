@@ -12,6 +12,7 @@ import type {
   NonTextBoundaryCandidate,
   ScoredEvidence
 } from './boundary-candidates.js';
+import type { LayoutZoneCandidate } from './macro-layout.js';
 import {
   BoundingBox,
   DocumentBlock,
@@ -347,6 +348,51 @@ function boundaryCandidateStage(page: LayoutTracePage): string {
     .join('')}</div><details><summary>Line candidates (${page.boundaryCandidates.length})</summary><ol>${rows}</ol></details><details><summary>Non-text candidates (${page.nonTextBoundaryCandidates.length})</summary><ol>${nonTextRows}</ol></details></details>`;
 }
 
+function positionedZoneCandidate(
+  candidate: LayoutZoneCandidate,
+  candidateIndex: number,
+  page: LayoutTracePage
+): string {
+  const parts = candidate.parts
+    .map(
+      (part) => `<div class="trace-zone-part ${part.label}" style="left:${percentage(
+        part.box.x,
+        page.width
+      )};top:${percentage(part.box.y, page.height)};width:${percentage(
+        part.box.width,
+        page.width
+      )};height:${percentage(part.box.height, page.height)}" title="H${candidateIndex + 1} ${part.label} · lines ${part.lineIndexes
+        .map((index) => index + 1)
+        .join(', ')}"></div>`
+    )
+    .join('');
+  const boundary = candidate.boundaryBox
+    ? `<div class="trace-zone-boundary" style="left:${percentage(
+        candidate.boundaryBox.x,
+        page.width
+      )};top:${percentage(candidate.boundaryBox.y, page.height)};width:${percentage(
+        candidate.boundaryBox.width,
+        page.width
+      )};height:${percentage(candidate.boundaryBox.height, page.height)}"></div>`
+    : '';
+  return `${parts}${boundary}`;
+}
+
+function layoutZoneCandidateStage(page: LayoutTracePage): string {
+  const rows = page.layoutZoneCandidates
+    .map(
+      (candidate, index) => `<li><code>H${index + 1}</code><span>${candidate.kind}</span><small>confidence ${candidate.confidence} · lines ${candidate.participatingLineIndexes
+        .map((lineIndex) => lineIndex + 1)
+        .join(', ')} · ${escapeHtml(candidate.reasons.join('; '))}</small></li>`
+    )
+    .join('');
+  return `<details class="trace-stage"><summary><strong>5. Provisional macro layout hypotheses</strong> — overlapping page-level zones without ownership or exclusion</summary><div class="trace-page" style="aspect-ratio:${page.width}/${page.height}">${page.layoutZoneCandidates
+    .map((candidate, index) => positionedZoneCandidate(candidate, index, page))
+    .join('')}${page.reconstructedLines
+    .map((line) => tracePositionedItem(line, page, 'line'))
+    .join('')}</div><details><summary>Layout zone candidates (${page.layoutZoneCandidates.length})</summary><ol>${rows}</ol></details></details>`;
+}
+
 function layoutTraceReport(trace: LayoutTrace): string {
   const pages = trace.pages
     .map(
@@ -355,12 +401,13 @@ ${traceStage('1. Extracted pieces', 'PDF text items, drawn marks, and separators
 ${traceStage('2. Reconstructed lines', 'pieces grouped into visual rows', page, page.reconstructedLines)}
 ${metricsStage(page, page.metrics)}
 ${boundaryCandidateStage(page)}
-${traceStage('5. Recursive splits', 'regions before ownership repair', page, page.classifiedLines, page.splitRegions)}
-${traceStage('6. Section ownership', 'regions after headings reclaim their content', page, page.classifiedLines, page.ownedRegions)}
+${layoutZoneCandidateStage(page)}
+${traceStage('6. Recursive splits', 'regions before ownership repair', page, page.classifiedLines, page.splitRegions)}
+${traceStage('7. Section ownership', 'regions after headings reclaim their content', page, page.classifiedLines, page.ownedRegions)}
 </article>`
     )
     .join('');
-  return `<section><h2>Parsing levels</h2><p>Compatibility line height: <code>${trace.usualHeight}</code> · compatibility vertical gap: <code>${trace.usualGap}</code></p><div class="legend"><span class="piece-key">piece</span><span class="mark-key">drawn mark</span><span class="separator-key">separator</span><span class="gutter-key">gutter candidate</span><span class="band-key">whitespace band</span><span class="header-candidate-key">header candidate</span><span class="section-key">section candidate</span><span class="entry-key">entry candidate</span><span class="content-candidate-key">content candidate</span><span class="region-key">region</span></div>${pages}</section>`;
+  return `<section><h2>Parsing levels</h2><p>Compatibility line height: <code>${trace.usualHeight}</code> · compatibility vertical gap: <code>${trace.usualGap}</code></p><div class="legend"><span class="piece-key">piece</span><span class="mark-key">drawn mark</span><span class="separator-key">separator</span><span class="gutter-key">gutter candidate</span><span class="band-key">whitespace band</span><span class="header-candidate-key">header candidate</span><span class="section-key">section candidate</span><span class="entry-key">entry candidate</span><span class="content-candidate-key">content candidate</span><span class="zone-key">provisional zone</span><span class="region-key">region</span></div>${pages}</section>`;
 }
 
 function pageReport(page: ParsedPage): string {
@@ -416,7 +463,7 @@ export function buildParsingInspectionReport(
 header,article,section,details{border:1px solid #8885;border-radius:10px;padding:16px;margin:16px 0}h1,h2,h3,h4{margin-top:0}small{opacity:.7;font-weight:normal}
 .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}.summary div{border:1px solid #8885;border-radius:8px;padding:10px}.summary strong{display:block;font-size:1.1rem;overflow-wrap:anywhere}.success{color:#198754}
 .page{position:relative;width:min(100%,850px);background:#fff;color:#111;border:1px solid #777;overflow:hidden}.region{position:absolute;box-sizing:border-box;border:2px dashed #e63946;background:#e6394608;pointer-events:none}.line{position:absolute;overflow:hidden;white-space:nowrap;font-size:clamp(4px,1.1vw,12px);line-height:1;background:#457b9d18;border-bottom:1px solid #457b9d55}.line.heading{background:#f4a26155;font-weight:700}
-.trace-stage>summary{cursor:pointer;padding:8px 0}.trace-page{position:relative;width:min(100%,850px);background:#fff;color:#111;border:1px solid #777;overflow:hidden;margin:12px 0}.trace-item{position:absolute;overflow:hidden;white-space:nowrap;font-size:clamp(4px,1.1vw,12px);line-height:1;background:#457b9d18;border-bottom:1px solid #457b9d55}.trace-item.piece{background:#8338ec24;border-color:#8338ec88}.trace-item.section-boundary,.trace-item.candidate-section{background:#f4a26188;border-color:#e76f51}.trace-item.entry-boundary,.trace-item.candidate-entry{background:#2a9d8f66;border-color:#198754}.trace-item.header-boundary,.trace-item.candidate-header{background:#e9c46a88;border-color:#b08900}.trace-item.candidate-content{background:#457b9d18;border-color:#457b9d55}.trace-region{position:absolute;box-sizing:border-box;border:2px dashed #e63946;background:#e6394608;pointer-events:none}.trace-mark{position:absolute;box-sizing:border-box;background:#d00000;border:1px solid #7f0000;min-width:2px;min-height:2px}.trace-separator{position:absolute;box-sizing:border-box;background:#00b4d8;min-width:2px;min-height:2px}.trace-separator.vertical{background:#0096c7}.trace-active-box{position:absolute;box-sizing:border-box;border:1px dotted #6c757d;pointer-events:none}.trace-metric-gutter{position:absolute;box-sizing:border-box;background:#ff006e20;border-left:1px solid #ff006e88;border-right:1px solid #ff006e88;pointer-events:none}.trace-metric-band{position:absolute;box-sizing:border-box;background:#3a86ff20;border-top:1px solid #3a86ff88;border-bottom:1px solid #3a86ff88;pointer-events:none}.trace-boundary-evidence{position:absolute;box-sizing:border-box;pointer-events:none}.trace-boundary-evidence.vertical-gutter{background:#ff006e16;border-left:1px solid #ff006e66;border-right:1px solid #ff006e66}.trace-boundary-evidence.horizontal-band,.trace-boundary-evidence.alignment-change{background:#3a86ff16;border-top:1px solid #3a86ff66;border-bottom:1px solid #3a86ff66}.trace-boundary-evidence.separator{background:#00b4d855;min-height:2px}.legend{display:flex;flex-wrap:wrap;gap:8px}.legend span{border:1px solid #8885;border-radius:6px;padding:4px 8px}.piece-key{background:#8338ec24}.mark-key{background:#d00000}.separator-key{background:#00b4d8}.gutter-key{background:#ff006e20}.band-key{background:#3a86ff20}.header-candidate-key{background:#e9c46a88}.section-key{background:#f4a26188}.entry-key{background:#2a9d8f66}.content-candidate-key{background:#457b9d18}.region-key{border:2px dashed #e63946!important}
+.trace-stage>summary{cursor:pointer;padding:8px 0}.trace-page{position:relative;width:min(100%,850px);background:#fff;color:#111;border:1px solid #777;overflow:hidden;margin:12px 0}.trace-item{position:absolute;overflow:hidden;white-space:nowrap;font-size:clamp(4px,1.1vw,12px);line-height:1;background:#457b9d18;border-bottom:1px solid #457b9d55}.trace-item.piece{background:#8338ec24;border-color:#8338ec88}.trace-item.section-boundary,.trace-item.candidate-section{background:#f4a26188;border-color:#e76f51}.trace-item.entry-boundary,.trace-item.candidate-entry{background:#2a9d8f66;border-color:#198754}.trace-item.header-boundary,.trace-item.candidate-header{background:#e9c46a88;border-color:#b08900}.trace-item.candidate-content{background:#457b9d18;border-color:#457b9d55}.trace-region{position:absolute;box-sizing:border-box;border:2px dashed #e63946;background:#e6394608;pointer-events:none}.trace-mark{position:absolute;box-sizing:border-box;background:#d00000;border:1px solid #7f0000;min-width:2px;min-height:2px}.trace-separator{position:absolute;box-sizing:border-box;background:#00b4d8;min-width:2px;min-height:2px}.trace-separator.vertical{background:#0096c7}.trace-active-box{position:absolute;box-sizing:border-box;border:1px dotted #6c757d;pointer-events:none}.trace-metric-gutter{position:absolute;box-sizing:border-box;background:#ff006e20;border-left:1px solid #ff006e88;border-right:1px solid #ff006e88;pointer-events:none}.trace-metric-band{position:absolute;box-sizing:border-box;background:#3a86ff20;border-top:1px solid #3a86ff88;border-bottom:1px solid #3a86ff88;pointer-events:none}.trace-boundary-evidence{position:absolute;box-sizing:border-box;pointer-events:none}.trace-boundary-evidence.vertical-gutter{background:#ff006e16;border-left:1px solid #ff006e66;border-right:1px solid #ff006e66}.trace-boundary-evidence.horizontal-band,.trace-boundary-evidence.alignment-change{background:#3a86ff16;border-top:1px solid #3a86ff66;border-bottom:1px solid #3a86ff66}.trace-boundary-evidence.separator{background:#00b4d855;min-height:2px}.trace-zone-part{position:absolute;box-sizing:border-box;border:2px solid #7209b755;background:#7209b710;pointer-events:none}.trace-zone-part.header,.trace-zone-part.full-width-section{border-color:#f7258588;background:#f7258512}.trace-zone-part.left-lane{border-color:#7209b788}.trace-zone-part.right-lane,.trace-zone-part.body{border-color:#4361ee88;background:#4361ee10}.trace-zone-boundary{position:absolute;box-sizing:border-box;background:#4cc9f055;border:1px dashed #0077b6;min-width:2px;min-height:2px;pointer-events:none}.legend{display:flex;flex-wrap:wrap;gap:8px}.legend span{border:1px solid #8885;border-radius:6px;padding:4px 8px}.piece-key{background:#8338ec24}.mark-key{background:#d00000}.separator-key{background:#00b4d8}.gutter-key{background:#ff006e20}.band-key{background:#3a86ff20}.header-candidate-key{background:#e9c46a88}.section-key{background:#f4a26188}.entry-key{background:#2a9d8f66}.content-candidate-key{background:#457b9d18}.zone-key{border:2px solid #7209b788!important;background:#7209b710}.region-key{border:2px dashed #e63946!important}
 ol{padding:0;list-style:none}li{display:grid;grid-template-columns:65px 1fr;gap:4px 10px;padding:7px 0;border-bottom:1px solid #8883}li small{grid-column:2}table{border-collapse:collapse;width:100%}th,td{border:1px solid #8885;padding:8px;text-align:left}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#7772;border-radius:8px;padding:14px}code{font-family:ui-monospace,monospace}
 </style></head><body>
 <header><h1>${escapeHtml(sourceName)}</h1><div class="summary"><div>Status<strong>${escapeHtml(
