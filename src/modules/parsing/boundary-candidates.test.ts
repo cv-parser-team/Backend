@@ -36,6 +36,107 @@ function generate(
 }
 
 describe('boundary candidate scoring', () => {
+  it('recognizes normalized common section names without matching substrings', () => {
+    const result = generate([
+      line('PROFESSIONAL SUMMARY:', 50, 100, 13, true),
+      line('Bachelor of Education', 50, 150, 13, true),
+      line('Supporting body copy', 50, 180)
+    ], [], 1);
+
+    expect(result.lines[0]!.section.reasons).toContain('exact common section heading');
+    expect(result.lines[1]!.section.reasons).not.toContain('exact common section heading');
+  });
+
+  it('uses only established section styles during the repeated-style pass', () => {
+    const result = generate([
+      line('Aarya Agarwal', 50, 100, 13, true),
+      line('CEO of Example Company', 50, 120),
+      line('Sharin Varma', 50, 180, 13, true),
+      line('HRD of Example Company', 50, 200),
+      line('Ordinary supporting copy', 50, 220),
+      line('More ordinary supporting copy', 50, 240)
+    ], [], 1);
+
+    expect(result.lines[0]!.section.reasons).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('established section heading')])
+    );
+    expect(result.lines[2]!.section.reasons).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('established section heading')])
+    );
+  });
+
+  it('requires matching font style and letter capping for repeated section styles', () => {
+    const lines = [
+      line('EXPERIENCE', 50, 100, 13, true),
+      line('COMMUNITY WORK', 50, 116, 13, true),
+      line('Community Projects', 50, 132, 13, true),
+      line('REGULAR HEADING', 50, 148, 13, false),
+      line('ITALIC HEADING', 50, 164, 13, true),
+      line('Supporting body copy one', 250, 200),
+      line('Supporting body copy two', 250, 220),
+      line('Supporting body copy three', 250, 240),
+      line('Supporting body copy four', 250, 260),
+      line('Supporting body copy five', 250, 280),
+      line('Supporting body copy six', 250, 300)
+    ];
+    lines[4]!.italic = true;
+    const result = generate(lines, [], 1);
+
+    expect(result.lines[1]!.section.reasons).toContain(
+      'style matches 1 established section heading in the same lane'
+    );
+    for (const lineIndex of [2, 3, 4]) {
+      expect(result.lines[lineIndex]!.section.reasons).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('established section heading')])
+      );
+    }
+  });
+
+  it('uses weak raw repetition to establish styles during the first pass', () => {
+    const result = generate([
+      line('COMMUNITY WORK', 50, 100, 13, true),
+      line('SELECTED TALKS', 50, 120, 13, true),
+      line('INDUSTRY EVENTS', 50, 140, 13, true),
+      line('MENTORING WORK', 50, 160, 13, true),
+      line('OPEN SOURCE WORK', 50, 180, 13, true),
+      line('PROFESSIONAL GROUPS', 50, 200, 13, true),
+      line('Supporting body copy one', 250, 300),
+      line('Supporting body copy two', 250, 320),
+      line('Supporting body copy three', 250, 340),
+      line('Supporting body copy four', 250, 360),
+      line('Supporting body copy five', 250, 380),
+      line('Supporting body copy six', 250, 400),
+      line('Supporting body copy seven', 250, 420),
+      line('Supporting body copy eight', 250, 440),
+      line('Supporting body copy nine', 250, 460),
+      line('Supporting body copy ten', 250, 480)
+    ], [], 1);
+
+    expect(result.lines[0]!.section.reasons).toContain(
+      'style matches 5 established section headings in the same lane'
+    );
+    expect(result.lines[0]!.section.score).toBe(0.95);
+  });
+
+  it('increases repeated established-section evidence up to a 0.35 cap', () => {
+    const result = generate([
+      line('EXPERIENCE', 50, 100, 13, true),
+      line('EDUCATION', 50, 150, 13, true),
+      line('SKILLS', 50, 200, 13, true),
+      line('PROJECTS', 50, 250, 13, true),
+      line('REFERENCES', 50, 300, 13, true),
+      line('COMMUNITY WORK', 50, 350, 13, true),
+      line('Supporting body copy', 50, 380),
+      line('More supporting body copy', 50, 400)
+    ], [], 1);
+    const customHeading = result.lines[5]!;
+
+    expect(customHeading.section.reasons).toContain(
+      'style matches 5 established section headings in the same lane'
+    );
+    expect(customHeading.section.score).toBe(0.65);
+  });
+
   it('scores a prominent first-page title as a header without committing an action', () => {
     const result = generate([
       line('SAMPLE CANDIDATE', 100, 30, 24, true),
@@ -77,6 +178,33 @@ describe('boundary candidate scoring', () => {
     const body = result.lines[1]!;
     expect(body.content.score).toBeGreaterThan(body.section.score);
     expect(body.content.reasons).toContain('sentence or paragraph shape');
+  });
+
+  it('applies separate capped penalties for bullets, dates, and number-dominant lines', () => {
+    const bullet = line('LEADERSHIP', 50, 100, 13, true);
+    bullet.bullet = true;
+    const result = generate([
+      bullet,
+      line('2020 - 2024', 50, 150, 13, true),
+      line('GPA 3.9', 50, 200, 13, true),
+      line('Top 10 Achievements', 50, 250, 13, true),
+      line('Supporting body copy one', 250, 300),
+      line('Supporting body copy two', 250, 320)
+    ], [], 1);
+
+    expect(result.lines[0]!.section.reasons).toContain('bullet item reduces heading authority');
+    expect(result.lines[1]!.section.reasons).toEqual(expect.arrayContaining([
+      'date value reduces heading authority',
+      'number-dominant text reduces heading authority'
+    ]));
+    expect(result.lines[2]!.section.reasons).toContain(
+      'number-dominant text reduces heading authority'
+    );
+    expect(result.lines[3]!.section.reasons).not.toContain(
+      'number-dominant text reduces heading authority'
+    );
+    expect(result.lines[1]!.section.score).toBe(0);
+    expect(result.lines[2]!.section.score).toBe(0.05);
   });
 
   it('gives a spanning separator more evidence than a decorative short rule', () => {

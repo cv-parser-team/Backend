@@ -90,6 +90,14 @@ function part(
   return { label, box: unionBox(lines, indexes), lineIndexes: indexes };
 }
 
+function geometricLanePart(
+  label: Extract<LayoutZonePartLabel, 'left-lane' | 'right-lane'>,
+  box: BoundingBox,
+  indexes: number[]
+): LayoutZonePart {
+  return { label, box, lineIndexes: indexes };
+}
+
 function horizontalEvidence(
   candidates: NonTextBoundaryCandidate[]
 ): NonTextBoundaryCandidate[] {
@@ -197,9 +205,17 @@ function fullWidthSectionCandidates(input: LayoutZoneCandidateInput): LayoutZone
       return [];
     }
     const line = input.lines[candidate.lineIndex]!;
+    const usesLearnedSectionEvidence = candidate.section.reasons.some(
+      (reason) =>
+        reason === 'exact common section heading' ||
+        reason.startsWith('style matches ')
+    );
+    const boundaryCandidates = usesLearnedSectionEvidence
+      ? input.nonTextBoundaryCandidates.filter((item) => item.kind === 'separator')
+      : input.nonTextBoundaryCandidates;
     const boundary = nearestHorizontalBoundary(
       centerY(line.box),
-      input.nonTextBoundaryCandidates,
+      boundaryCandidates,
       activeBox,
       'around',
       Math.max(input.metrics.usualBodyHeight * 3, input.metrics.usualVerticalGap * 3)
@@ -243,24 +259,6 @@ function fullWidthSectionCandidates(input: LayoutZoneCandidateInput): LayoutZone
   });
 }
 
-function shareOnSharedRows(
-  firstIndexes: number[],
-  secondIndexes: number[],
-  lines: LayoutLine[]
-): number {
-  if (firstIndexes.length === 0) {
-    return 0;
-  }
-  const shared = firstIndexes.filter((firstIndex) =>
-    secondIndexes.some(
-      (secondIndex) =>
-        Math.abs(centerY(lines[firstIndex]!.box) - centerY(lines[secondIndex]!.box)) <=
-        Math.min(lines[firstIndex]!.box.height, lines[secondIndex]!.box.height) / 2
-    )
-  ).length;
-  return shared / firstIndexes.length;
-}
-
 function metadataShare(indexes: number[], lines: LayoutLine[]): number {
   if (indexes.length === 0) {
     return 0;
@@ -293,16 +291,31 @@ function gutterZoneCandidate(
     return null;
   }
   const gutterRight = right(gutter.box);
+  const domainTop = Math.max(activeBox.y, gutter.box.y);
+  const domainBottom = Math.min(bottom(activeBox), bottom(gutter.box));
+  const domainLines = input.lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => centerY(line.box) >= domainTop && centerY(line.box) <= domainBottom);
+  if (domainBottom <= domainTop) {
+    return null;
+  }
   const leftIndexes = input.lines
     .map((_, index) => index)
-    .filter((index) => right(input.lines[index]!.box) <= gutter.box.x + 3);
+    .filter((index) =>
+      domainLines.some((candidate) => candidate.index === index) &&
+      right(input.lines[index]!.box) <= gutter.box.x + 3
+    );
   const rightIndexes = input.lines
     .map((_, index) => index)
-    .filter((index) => input.lines[index]!.box.x >= gutterRight - 3);
+    .filter((index) =>
+      domainLines.some((candidate) => candidate.index === index) &&
+      input.lines[index]!.box.x >= gutterRight - 3
+    );
   const crossingIndexes = input.lines
     .map((_, index) => index)
     .filter(
       (index) =>
+        domainLines.some((candidate) => candidate.index === index) &&
         input.lines[index]!.box.x < gutterRight && right(input.lines[index]!.box) > gutter.box.x
     );
   if (leftIndexes.length < 2 || rightIndexes.length < 2) {
@@ -313,15 +326,11 @@ function gutterZoneCandidate(
   // provisional gutter can describe geometry but cannot partition ownership.
   const leftPartIndexes = [...new Set([...leftIndexes, ...crossingIndexes])].sort((a, b) => a - b);
   const rightPartIndexes = [...new Set([...rightIndexes, ...crossingIndexes])].sort((a, b) => a - b);
-  const sharedRows = Math.max(
-    shareOnSharedRows(leftIndexes, rightIndexes, input.lines),
-    shareOnSharedRows(rightIndexes, leftIndexes, input.lines)
-  );
   const leftWidth = laneWidth(leftIndexes, input.lines);
   const rightWidth = laneWidth(rightIndexes, input.lines);
   const narrowerShare = Math.min(leftWidth, rightWidth) / Math.max(leftWidth + rightWidth, 1);
   const support = Math.min(1, Math.min(leftIndexes.length, rightIndexes.length) / 4);
-  const crossingShare = crossingIndexes.length / input.lines.length;
+  const crossingShare = crossingIndexes.length / Math.max(domainLines.length, 1);
   const leftMetadata = metadataShare(leftIndexes, input.lines);
   const rightMetadata = metadataShare(rightIndexes, input.lines);
   const metadataRail = Math.max(leftMetadata, rightMetadata) >= 0.5;
@@ -355,11 +364,6 @@ function gutterZoneCandidate(
   if (crossingShare <= 0.2) {
     parallelScore += 0.05;
   }
-  if (sharedRows >= 0.65) {
-    sidebarScore -= 0.35;
-    parallelScore -= 0.35;
-    reasons.push('shared rows suggest a table, grid, or paired fields');
-  }
   if (metadataRail) {
     sidebarScore -= 0.25;
     parallelScore -= 0.2;
@@ -370,13 +374,12 @@ function gutterZoneCandidate(
   parallelScore = clamp(parallelScore);
   let kind: LayoutZoneKind = 'unresolved-gutter';
   let confidence = Math.max(sidebarScore, parallelScore, gutter.evidence.score * 0.45);
-  if (sidebarScore >= 0.65 && narrowLane && sharedRows < 0.65 && !metadataRail) {
+  if (sidebarScore >= 0.65 && narrowLane && !metadataRail) {
     kind = 'sidebar-main';
     confidence = sidebarScore;
   } else if (
     parallelScore >= 0.65 &&
     independentSections &&
-    sharedRows < 0.65 &&
     !metadataRail
   ) {
     kind = 'parallel-columns';
@@ -392,14 +395,29 @@ function gutterZoneCandidate(
   ])].sort((a, b) => a - b);
   return {
     kind,
-    box: unionBox(input.lines, participating),
+    box: {
+      x: activeBox.x,
+      y: round(domainTop),
+      width: activeBox.width,
+      height: round(domainBottom - domainTop)
+    },
     boundaryBox: gutter.box,
     confidence: round(confidence),
     reasons,
     participatingLineIndexes: participating,
     parts: [
-      part('left-lane', input.lines, leftPartIndexes),
-      part('right-lane', input.lines, rightPartIndexes)
+      geometricLanePart('left-lane', {
+        x: activeBox.x,
+        y: round(domainTop),
+        width: round(Math.max(0, gutter.box.x - activeBox.x)),
+        height: round(domainBottom - domainTop)
+      }, leftPartIndexes),
+      geometricLanePart('right-lane', {
+        x: gutterRight,
+        y: round(domainTop),
+        width: round(Math.max(0, right(activeBox) - gutterRight)),
+        height: round(domainBottom - domainTop)
+      }, rightPartIndexes)
     ]
   };
 }
@@ -414,10 +432,15 @@ export function generateLayoutZoneCandidates(
   const fullWidthSections = fullWidthSectionCandidates(input);
   const gutterZones = input.nonTextBoundaryCandidates
     .filter(
-      (candidate) => candidate.kind === 'vertical-gutter' && candidate.evidence.score >= 0.55
+      (candidate) =>
+        (candidate.kind === 'vertical-gutter' && candidate.evidence.score >= 0.55) ||
+        (candidate.kind === 'separator' &&
+          candidate.box.height > candidate.box.width &&
+          candidate.evidence.score >= 0.55)
     )
     .map((candidate) => gutterZoneCandidate(input, candidate))
-    .filter((candidate): candidate is LayoutZoneCandidate => candidate !== null);
+    .filter((candidate): candidate is LayoutZoneCandidate => candidate !== null)
+    .sort((a, b) => a.box.height - b.box.height || b.confidence - a.confidence);
   return [
     ...(header ? [header] : []),
     ...fullWidthSections,

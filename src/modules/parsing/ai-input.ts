@@ -19,9 +19,8 @@ function sentenceContinues(above: TextLine, below: TextLine): boolean {
 }
 
 // A line wraps only when the next line's first word would not have fitted at
-// its end. The column ends at the widest line sharing the line's left edge,
-// so cells of a grid are measured by their own column. Character width is
-// estimated from the line itself.
+// its end. The available width ends at the widest line sharing the line's
+// left edge. Character width is estimated from the line itself.
 function nextWordDidNotFit(above: TextLine, below: TextLine, region: Region): boolean {
   const characterWidth = above.box.width / above.text.length;
   const firstWord = below.text.split(' ')[0] ?? '';
@@ -91,11 +90,11 @@ function continuesHeading(above: TextLine, below: TextLine): boolean {
   );
 }
 
-// Whether the next line continues the cell: wrapped text, the rest of a list
+// Whether the next line continues the flow: wrapped text, the rest of a list
 // item, or the rest of a heading. Every listed signal must agree.
-function continuesLine(cell: Cell, below: TextLine, region: Region, gap: number): boolean {
-  const item = cell[0]!;
-  const above = cell.at(-1)!;
+function continuesLine(flow: Flow, below: TextLine, region: Region, gap: number): boolean {
+  const item = flow[0]!;
+  const above = flow.at(-1)!;
   if (above.heading || below.heading) {
     return continuesHeading(above, below);
   }
@@ -149,16 +148,8 @@ function hiddenLinks(text: string, links: string[]): string {
   return hidden.length > 0 ? ` (links: ${hidden.join(', ')})` : '';
 }
 
-// A cell holds one line, or several when a wrapped line continues it.
-type Cell = TextLine[];
-// An output line: one cell of flowing text, or the cells of one row, such as
-// a title and its right-aligned date, table cells, or cards side by side.
-type Row = Cell[];
-
-function sameRow(a: TextLine, b: TextLine): boolean {
-  const center = (line: TextLine) => line.box.y + line.box.height / 2;
-  return Math.abs(center(a) - center(b)) <= Math.min(a.box.height, b.box.height) / 2;
-}
+// A flow holds one line, or consecutive lines when text wraps.
+type Flow = TextLine[];
 
 // Line references such as "L5", "L5-7", or "L5-6,9" for lines that are not
 // next to each other in reading order.
@@ -178,53 +169,31 @@ function reference(lines: TextLine[]): string {
 
 // List items drawn with a shape bullet get a bullet character, so AI sees
 // where each item starts.
-function cellText(cell: Cell): string {
-  const text = cell.map((line) => withoutLetterSpacing(line.text)).join(' ');
-  const styled = marked(text, cell[0]!);
-  return cell[0]!.bullet && !BULLET.test(text) ? `• ${styled}` : styled;
+function flowText(flow: Flow): string {
+  const text = flow.map((line) => withoutLetterSpacing(line.text)).join(' ');
+  const styled = marked(text, flow[0]!);
+  return flow[0]!.bullet && !BULLET.test(text) ? `• ${styled}` : styled;
 }
 
-// The cell whose last line is the nearest line above this one in the same
-// column, so a wrapped cell of a grid continues its own column.
-function cellAbove(rows: Row[], line: TextLine): Cell | undefined {
-  let nearest: Cell | undefined;
-  for (const cell of rows.flat()) {
-    const last = cell.at(-1)!;
-    const above = last.box.y < line.box.y;
-    const sameColumn =
-      last.box.x < line.box.x + line.box.width && line.box.x < last.box.x + last.box.width;
-    if (above && sameColumn && (!nearest || last.box.y > nearest.at(-1)!.box.y)) {
-      nearest = cell;
-    }
-  }
-  return nearest;
-}
-
-// Cells on one row are kept on one output line, separated by "|", so AI sees
-// the grid as it is drawn instead of a guess about tables or columns.
-function regionRows(region: Region, gap: number): Row[] {
-  const rows: Row[] = [];
+function regionFlows(region: Region, gap: number): Flow[] {
+  const flows: Flow[] = [];
   for (const line of region.lines) {
-    const cell = cellAbove(rows, line);
-    const row = rows.at(-1);
-    if (cell && continuesLine(cell, line, region, gap)) {
-      cell.push(line);
-    } else if (row && row.every((other) => other.length === 1) && sameRow(row[0]![0]!, line)) {
-      row.push([line]);
+    const flow = flows.at(-1);
+    if (flow && continuesLine(flow, line, region, gap)) {
+      flow.push(line);
     } else {
-      rows.push([[line]]);
+      flows.push([line]);
     }
   }
-  return rows;
+  return flows;
 }
 
 function regionLines(region: Region, gap: number): string[] {
-  return regionRows(region, gap).map((row) => {
-    const lines = row.flat();
-    const text = row.map(cellText).join(' | ');
-    const links = hiddenLinks(text, [...new Set(lines.flatMap((line) => line.links))]);
-    const heading = row.every((cell) => cell[0]!.heading) ? '## ' : '';
-    return `${heading}${reference(lines)} ${text}${links}`;
+  return regionFlows(region, gap).map((flow) => {
+    const text = flowText(flow);
+    const links = hiddenLinks(text, [...new Set(flow.flatMap((line) => line.links))]);
+    const heading = flow[0]!.heading ? '## ' : '';
+    return `${heading}${reference(flow)} ${text}${links}`;
   });
 }
 
@@ -246,7 +215,7 @@ export function buildAiInput(content: Pick<ExtractionResult, 'pages' | 'blocks'>
   const gap = usualGap(regions);
   const pageLines = content.pages.flatMap((page) =>
     page.regions.flatMap((region) => [
-      `[P${page.pageNumber} R${region.index}]`,
+      `[P${page.pageNumber} R${region.index}${region.role ? ` ${region.role}` : ''}${region.parentIndex == null ? '' : ` parent R${region.parentIndex}`}]`,
       ...regionLines(region, gap)
     ])
   );

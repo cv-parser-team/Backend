@@ -22,10 +22,14 @@ interface HeadingAssessment {
 2. Calculate typical body height per page or layout region.
 3. Normalize each complete line for vocabulary matching.
 4. Exclude obvious non-heading lines.
-5. Score the remaining lines using text and layout signals.
-6. Assign a line role and confidence.
-7. Use confirmed headings for section splitting.
-8. Include confirmed and candidate headings in AI input.
+5. Score a first pass with weak repetition among heading-shaped lines.
+6. Establish reliable section-style anchors from exact common names, intrinsic
+   evidence, and the weak first-pass repetition.
+7. Score a second pass using only styles that match those anchors; this trusted
+   repetition replaces the weak first-pass repetition.
+8. Assign a line role and confidence.
+9. Use confirmed headings for section splitting.
+10. Include confirmed and candidate headings in AI input.
 
 ## Normalization
 
@@ -72,18 +76,35 @@ Reject a line as a heading candidate when it is:
 
 | Signal | Score |
 | --- | ---: |
-| Exact common-heading match | +0.50 |
+| Exact common-heading match | +0.40 |
 | Larger than local body text | +0.20 |
 | Bold | +0.10 |
 | Uppercase or title case and short | +0.10 |
 | Large vertical gap above | +0.10 |
-| Matches repeated heading style | +0.10 |
+| First-pass raw style match | +0.05 each |
+| Second-pass trusted style match | +0.10 each |
 | Long sentence | -0.40 |
-| Date or contact value | -0.40 |
-| Bullet item | -0.30 |
-| Key/value line such as `GPA 3.71` | -0.30 |
+| Date value | -0.45 |
+| Contact value | -0.50 |
+| Bullet item | -0.35 |
+| Number-dominant line such as `GPA 3.71` | -0.25 |
 
-Clamp the final confidence to `0..1`.
+Cap combined negative heading evidence at `-0.65`, then clamp the final
+confidence to `0..1`. This lets independent negative signals reinforce one
+another without counting a phone number that is also numeric as an unlimited
+penalty. A line is number-dominant when at least half of its whitespace-delimited
+tokens contain a digit, so a heading such as `Top 10 Achievements` is not
+penalized.
+
+Both repetition passes use one `+0.35` cap. The final score uses the trusted
+second-pass value instead of adding both passes. A non-common line needs at
+least `0.50` intrinsic section evidence before weak repetition can help it
+establish a style, so ordinary bold lines cannot confirm one another through
+repetition alone. A repeated match requires the same font style
+(bold, italic, and font height), left alignment, and letter-capping pattern
+(uppercase, lowercase, title case, or mixed case).
+Lines with negative heading evidence cannot earn repeated-style evidence or
+become first-pass style anchors.
 
 ## Classification
 

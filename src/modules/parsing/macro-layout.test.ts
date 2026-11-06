@@ -102,7 +102,7 @@ describe('provisional macro layout hypotheses', () => {
     expect(generate(lines).some((candidate) => candidate.kind === 'parallel-columns')).toBe(true);
   });
 
-  it('leaves shared-row tables as unresolved gutters', () => {
+  it('does not treat shared rows as a table or grid signal', () => {
     const lines = [
       line('Role', 40, 80, 180, 10, true),
       line('Company', 300, 80, 180, 10, true),
@@ -114,8 +114,7 @@ describe('provisional macro layout hypotheses', () => {
     const zones = generate(lines, [], 1);
 
     expect(zones.some((candidate) => candidate.kind === 'unresolved-gutter')).toBe(true);
-    expect(zones.some((candidate) => candidate.kind === 'parallel-columns')).toBe(false);
-    expect(zones.some((candidate) => candidate.kind === 'sidebar-main')).toBe(false);
+    expect(zones.flatMap((candidate) => candidate.reasons).join(' ')).not.toMatch(/table|grid/);
   });
 
   it('leaves right-aligned date rails unresolved', () => {

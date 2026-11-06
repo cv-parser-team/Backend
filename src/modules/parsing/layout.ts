@@ -7,16 +7,6 @@ import {
   TextPiece
 } from './parsing.types.js';
 import {
-  HEADING_SETTINGS,
-  scoreHeading,
-  type HeadingScore
-} from './heading-classifier.js';
-import {
-  headingLayoutAction,
-  type HeadingClassification,
-  type HeadingLayoutAction
-} from './heading-layout-policy.js';
-import {
   generateBoundaryCandidates,
   type BoundaryCandidate,
   type NonTextBoundaryCandidate
@@ -25,6 +15,22 @@ import {
   generateLayoutZoneCandidates,
   type LayoutZoneCandidate
 } from './macro-layout.js';
+import {
+  establishSectionScopes,
+  type SectionScope
+} from './section-scopes.js';
+import {
+  resolveEntriesAndAssociations,
+  type Association,
+  type EntryGroup,
+  type ResolvedEntryAnchor
+} from './entry-groups.js';
+import {
+  resolveFinalLayout,
+  type FinalRegionDraft,
+  type SectionColumn,
+  type ValidatedLayoutZone
+} from './final-layout.js';
 
 // Layout works on text pieces with page coordinates and knows nothing about
 // the file format, so any source of positioned text can use it.
@@ -86,19 +92,6 @@ export interface PageMetrics {
   separatorCoverage: SeparatorCoverage[];
 }
 
-export type LayoutTraceLine = LayoutLine & {
-  heading: boolean;
-  layoutAction: HeadingLayoutAction;
-};
-
-type LineDraft = LayoutTraceLine;
-
-export interface LayoutTraceRegion {
-  box: BoundingBox;
-  confidence: number | null;
-  lines: LayoutTraceLine[];
-}
-
 export interface LayoutTracePage {
   pageNumber: number;
   width: number;
@@ -111,9 +104,14 @@ export interface LayoutTracePage {
   boundaryCandidates: BoundaryCandidate[];
   nonTextBoundaryCandidates: NonTextBoundaryCandidate[];
   layoutZoneCandidates: LayoutZoneCandidate[];
-  classifiedLines: LayoutTraceLine[];
-  splitRegions: LayoutTraceRegion[];
-  ownedRegions: LayoutTraceRegion[];
+  sectionScopes: SectionScope[];
+  entryAnchors: ResolvedEntryAnchor[];
+  associations: Association[];
+  entryGroups: EntryGroup[];
+  validatedZones: ValidatedLayoutZone[];
+  sectionColumns: SectionColumn[];
+  finalRegions: FinalRegionDraft[];
+  revisedAiInputLines: string[];
 }
 
 export interface LayoutTrace {
@@ -206,39 +204,8 @@ function withoutOverlaidCopies(pieces: TextPiece[]): TextPiece[] {
   return kept;
 }
 
-const LINE_LANE_TOLERANCE = 3;
-const REPEATED_LANE_ROW_COUNT = 2;
-
-function hasRepeatedLanePair(
-  rows: TextPiece[][],
-  sourceRow: TextPiece[],
-  left: number,
-  right: number
-): boolean {
-  let matchingRows = 0;
-  const sourceCenter = median(sourceRow.map((piece) => centerY(piece.box)));
-  const sourceHeight = median(sourceRow.map((piece) => piece.box.height));
-  for (const row of rows) {
-    const rowCenter = median(row.map((piece) => centerY(piece.box)));
-    const rowHeight = median(row.map((piece) => piece.box.height));
-    if (Math.abs(rowCenter - sourceCenter) > Math.max(sourceHeight, rowHeight) * 3) {
-      continue;
-    }
-    const hasLeft = row.some((piece) => Math.abs(piece.box.x - left) <= LINE_LANE_TOLERANCE);
-    const hasRight = row.some((piece) => Math.abs(piece.box.x - right) <= LINE_LANE_TOLERANCE);
-    if (hasLeft && hasRight) {
-      matchingRows += 1;
-      if (matchingRows >= REPEATED_LANE_ROW_COUNT) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 // Pieces at the same height form a row. A wide horizontal gap splits a row
-// into separate lines. Repeated starts on multiple rows also identify narrow
-// table or grid columns whose gutter alone is too small to be conclusive.
+// into separate lines.
 function groupLines(pieces: TextPiece[]): LayoutLine[] {
   const sorted = withoutOverlaidCopies(pieces).sort(
     (a, b) => a.box.y - b.box.y || a.box.x - b.box.x
@@ -266,9 +233,7 @@ function groupLines(pieces: TextPiece[]): LayoutLine[] {
       const current = lines[lines.length - 1]!;
       const previous = current[current.length - 1]!;
       const gap = piece.box.x - (previous.box.x + previous.box.width);
-      const repeatedLanes =
-        gap > 0 && hasRepeatedLanePair(rows, row, current[0]!.box.x, piece.box.x);
-      if (gap > Math.max(previous.box.height, piece.box.height) * 2 || repeatedLanes) {
+      if (gap > Math.max(previous.box.height, piece.box.height) * 2) {
         lines.push([piece]);
       } else {
         current.push(piece);
@@ -290,54 +255,13 @@ export function reconstructLines(
 // Starting values for region detection, kept in one place so they can be
 // tuned on real CVs.
 export const LAYOUT_SETTINGS = {
-  weights: {
-    gutterContinuity: 0.4,
-    alignment: 0.3,
-    regionWidth: 0.15,
-    headingSupport: 0.1,
-    lineSpacing: 0.05
-  },
-  splitScore: 0.7,
-  supportedSplitScore: 0.5,
-  strongSignal: 0.7,
-  // Shares of the region width between which the narrower side's width
-  // signal rises from 0 to 1.
-  narrowWidthShare: 0.1,
-  wideWidthShare: 0.25,
   // A gutter must be at least this many line heights wide.
   minGutterLineHeights: 1.5,
   // Lines starting within this many points share a left edge.
   alignmentTolerance: 3,
-  // When this share of one side's lines sits on the same rows as the other
-  // side, the gap separates cells of shared rows (a table or right-aligned
-  // dates), not columns.
-  sharedRowShare: 0.8,
-  // A vertical gap this many times the usual gap may start a new section.
-  sectionGapRatio: 2,
-  // Lines this many times taller than the usual line are headings.
+  // Used only when compact AI input decides whether adjacent heading lines wrap.
   headingHeightRatio: 1.15,
-  readingDirection: 'ltr' as 'ltr' | 'rtl'
 };
-
-const ENTRY_DATE = /(?:\b(?:19|20)\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\bpresent\b)/iu;
-const ENTRY_CONTACT = /(?:@|https?:\/\/|www\.|\+?\d[\d ().-]{6,}\d)/iu;
-const ENTRY_WORD_LIMIT = 8;
-
-interface RegionDraft {
-  lines: LineDraft[];
-  confidence: number | null;
-}
-
-interface Split {
-  parts: [LineDraft[], LineDraft[]];
-  confidence: number;
-}
-
-interface ColumnSplit extends Split {
-  // The empty band between the columns, from the right edge of the left
-  // column to the left edge of the right column.
-  gutter: { left: number; right: number };
-}
 
 function median(values: number[]): number {
   if (values.length === 0) {
@@ -352,65 +276,12 @@ function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function byReadingPosition(a: LayoutLine, b: LayoutLine): number {
-  return a.box.y - b.box.y || a.box.x - b.box.x;
-}
-
 function right(box: BoundingBox): number {
   return box.x + box.width;
 }
 
 function centerY(box: BoundingBox): number {
   return box.y + box.height / 2;
-}
-
-function sharesRow(first: LayoutLine, second: LayoutLine): boolean {
-  return (
-    Math.abs(centerY(first.box) - centerY(second.box)) <=
-    Math.min(first.box.height, second.box.height) / 2
-  );
-}
-
-function ownershipBoundaryRank(line: LineDraft): number {
-  switch (line.layoutAction) {
-    case 'section-boundary':
-      return 0;
-    case 'entry-boundary':
-      return 1;
-    case 'header-boundary':
-    case 'none':
-      return 2;
-  }
-}
-
-// A side label owns content on the same visual row even when the label is to
-// its right. Keep the semantic boundary before that content inside a region;
-// ordinary rows retain their geometric left-to-right order.
-function byOwnedReadingPosition(a: LineDraft, b: LineDraft): number {
-  if (
-    sharesRow(a, b) ||
-    Math.abs(a.box.y - b.box.y) <= LAYOUT_SETTINGS.alignmentTolerance
-  ) {
-    const boundaryOrder = ownershipBoundaryRank(a) - ownershipBoundaryRank(b);
-    if (boundaryOrder !== 0) {
-      return boundaryOrder;
-    }
-  }
-  return byReadingPosition(a, b);
-}
-
-// Gaps between consecutive lines from top to bottom; overlapping lines count
-// as no gap.
-function verticalGaps(lines: LayoutLine[]): { gap: number; below: number }[] {
-  const sorted = [...lines].sort(byReadingPosition);
-  const gaps: { gap: number; below: number }[] = [];
-  let bottom = sorted[0] ? sorted[0].box.y + sorted[0].box.height : 0;
-  for (let index = 1; index < sorted.length; index++) {
-    const line = sorted[index]!;
-    gaps.push({ gap: Math.max(0, line.box.y - bottom), below: index });
-    bottom = Math.max(bottom, line.box.y + line.box.height);
-  }
-  return gaps;
 }
 
 // The spaces between each line and the line above it in the same column, so
@@ -664,669 +535,10 @@ export function measurePageMetrics(
   };
 }
 
-function shareWithCommonLeftEdge(lines: LineDraft[]): number {
-  const best = Math.max(
-    ...lines.map(
-      (candidate) =>
-        lines.filter(
-          (line) => Math.abs(line.box.x - candidate.box.x) <= LAYOUT_SETTINGS.alignmentTolerance
-        ).length
-    )
-  );
-  return best / lines.length;
-}
-
-function shareOnSharedRows(lines: LineDraft[], others: LineDraft[]): number {
-  const shared = lines.filter((line) =>
-    others.some(
-      (other) =>
-        Math.abs(centerY(line.box) - centerY(other.box)) <=
-        Math.min(line.box.height, other.box.height) / 2
-    )
-  ).length;
-  return shared / lines.length;
-}
-
-function normalizedSpacing(lines: LineDraft[]): number {
-  const height = median(lines.map((line) => line.box.height));
-  return height === 0 ? 0 : median(verticalGaps(lines).map(({ gap }) => gap)) / height;
-}
-
-function isOwnershipBoundary(line: LineDraft): boolean {
-  return line.layoutAction === 'section-boundary' || line.layoutAction === 'entry-boundary';
-}
-
-function isOwnershipMetadata(line: LineDraft): boolean {
-  return ENTRY_DATE.test(line.text) || ENTRY_CONTACT.test(line.text);
-}
-
-function isCompactDateMetadata(line: LineDraft): boolean {
-  return ENTRY_DATE.test(line.text) && wordCount(line.text) <= 5;
-}
-
-function isNearAnchor(anchor: LineDraft, candidate: LineDraft): boolean {
-  const forwardGap = candidate.box.y - (anchor.box.y + anchor.box.height);
-  return (
-    sharesRow(anchor, candidate) ||
-    (candidate.box.y >= anchor.box.y - LAYOUT_SETTINGS.alignmentTolerance &&
-      forwardGap <= Math.max(anchor.box.height, candidate.box.height) * 1.5)
-  );
-}
-
-// A title or compact metadata value may sit on either side of the content it
-// describes. Such linked lines are one semantic block, even when an otherwise
-// valid vertical gutter separates them. Links require visual-row alignment;
-// merely nearby lines can still belong to genuinely parallel sections.
-function hasCrossLaneOwnershipLink(left: LineDraft[], rightLines: LineDraft[]): boolean {
-  const linksFrom = (sameLane: LineDraft[], otherLane: LineDraft[]) => {
-    const linkedTitle = sameLane.some((anchor) => {
-      if (!isOwnershipBoundary(anchor)) {
-        return false;
-      }
-      const hasLocalBody = sameLane.some(
-        (candidate) =>
-          candidate !== anchor &&
-          !isOwnershipBoundary(candidate) &&
-          !isCompactDateMetadata(candidate) &&
-          isNearAnchor(anchor, candidate)
-      );
-      if (hasLocalBody) {
-        return false;
-      }
-      return otherLane.some(
-        (candidate) => !isOwnershipBoundary(candidate) && sharesRow(anchor, candidate)
-      );
-    });
-    if (linkedTitle) {
-      return true;
-    }
-
-    const metadataOnlyLane =
-      sameLane.length > 0 && sameLane.every((line) => isOwnershipMetadata(line));
-    return (
-      metadataOnlyLane &&
-      shareOnSharedRows(sameLane, otherLane) >= LAYOUT_SETTINGS.sharedRowShare
-    );
-  };
-  return linksFrom(left, rightLines) || linksFrom(rightLines, left);
-}
-
-function hasEquivalentSectionHeadings(left: LineDraft, rightLine: LineDraft): boolean {
-  return (
-    left.layoutAction === 'section-boundary' &&
-    rightLine.layoutAction === 'section-boundary' &&
-    sharesRow(left, rightLine)
-  );
-}
-
-// Scores a gap between left and right groups of lines from several signals.
-// The gap runs through the whole region, because no line crosses it.
-function scoreColumnSplit(left: LineDraft[], rightLines: LineDraft[], regionWidth: number): number {
-  const settings = LAYOUT_SETTINGS;
-  const top = (lines: LineDraft[]) => [...lines].sort(byReadingPosition)[0]!;
-  const parallelSections = hasEquivalentSectionHeadings(top(left), top(rightLines));
-  // Peer section headings establish equal ownership lanes. The surrounding
-  // caller has already proved that a sufficiently wide empty gutter exists,
-  // so semantic peers make that gutter a decisive column boundary.
-  if (parallelSections) {
-    return 1;
-  }
-  if (hasCrossLaneOwnershipLink(left, rightLines)) {
-    return 0;
-  }
-  if (
-    Math.max(shareOnSharedRows(left, rightLines), shareOnSharedRows(rightLines, left)) >=
-    settings.sharedRowShare
-  ) {
-    return 0;
-  }
-
-  const width = (lines: LineDraft[]) =>
-    Math.max(...lines.map((line) => right(line.box))) - Math.min(...lines.map((line) => line.box.x));
-  const narrowerShare = Math.min(width(left), width(rightLines)) / regionWidth;
-  const signals = {
-    gutterContinuity: 1,
-    alignment: (shareWithCommonLeftEdge(left) + shareWithCommonLeftEdge(rightLines)) / 2,
-    regionWidth: clamp(
-      (narrowerShare - settings.narrowWidthShare) /
-        (settings.wideWidthShare - settings.narrowWidthShare)
-    ),
-    headingSupport: top(left).heading && top(rightLines).heading ? 1 : 0,
-    lineSpacing: clamp(Math.abs(normalizedSpacing(left) - normalizedSpacing(rightLines)))
-  };
-
-  const score = (Object.keys(signals) as (keyof typeof signals)[]).reduce(
-    (total, name) => total + signals[name] * settings.weights[name],
-    0
-  );
-  const strongSignals = Object.values(signals).filter(
-    (value) => value >= settings.strongSignal
-  ).length;
-  return score >= settings.splitScore || (score >= settings.supportedSplitScore && strongSignals >= 2)
-    ? score
-    : 0;
-}
-
-// Finds the best vertical gutter: an empty band that no line crosses.
-function findColumnSplit(lines: LineDraft[]): ColumnSplit | null {
-  if (lines.length < 2) {
-    return null;
-  }
-  const lineHeight = median(lines.map((line) => line.box.height));
-  const regionLeft = Math.min(...lines.map((line) => line.box.x));
-  const regionWidth = Math.max(...lines.map((line) => right(line.box))) - regionLeft;
-  const byLeft = [...lines].sort((a, b) => a.box.x - b.box.x);
-
-  let best: ColumnSplit | null = null;
-  let coveredRight = right(byLeft[0]!.box);
-  for (const line of byLeft.slice(1)) {
-    const gutter = line.box.x - coveredRight;
-    if (gutter >= lineHeight * LAYOUT_SETTINGS.minGutterLineHeights) {
-      const left = lines.filter((candidate) => right(candidate.box) <= coveredRight);
-      const rightLines = lines.filter((candidate) => candidate.box.x >= line.box.x);
-      const confidence = scoreColumnSplit(left, rightLines, regionWidth);
-      if (confidence > 0 && (!best || confidence > best.confidence)) {
-        best = {
-          parts: [left, rightLines],
-          confidence,
-          gutter: { left: coveredRight, right: line.box.x }
-        };
-      }
-    }
-    coveredRight = Math.max(coveredRight, right(line.box));
-  }
-  return best;
-}
-
-// Finds the widest empty horizontal band across the whole region that the
-// given rule accepts. Because no line occupies the band, it spans the full
-// width of the region.
-function findBandSplit(
-  lines: LineDraft[],
-  usualGap: number,
-  accept: (parts: [LineDraft[], LineDraft[]], firstBelow: LineDraft) => boolean
-): Split | null {
-  const sorted = [...lines].sort(byReadingPosition);
-  const gaps = verticalGaps(sorted);
-  const candidates = gaps
-    .filter(({ gap }) => gap >= usualGap * LAYOUT_SETTINGS.sectionGapRatio)
-    .sort((a, b) => b.gap - a.gap);
-
-  for (const { gap, below } of candidates) {
-    const parts: [LineDraft[], LineDraft[]] = [sorted.slice(0, below), sorted.slice(below)];
-    if (accept(parts, sorted[below]!)) {
-      return { parts, confidence: clamp(gap / (usualGap * LAYOUT_SETTINGS.sectionGapRatio * 2)) };
-    }
-  }
-  return null;
-}
-
-// Lines that sit on both sides of a column gap without crossing it continue
-// those columns, such as a row of section headings above them or sections
-// whose lines happen to share rows.
-function continuesColumns(lines: LineDraft[], gutter: ColumnSplit['gutter']): boolean {
-  // A line may extend beyond the gutter midpoint while still belonging to one
-  // lane. It only destroys the column boundary when it spans the entire empty
-  // band that established the columns.
-  const crossesGap = lines.some(
-    (line) => line.box.x < gutter.left && right(line.box) > gutter.right
-  );
-  return (
-    !crossesGap &&
-    lines.some((line) => line.box.x < gutter.left && right(line.box) <= gutter.right) &&
-    lines.some((line) => line.box.x >= gutter.left && right(line.box) > gutter.right)
-  );
-}
-
-// A single section heading on the first row closes the lanes above it. Two or
-// more aligned section headings instead open parallel lanes and should remain
-// in column-major reading order.
-function startsStandaloneSection(lines: LineDraft[], first: LineDraft): boolean {
-  if (first.layoutAction !== 'section-boundary') {
-    return false;
-  }
-  const alignedSections = lines.filter(
-    (line) =>
-      line.layoutAction === 'section-boundary' &&
-      Math.abs(centerY(line.box) - centerY(first.box)) <=
-        Math.min(line.box.height, first.box.height) / 2
-  );
-  return alignedSections.length === 1;
-}
-
-// A band that separates a full-width area, such as a header, from columns:
-// one side has columns and the other does not. The other side is full width
-// only when it crosses the column gap or sits on one side of it, such as a
-// name above the main column. When both sides have columns, the columns are
-// read whole instead.
-function findFullWidthSplit(lines: LineDraft[], usualGap: number): Split | null {
-  return findBandSplit(lines, usualGap, (parts, firstBelow) => {
-    const [above, below] = parts.map(findColumnSplit);
-    if (above && below) {
-      return startsStandaloneSection(parts[1], firstBelow);
-    }
-    if (!above && !below) {
-      return false;
-    }
-    const columns = (above ?? below)!;
-    const other = above ? parts[1] : parts[0];
-    return !continuesColumns(other, columns.gutter);
-  });
-}
-
-// A band followed by a heading starts a new section. Bold body-size lines do
-// not, because they can be job titles or company names inside a section.
-function findSectionSplit(lines: LineDraft[], usualGap: number): Split | null {
-  return findBandSplit(
-    lines,
-    usualGap,
-    ([, below], firstBelow) =>
-      below.some(
-        (line) => line.layoutAction === 'section-boundary' && sharesRow(line, firstBelow)
-      )
-  );
-}
-
-// Repeated lower-level headings divide a section into entries. The first
-// entry stays with its section heading; later entry anchors start new regions.
-function findEntrySplit(lines: LineDraft[], usualGap: number): Split | null {
-  return findBandSplit(
-    lines,
-    usualGap,
-    ([above, below], firstBelow) =>
-      below.some(
-        (line) => line.layoutAction === 'entry-boundary' && sharesRow(line, firstBelow)
-      ) &&
-      above.some((line) => line.layoutAction === 'entry-boundary')
-  );
-}
-
-// Splits a region recursively: full-width areas first, then columns, then
-// sections. A region with no confident boundary is kept intact.
-function splitRegion(
-  lines: LineDraft[],
-  confidence: number | null,
-  usualGap: number
-): RegionDraft[] {
-  const fullWidth = findFullWidthSplit(lines, usualGap);
-  if (fullWidth) {
-    return fullWidth.parts.flatMap((part) => splitRegion(part, fullWidth.confidence, usualGap));
-  }
-
-  const columns = findColumnSplit(lines);
-  if (columns) {
-    const [left, rightLines] = columns.parts;
-    const ordered = LAYOUT_SETTINGS.readingDirection === 'ltr' ? [left, rightLines] : [rightLines, left];
-    return ordered.flatMap((part) => splitRegion(part, columns.confidence, usualGap));
-  }
-
-  const sections = findSectionSplit(lines, usualGap);
-  if (sections) {
-    return sections.parts.flatMap((part) => splitRegion(part, sections.confidence, usualGap));
-  }
-
-  const entries = findEntrySplit(lines, usualGap);
-  if (entries) {
-    return entries.parts.flatMap((part) => splitRegion(part, entries.confidence, usualGap));
-  }
-
-  return [{ lines: [...lines].sort(byOwnedReadingPosition), confidence }];
-}
-
-function startsWithSectionBoundary(region: RegionDraft): boolean {
-  return region.lines[0]?.layoutAction === 'section-boundary';
-}
-
-function startsWithEntryBoundary(region: RegionDraft): boolean {
-  return region.lines[0]?.layoutAction === 'entry-boundary';
-}
-
-function isStandaloneSectionBoundary(region: RegionDraft): boolean {
-  return (
-    region.lines.length > 0 &&
-    region.lines.every((line) => line.layoutAction === 'section-boundary')
-  );
-}
-
-function leftEdge(region: RegionDraft): number {
-  return Math.min(...region.lines.map((line) => line.box.x));
-}
-
-function topEdge(region: RegionDraft): number {
-  return Math.min(...region.lines.map((line) => line.box.y));
-}
-
-// A full-width section heading can be separated from columns below it during
-// recursive splitting. Reattach those flat child regions after layout so the
-// stored section box encloses its contents. Ownership remains conservative:
-// another section boundary, a region starting in an earlier lane, or a region
-// geometrically above the heading ends it. The vertical tolerance permits
-// content that shares the heading's visual row despite small PDF coordinate
-// differences.
-function applySectionOwnership(regions: RegionDraft[], usualHeight: number): RegionDraft[] {
-  const owned: RegionDraft[] = [];
-  for (let index = 0; index < regions.length; ) {
-    const owner = regions[index]!;
-    if (!isStandaloneSectionBoundary(owner)) {
-      owned.push(owner);
-      index++;
-      continue;
-    }
-
-    const ownerLeft = leftEdge(owner);
-    const ownerTop = topEdge(owner);
-    const children: RegionDraft[] = [];
-    let ownsEntry = false;
-    let childIndex = index + 1;
-    while (childIndex < regions.length) {
-      const candidate = regions[childIndex]!;
-      if (
-        startsWithSectionBoundary(candidate) ||
-        (startsWithEntryBoundary(candidate) && ownsEntry) ||
-        topEdge(candidate) < ownerTop - LAYOUT_SETTINGS.alignmentTolerance ||
-        leftEdge(candidate) < ownerLeft - Math.max(usualHeight, LAYOUT_SETTINGS.alignmentTolerance)
-      ) {
-        break;
-      }
-      ownsEntry ||= startsWithEntryBoundary(candidate);
-      children.push(candidate);
-      childIndex++;
-    }
-
-    if (children.length === 0) {
-      owned.push(owner);
-      index++;
-      continue;
-    }
-
-    const confidenceValues = [owner, ...children]
-      .map((region) => region.confidence)
-      .filter((confidence): confidence is number => confidence !== null);
-    owned.push({
-      lines: [owner, ...children].flatMap((region) => region.lines),
-      confidence: confidenceValues.length > 0 ? Math.min(...confidenceValues) : null
-    });
-    index = childIndex;
-  }
-  return owned;
-}
-
-function horizontallyRelated(first: LayoutLine, second: LayoutLine): boolean {
-  return (
-    first.box.x <= right(second.box) &&
-    second.box.x <= right(first.box)
-  );
-}
-
-function hasWhitespaceAbove(
-  line: LayoutLine,
-  lines: LayoutLine[],
-  usualGap: number
-): boolean {
-  const previousBottom = Math.max(
-    ...lines
-      .filter(
-        (candidate) =>
-          candidate !== line &&
-          candidate.box.y + candidate.box.height <= line.box.y &&
-          horizontallyRelated(candidate, line)
-      )
-      .map((candidate) => candidate.box.y + candidate.box.height),
-    Number.NEGATIVE_INFINITY
-  );
-  return (
-    Number.isFinite(previousBottom) &&
-    line.box.y - previousBottom >= usualGap * LAYOUT_SETTINGS.sectionGapRatio
-  );
-}
-
-function sameHeadingStyle(first: LayoutLine, second: LayoutLine): boolean {
-  return (
-    first.bold === second.bold &&
-    Math.abs(first.box.height - second.box.height) <=
-      Math.min(first.box.height, second.box.height) * 0.05
-  );
-}
-
-interface HeadingStylePattern {
-  sample: LayoutLine;
-  laneXs: number[];
-  sourceIndexes: number[];
-}
-
-function collectHeadingStylePatterns(
-  lines: LayoutLine[],
-  baseScores: HeadingScore[]
-): HeadingStylePattern[] {
-  const patterns: HeadingStylePattern[] = [];
-
-  lines.forEach((line, index) => {
-    const score = baseScores[index]!;
-    if (
-      score.confidence < HEADING_SETTINGS.candidateThreshold ||
-      !hasIndependentSupport(score)
-    ) {
-      return;
-    }
-
-    const pattern = patterns.find((candidate) => sameHeadingStyle(candidate.sample, line));
-    if (pattern) {
-      pattern.laneXs.push(line.box.x);
-      pattern.sourceIndexes.push(index);
-      return;
-    }
-
-    patterns.push({ sample: line, laneXs: [line.box.x], sourceIndexes: [index] });
-  });
-
-  return patterns;
-}
-
-function countRepeatedHeadingStyles(
-  line: LayoutLine,
-  lineIndex: number,
-  lines: LayoutLine[],
-  patterns: HeadingStylePattern[]
-): number {
-  const pattern = patterns.find((candidate) => sameHeadingStyle(candidate.sample, line));
-  if (
-    !pattern ||
-    !pattern.laneXs.some(
-      (laneX) => Math.abs(laneX - line.box.x) <= LAYOUT_SETTINGS.alignmentTolerance
-    )
-  ) {
-    return 0;
-  }
-
-  return pattern.sourceIndexes.filter(
-    (sourceIndex) =>
-      sourceIndex !== lineIndex &&
-      Math.abs(lines[sourceIndex]!.box.x - line.box.x) <=
-        LAYOUT_SETTINGS.alignmentTolerance
-  ).length;
-}
-
-function wordCount(text: string): number {
-  return text.trim().split(/\s+/u).filter(Boolean).length;
-}
-
-function isEntryAnchorCandidate(line: LineDraft): boolean {
-  return (
-    line.layoutAction === 'none' &&
-    line.bold &&
-    !line.bullet &&
-    wordCount(line.text) > 0 &&
-    wordCount(line.text) <= ENTRY_WORD_LIMIT &&
-    !ENTRY_CONTACT.test(line.text) &&
-    !/^\s*(?:(?:19|20)\d{2}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b)/iu.test(line.text)
-  );
-}
-
-// Entry anchors are deliberately stricter than section headings. A short bold
-// line must repeat in the same lane, have nearby body text, and be either
-// larger than that body or accompanied by a date. This keeps isolated labels
-// and contact rows from becoming regions.
-function markEntryBoundaries(lines: LineDraft[], usualHeight: number): LineDraft[] {
-  const candidates = lines.filter(isEntryAnchorCandidate);
-
-  const nearbyBodies = (anchor: LineDraft, sameLane: boolean) =>
-    [...lines]
-      .filter(
-        (candidate) =>
-          candidate !== anchor &&
-          candidate.box.y >= anchor.box.y - LAYOUT_SETTINGS.alignmentTolerance &&
-          candidate.box.y - (anchor.box.y + anchor.box.height) <= usualHeight * 2 &&
-          candidate.layoutAction === 'none' &&
-          !candidate.bold &&
-          horizontallyRelated(anchor, candidate) === sameLane
-      )
-      .sort(
-        (first, second) =>
-          Math.abs(first.box.y - anchor.box.y) - Math.abs(second.box.y - anchor.box.y) ||
-          byReadingPosition(first, second)
-      );
-
-  return lines.map((line) => {
-    if (!isEntryAnchorCandidate(line)) {
-      return line;
-    }
-
-    const repeated = candidates.some(
-      (candidate) =>
-        candidate !== line &&
-        Math.abs(candidate.box.x - line.box.x) <= LAYOUT_SETTINGS.alignmentTolerance &&
-        Math.abs(candidate.box.height - line.box.height) <=
-          Math.min(candidate.box.height, line.box.height) * 0.1
-    );
-    if (!repeated) {
-      return line;
-    }
-
-    const sameLaneBody = nearbyBodies(line, true)[0];
-    const crossLaneBody = nearbyBodies(line, false)[0];
-    const repeatedCrossLaneBody = crossLaneBody
-      ? candidates.some((candidate) => {
-          if (
-            candidate === line ||
-            Math.abs(candidate.box.x - line.box.x) > LAYOUT_SETTINGS.alignmentTolerance ||
-            Math.abs(candidate.box.height - line.box.height) >
-              Math.min(candidate.box.height, line.box.height) * 0.1
-          ) {
-            return false;
-          }
-          const candidateBody = nearbyBodies(candidate, false)[0];
-          return (
-            candidateBody !== undefined &&
-            Math.sign(candidateBody.box.x - candidate.box.x) ===
-              Math.sign(crossLaneBody.box.x - line.box.x) &&
-            Math.abs(candidateBody.box.x - crossLaneBody.box.x) <=
-              LAYOUT_SETTINGS.alignmentTolerance
-          );
-        })
-      : false;
-    const nearbyBody = sameLaneBody ?? (repeatedCrossLaneBody ? crossLaneBody : undefined);
-    if (!nearbyBody) {
-      return line;
-    }
-
-    const alignedDate = lines.some(
-      (candidate) => candidate !== line && sharesRow(line, candidate) && ENTRY_DATE.test(candidate.text)
-    );
-    const largerThanBody = line.box.height >= nearbyBody.box.height * HEADING_SETTINGS.largerHeightRatio;
-    if (!largerThanBody && !alignedDate && !ENTRY_DATE.test(line.text)) {
-      return line;
-    }
-
-    return { ...line, layoutAction: 'entry-boundary' as const };
-  });
-}
-
-function hasIndependentSupport(score: HeadingScore): boolean {
-  return score.signals.commonSection || score.signals.largerThanBody || score.signals.bold;
-}
-
-function titleClassification(
-  line: LayoutLine,
-  lines: LayoutLine[],
-  usualHeight: number,
-  pageIndex: number,
-  pageHeight: number
-): HeadingClassification | null {
-  const titleAreaBottom = pageHeight * 0.2;
-  if (
-    pageIndex !== 0 ||
-    line.box.y > titleAreaBottom ||
-    line.box.height < usualHeight * 1.5
-  ) {
-    return null;
-  }
-  const topLines = lines.filter((candidate) => candidate.box.y <= titleAreaBottom);
-  const largestHeight = Math.max(...topLines.map((candidate) => candidate.box.height));
-  return line.box.height >= largestHeight * 0.9
-    ? { role: 'document-title', confidence: 0.9 }
-    : null;
-}
-
-// Classifies headings in two scoring passes. The first pass finds independently
-// strong lines; the second may use another such line as repeated-style evidence.
-// Only roles authorized by the layout policy set the persisted heading boolean.
-function markHeadings(
-  lines: LayoutLine[],
-  usualHeight: number,
-  usualGap: number,
-  pageIndex: number,
-  pageHeight: number
-): LineDraft[] {
-  const baseScores = lines.map((line) =>
-    scoreHeading({
-      text: line.text,
-      height: line.box.height,
-      localBodyHeight: usualHeight,
-      bold: line.bold,
-      bullet: line.bullet && BULLET.test(line.text),
-      whitespaceAbove: hasWhitespaceAbove(line, lines, usualGap)
-    })
-  );
-  const stylePatterns = collectHeadingStylePatterns(lines, baseScores);
-
-  return lines.map((line, index) => {
-    const repeatedStyleMatches = countRepeatedHeadingStyles(
-      line,
-      index,
-      lines,
-      stylePatterns
-    );
-    const score = scoreHeading({
-      text: line.text,
-      height: line.box.height,
-      localBodyHeight: usualHeight,
-      bold: line.bold,
-      bullet: line.bullet && BULLET.test(line.text),
-      whitespaceAbove: hasWhitespaceAbove(line, lines, usualGap),
-      repeatedStyleMatches
-    });
-    const classification =
-      titleClassification(line, lines, usualHeight, pageIndex, pageHeight) ?? score;
-    const layoutAction = headingLayoutAction(classification);
-    const heading = layoutAction !== 'none';
-    return { ...line, heading, layoutAction, bullet: line.bullet && !heading };
-  });
-}
-
-// Builds the pages of a document: lines grouped into ordered regions, with
-// reading order numbered across the whole document. The usual line height and
-// line gap are measured over the whole document, so every page is split by the
-// same rules.
+// Builds pages from the resolved section scopes, entries, associations, and
+// constrained final ownership. Reading order is unique across the document.
 export function buildPages(pages: PositionedPage[]): ParsedPage[] {
   return buildPagesInternal(pages, false).pages;
-}
-
-function traceRegion(draft: RegionDraft): LayoutTraceRegion {
-  return {
-    box: unionBox(draft.lines.map((line) => line.box)),
-    confidence: draft.confidence === null ? null : round(draft.confidence),
-    lines: draft.lines
-  };
 }
 
 export function buildPagesWithTrace(
@@ -1371,16 +583,27 @@ function buildPagesInternal(
       pageWidth: page.width,
       pageHeight: page.height
     });
-    const lines = markHeadings(
-      pageLines[pageIndex]!,
-      usualHeight,
-      usualGap,
-      pageIndex,
-      page.height
-    );
-    const entries = markEntryBoundaries(lines, usualHeight);
-    const splitDrafts = splitRegion(entries, null, usualGap);
-    const drafts = applySectionOwnership(splitDrafts, usualHeight);
+    const sectionScopes = establishSectionScopes({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      boundaryCandidates: candidates.lines,
+      nonTextBoundaryCandidates: candidates.nonText,
+      layoutZoneCandidates
+    });
+    const entryResolution = resolveEntriesAndAssociations({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      boundaryCandidates: candidates.lines,
+      sectionScopes
+    });
+    const finalLayout = resolveFinalLayout({
+      pageNumber: page.pageNumber,
+      lines: pageLines[pageIndex]!,
+      layoutZoneCandidates,
+      sectionScopes,
+      associations: entryResolution.associations,
+      entryGroups: entryResolution.groups
+    });
     if (collectTrace) {
       tracePages.push({
         ...page,
@@ -1392,22 +615,43 @@ function buildPagesInternal(
         boundaryCandidates: candidates.lines,
         nonTextBoundaryCandidates: candidates.nonText,
         layoutZoneCandidates,
-        classifiedLines: entries,
-        splitRegions: splitDrafts.map(traceRegion),
-        ownedRegions: drafts.map(traceRegion)
+        sectionScopes,
+        entryAnchors: entryResolution.anchors,
+        associations: entryResolution.associations,
+        entryGroups: entryResolution.groups,
+        validatedZones: finalLayout.validatedZones,
+        sectionColumns: finalLayout.sectionColumns,
+        finalRegions: finalLayout.regions,
+        revisedAiInputLines: finalLayout.aiInputLines
       });
     }
-    const regions: Region[] = drafts.map(
-      (draft, index) => ({
-        index,
-        box: unionBox(draft.lines.map((line) => line.box)),
-        confidence: draft.confidence === null ? null : round(draft.confidence),
-        lines: draft.lines.map(({ layoutAction: _layoutAction, ...line }) => ({
-          order: ++order,
-          ...line
-        }))
-      })
+    const headingLineIndexes = new Set(
+      sectionScopes
+        .filter((scope) => scope.status === 'confirmed')
+        .map((scope) => scope.headingLineIndex)
     );
+    candidates.lines.forEach((candidate) => {
+      if (candidate.header.score >= 0.8 && candidate.header.score > candidate.section.score) {
+        headingLineIndexes.add(candidate.lineIndex);
+      }
+    });
+    const regions: Region[] = finalLayout.regions.map((region) => ({
+      index: region.index,
+      role: region.role,
+      parentIndex: region.parentIndex,
+      box: region.box,
+      confidence: region.confidence,
+      lines: region.readingOrderLineIndexes.map((lineIndex) => {
+        const line = pageLines[pageIndex]![lineIndex]!;
+        const heading = headingLineIndexes.has(lineIndex);
+        return {
+          order: ++order,
+          ...line,
+          heading,
+          bullet: line.bullet && !heading
+        };
+      })
+    }));
     return { ...page, regions };
   });
 

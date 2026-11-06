@@ -37,8 +37,6 @@ describe('parsing inspection report', () => {
     const traceLine = {
       text: '<Sample & Candidate>',
       box: { x: 50, y: 60, width: 180, height: 20 },
-      heading: true,
-      layoutAction: 'section-boundary' as const,
       bold: true,
       italic: false,
       bullet: false,
@@ -110,9 +108,23 @@ describe('parsing inspection report', () => {
             lineIndexes: [0]
           }]
         }],
-        classifiedLines: [traceLine],
-        splitRegions: [{ box: traceLine.box, confidence: 0.8, lines: [traceLine] }],
-        ownedRegions: [{ box: traceLine.box, confidence: 0.8, lines: [traceLine] }]
+        sectionScopes: [{
+          headingLineIndex: 0,
+          lineIndexes: [0],
+          box: traceLine.box,
+          status: 'confirmed',
+          mode: 'cross-lane',
+          confidence: 0.91,
+          reasons: ['standalone full-width section hypothesis'],
+          governingZoneCandidateIndexes: [0]
+        }],
+        entryAnchors: [],
+        associations: [],
+        entryGroups: [],
+        validatedZones: [],
+        sectionColumns: [],
+        finalRegions: [],
+        revisedAiInputLines: []
       }]
     };
 
@@ -128,6 +140,12 @@ describe('parsing inspection report', () => {
     expect(report).toContain('3. Page metrics');
     expect(report).toContain('4. Scored boundary candidates');
     expect(report).toContain('5. Provisional macro layout hypotheses');
+    expect(report).toContain('6. Section scopes');
+    expect(report).toContain('7. Entries and associations');
+    expect(report).toContain('8. Validated section columns');
+    expect(report).toContain('9. Final ownership and reading order');
+    expect(report).toContain('10. Revised compact AI input');
+    expect(report).toContain('confirmed · cross-lane');
     expect(report).toContain('full-width-section');
     expect(report).toContain('Usual body height: <code>20</code>');
     expect(report).toContain('1 active-content coverage');

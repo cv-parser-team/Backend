@@ -206,9 +206,10 @@ Output: `Association[]` and tentative `EntryGroup[]`.
 
 ### 9. Validate macro zones and perform constrained splitting
 
-Resolve provisional macro zones and local column, section, table, grid, and
-whitespace split candidates together, after section scopes, associations, and
-entry groups are available. A candidate gutter split must be rejected when it
+Resolve provisional macro zones and section-local column candidates after
+section scopes, associations, and entry groups are available. Shared-row grids
+remain unsplit evidence rather than becoming regions. A candidate section
+column must be rejected when it
 would:
 
 - cut a high-confidence association;
@@ -216,6 +217,10 @@ would:
 - cause content governed by one confirmed section to lose that ownership;
 - separate a wrapped paragraph;
 - divide a shared-row table or unresolved grid.
+
+Accepted columns remain children of their confirmed section. They may become
+separate content regions only when their line sets are disjoint; a column never
+reassigns section ownership.
 
 A split may create separate visual regions while preserving a shared section
 parent. Geometry and ownership are separate decisions: belonging to different
@@ -402,6 +407,20 @@ Implement the redesign incrementally so each step has a measurable effect:
 
 Each step should preserve the existing public extraction contract unless a
 versioned output-shape change is intentionally introduced.
+
+### Current rollout status
+
+Stages 1–12 now execute for PDF layout traces. Stages 7–12 form a shadow
+ownership pipeline: they resolve entry anchors, build protected associations
+and entry groups, validate split hypotheses, assign unique final ownership,
+derive post-ownership reading order, and produce a revised compact AI-input
+preview. The inspection report exposes all of these results.
+
+The persisted `ParsedPage` regions and production `buildAiInput` call still use
+the compatibility pipeline. Activating the revised regions is intentionally a
+separate output-contract change after fixture review; the shadow pipeline
+already enforces unique final line ownership at runtime and makes the proposed
+replacement inspectable without silently changing stored extraction results.
 
 ## Tests and acceptance criteria
 

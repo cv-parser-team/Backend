@@ -176,11 +176,16 @@ describe('pdf parser', () => {
     expect(result.pages[1]!.regions[0]!.lines[0]!.order).toBe(pageLines(result.pages[0]!).length + 1);
   });
 
-  it('keeps each unsplit page as one region without a split confidence', async () => {
+  it('keeps an unresolved page as one independent region', async () => {
     const result = await parseFixture('single-page.pdf');
 
     expect(result.pages[0]!.regions).toHaveLength(1);
-    expect(result.pages[0]!.regions[0]).toMatchObject({ index: 0, confidence: null });
+    expect(result.pages[0]!.regions[0]).toMatchObject({
+      index: 0,
+      role: 'independent',
+      parentIndex: null,
+      confidence: 0.5
+    });
   });
 
   it('does not merge text from side-by-side columns', async () => {
@@ -192,68 +197,42 @@ describe('pdf parser', () => {
     expect(texts.some((text) => text.includes('Skills') && text.includes('Experience'))).toBe(false);
   });
 
-  it('reads a sidebar and a main column as separate regions in reading order', async () => {
+  it('keeps an ambiguous sidebar and main column together', async () => {
     const result = await parseFixture('sidebar-columns.pdf');
     const regions = result.pages[0]!.regions;
 
-    expect(regions.map((region) => region.lines.map((line) => line.text))).toEqual([
-      ['Contact', 'sample@example.com', '+1 555 0100', 'Springfield', 'Skills', 'Node.js', 'PostgreSQL', 'Docker', 'Git'],
-      [
-        'Sample Candidate',
-        'Backend Developer',
-        'Experience',
-        'Backend Developer at Example Corp',
-        '2021 - 2023',
-        'Built REST APIs for the payments team and',
-        'improved slow database queries.',
-        'Junior Developer at Sample Labs',
-        '2019 - 2021',
-        'Maintained internal tools and wrote tests.',
-        'Education',
-        'BSc Computer Science, Sample University'
-      ]
-    ]);
-    expect(regions.every((region) => region.confidence !== null)).toBe(true);
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toMatchObject({ role: 'independent', parentIndex: null });
+    expect(regions[0]!.lines.map((line) => line.text)).toEqual(
+      expect.arrayContaining(['Contact', 'Experience', 'Skills', 'Education'])
+    );
     expect(pageLines(result.pages[0]!).map((line) => line.order)).toEqual(
       Array.from({ length: 21 }, (_, index) => index + 1)
     );
   });
 
-  it('reads a full-width header before the columns under it', async () => {
+  it('keeps unresolved columns under a full-width header in one final region', async () => {
     const result = await parseFixture('header-columns.pdf');
 
-    expect(result.pages[0]!.regions.map((region) => region.lines.map((line) => line.text))).toEqual([
-      ['Sample Candidate', 'Backend Developer - sample@example.com - +1 555 0100 - Springfield'],
-      [
-        'Experience',
-        'Backend Developer, Example Corp',
-        '2021 - 2023',
-        'Built REST APIs and services.',
-        'Junior Developer, Sample Labs',
-        '2019 - 2021',
-        'Maintained internal tools.'
-      ],
-      ['Skills', 'Node.js, PostgreSQL, Docker', 'Languages', 'English - fluent', 'German - basic']
-    ]);
+    expect(result.pages[0]!.regions).toHaveLength(1);
+    expect(lineTexts(result, 1)).toEqual(expect.arrayContaining([
+      'Sample Candidate',
+      'Experience',
+      'Skills',
+      'Languages'
+    ]));
   });
 
-  it('keeps a row of section headings with the columns under it', async () => {
+  it('keeps unresolved parallel heading lanes together', async () => {
     const result = await parseFixture('sidebar-headings.pdf');
 
-    expect(result.pages[0]!.regions.map((region) => region.lines.map((line) => line.text))).toEqual([
-      ['Sample Candidate', 'Backend Developer'],
-      ['Contact', '+1 555 0100', 'sample@example.com', 'Springfield', 'Skills', 'Node.js', 'Docker'],
-      [
-        'About Me',
-        'Backend developer with five years of experience',
-        'building REST APIs and services for logistics',
-        'and retail companies.',
-        'Experience',
-        'Backend Developer at Example Corp',
-        '2021 - 2023',
-        'Built tracking and billing services.'
-      ]
-    ]);
+    expect(result.pages[0]!.regions).toHaveLength(1);
+    expect(lineTexts(result, 1)).toEqual(expect.arrayContaining([
+      'Contact',
+      'About Me',
+      'Skills',
+      'Experience'
+    ]));
   });
 
   it('reads bold and italic from font names, including short forms', async () => {

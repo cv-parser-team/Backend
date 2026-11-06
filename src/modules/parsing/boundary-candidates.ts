@@ -34,6 +34,60 @@ export interface BoundaryCandidateInput {
   pageHeight: number;
 }
 
+export const COMMON_SECTION_HEADINGS = [
+  'about me',
+  'profile',
+  'summary',
+  'professional summary',
+  'objective',
+  'contact',
+  'contact details',
+  'personal details',
+  'education',
+  'academic background',
+  'academic history',
+  'qualifications',
+  'experience',
+  'work experience',
+  'professional experience',
+  'employment history',
+  'work history',
+  'skills',
+  'technical skills',
+  'core competencies',
+  'competencies',
+  'projects',
+  'certifications',
+  'certification',
+  'licenses',
+  'courses',
+  'relevant courses',
+  'training',
+  'languages',
+  'awards',
+  'awards and certifications',
+  'awards and certification',
+  'achievements',
+  'publications',
+  'volunteering',
+  'volunteer experience',
+  'interests',
+  'references',
+  'additional information'
+] as const;
+
+const COMMON_SECTION_HEADING_SET = new Set<string>(COMMON_SECTION_HEADINGS);
+export const REPEATED_SECTION_STYLE_CAP = 0.35;
+export const NEGATIVE_HEADING_EVIDENCE_CAP = 0.65;
+const COMMON_SECTION_HEADING_SCORE = 0.4;
+const RAW_SECTION_STYLE_MATCH_SCORE = 0.05;
+const TRUSTED_SECTION_STYLE_MATCH_SCORE = 0.1;
+const BULLET_HEADING_PENALTY = 0.35;
+const DATE_HEADING_PENALTY = 0.45;
+const CONTACT_HEADING_PENALTY = 0.5;
+const SENTENCE_HEADING_PENALTY = 0.4;
+const NUMERIC_HEADING_PENALTY = 0.25;
+
 const DATE = /(?:\b(?:19|20)\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\bpresent\b)/iu;
 const CONTACT = /(?:@|https?:\/\/|www\.|\+?\d[\d ().-]{6,}\d)/iu;
 
@@ -72,8 +126,70 @@ function wordCount(text: string): number {
   return text.trim().split(/\s+/u).filter(Boolean).length;
 }
 
+function normalizeSectionHeading(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/[.:|]+$/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+export function isCommonSectionHeading(text: string): boolean {
+  return COMMON_SECTION_HEADING_SET.has(normalizeSectionHeading(text));
+}
+
 function hasSentenceShape(line: LayoutLine): boolean {
   return wordCount(line.text) >= 12 || /[.!?]$/u.test(line.text.trim());
+}
+
+function hasNumericMetadataShape(text: string): boolean {
+  const tokens = text.trim().split(/\s+/u).filter(Boolean);
+  if (tokens.length === 0) {
+    return false;
+  }
+  const numericTokens = tokens.filter((token) => /\p{N}/u.test(token)).length;
+  return numericTokens / tokens.length >= 0.5;
+}
+
+interface NegativeHeadingEvidence {
+  score: number;
+  reasons: string[];
+}
+
+function negativeHeadingEvidence(
+  line: LayoutLine,
+  date: boolean,
+  contact: boolean,
+  sentence: boolean,
+  numeric: boolean
+): NegativeHeadingEvidence {
+  let score = 0;
+  const reasons: string[] = [];
+  if (line.bullet) {
+    score += BULLET_HEADING_PENALTY;
+    reasons.push('bullet item reduces heading authority');
+  }
+  if (date) {
+    score += DATE_HEADING_PENALTY;
+    reasons.push('date value reduces heading authority');
+  }
+  if (contact) {
+    score += CONTACT_HEADING_PENALTY;
+    reasons.push('contact value reduces heading authority');
+  }
+  if (sentence) {
+    score += SENTENCE_HEADING_PENALTY;
+    reasons.push('sentence shape reduces heading authority');
+  }
+  if (numeric) {
+    score += NUMERIC_HEADING_PENALTY;
+    reasons.push('number-dominant text reduces heading authority');
+  }
+  return {
+    score: Math.min(NEGATIVE_HEADING_EVIDENCE_CAP, score),
+    reasons
+  };
 }
 
 function whitespaceAbove(line: LayoutLine, lines: LayoutLine[], usualGap: number): boolean {
@@ -91,7 +207,7 @@ function whitespaceAbove(line: LayoutLine, lines: LayoutLine[], usualGap: number
   return line.box.y - Math.max(...bottoms) >= Math.max(usualGap * 2, line.box.height * 0.5);
 }
 
-function sameVisualStyle(first: LayoutLine, second: LayoutLine): boolean {
+function sameFontStyle(first: LayoutLine, second: LayoutLine): boolean {
   return (
     first.bold === second.bold &&
     first.italic === second.italic &&
@@ -100,13 +216,78 @@ function sameVisualStyle(first: LayoutLine, second: LayoutLine): boolean {
   );
 }
 
+type LetterCapping = 'uppercase' | 'lowercase' | 'title-case' | 'mixed' | 'uncased';
+
+function letterCapping(text: string): LetterCapping {
+  const words = text.match(/\p{L}+/gu) ?? [];
+  if (words.length === 0) {
+    return 'uncased';
+  }
+  if (words.every((word) => word === word.toLocaleUpperCase())) {
+    return 'uppercase';
+  }
+  if (words.every((word) => word === word.toLocaleLowerCase())) {
+    return 'lowercase';
+  }
+  if (words.every((word) => {
+    const [first, ...rest] = [...word];
+    return (
+      first === first?.toLocaleUpperCase() &&
+      rest.join('') === rest.join('').toLocaleLowerCase()
+    );
+  })) {
+    return 'title-case';
+  }
+  return 'mixed';
+}
+
+function sameLetterCapping(first: LayoutLine, second: LayoutLine): boolean {
+  return letterCapping(first.text) === letterCapping(second.text);
+}
+
 function repeatedStyleMatches(line: LayoutLine, lines: LayoutLine[]): number {
   return lines.filter(
     (candidate) =>
       candidate !== line &&
-      sameVisualStyle(line, candidate) &&
+      sameFontStyle(line, candidate) &&
       Math.abs(candidate.box.x - line.box.x) <= 3
   ).length;
+}
+
+function sectionStyleMatches(
+  line: LayoutLine,
+  lineIndex: number,
+  lines: LayoutLine[],
+  candidateLineIndexes: ReadonlySet<number>,
+  metrics: PageMetrics
+): number {
+  return [...candidateLineIndexes].filter((candidateIndex) => {
+    const candidate = lines[candidateIndex];
+    return (
+      candidateIndex !== lineIndex &&
+      candidate !== undefined &&
+      sameFontStyle(line, candidate) &&
+      sameLetterCapping(line, candidate) &&
+      Math.abs(candidate.box.x - line.box.x) <= 3 &&
+      Math.abs(centerY(candidate.box) - centerY(line.box)) >= metrics.usualBodyHeight * 1.5
+    );
+  }).length;
+}
+
+function isSectionStyleEligible(line: LayoutLine, metrics: PageMetrics): boolean {
+  const words = wordCount(line.text);
+  const short = words > 0 && words <= 8;
+  const larger = metrics.usualBodyHeight > 0 &&
+    line.box.height >= metrics.usualBodyHeight * 1.15;
+  return (
+    short &&
+    !line.bullet &&
+    !DATE.test(line.text) &&
+    !CONTACT.test(line.text) &&
+    !hasNumericMetadataShape(line.text) &&
+    !hasSentenceShape(line) &&
+    (line.bold || larger || isCommonSectionHeading(line.text))
+  );
 }
 
 function nearbyHorizontalSeparator(
@@ -160,11 +341,15 @@ function alignedMetadata(line: LayoutLine, lines: LayoutLine[]): boolean {
 
 function scoreLineCandidate(
   line: LayoutLine,
+  lineIndex: number,
   lines: LayoutLine[],
   metrics: PageMetrics,
   separators: DrawnSeparator[],
   pageIndex: number,
-  pageHeight: number
+  pageHeight: number,
+  sectionStyleLineIndexes: ReadonlySet<number>,
+  sectionStyleMatchScore: number,
+  sectionStyleReason: 'raw section candidate' | 'established section heading'
 ): Omit<BoundaryCandidate, 'lineIndex'> {
   const words = wordCount(line.text);
   const short = words > 0 && words <= 8;
@@ -174,9 +359,19 @@ function scoreLineCandidate(
   const inTitleArea = pageIndex === 0 && line.box.y <= pageHeight * 0.2;
   const spacedAbove = whitespaceAbove(line, lines, metrics.usualVerticalGap);
   const repeated = repeatedStyleMatches(line, lines);
+  const repeatedSectionStyle = sectionStyleMatches(
+    line,
+    lineIndex,
+    lines,
+    sectionStyleLineIndexes,
+    metrics
+  );
+  const commonSectionHeading = isCommonSectionHeading(line.text);
   const sentence = hasSentenceShape(line);
   const date = DATE.test(line.text);
   const contact = CONTACT.test(line.text);
+  const numeric = hasNumericMetadataShape(line.text);
+  const negativeHeading = negativeHeadingEvidence(line, date, contact, sentence, numeric);
   const separator = nearbyHorizontalSeparator(line, separators, metrics);
 
   let headerScore = 0;
@@ -197,13 +392,17 @@ function scoreLineCandidate(
     headerScore += 0.1;
     headerReasons.push('compact text');
   }
-  if (line.bullet || date || contact || sentence) {
-    headerScore -= 0.45;
-    headerReasons.push('body, metadata, or list shape reduces header authority');
+  if (negativeHeading.score > 0) {
+    headerScore -= negativeHeading.score;
+    headerReasons.push(...negativeHeading.reasons);
   }
 
   let sectionScore = 0;
   const sectionReasons: string[] = [];
+  if (commonSectionHeading) {
+    sectionScore += COMMON_SECTION_HEADING_SCORE;
+    sectionReasons.push('exact common section heading');
+  }
   if (larger) {
     sectionScore += 0.3;
     sectionReasons.push('larger than the usual body line');
@@ -220,9 +419,14 @@ function scoreLineCandidate(
     sectionScore += 0.2;
     sectionReasons.push('supporting whitespace above');
   }
-  if (repeated > 0) {
-    sectionScore += Math.min(0.2, repeated * 0.08);
-    sectionReasons.push(`style repeats ${repeated} time${repeated === 1 ? '' : 's'} in the same lane`);
+  if (repeatedSectionStyle > 0 && negativeHeading.score === 0) {
+    sectionScore += Math.min(
+      REPEATED_SECTION_STYLE_CAP,
+      repeatedSectionStyle * sectionStyleMatchScore
+    );
+    sectionReasons.push(
+      `style matches ${repeatedSectionStyle} ${sectionStyleReason}${repeatedSectionStyle === 1 ? '' : 's'} in the same lane`
+    );
   }
   if (separator) {
     sectionScore += 0.05 + separator.coverage * 0.1;
@@ -232,9 +436,9 @@ function scoreLineCandidate(
     sectionScore -= 0.2;
     sectionReasons.push('title-area prominence reduces section authority');
   }
-  if (line.bullet || date || contact || sentence) {
-    sectionScore -= 0.45;
-    sectionReasons.push('body, metadata, or list shape reduces section authority');
+  if (negativeHeading.score > 0) {
+    sectionScore -= negativeHeading.score;
+    sectionReasons.push(...negativeHeading.reasons);
   }
 
   let entryScore = 0;
@@ -305,6 +509,26 @@ function scoreLineCandidate(
     entry: evidence(entryScore, entryReasons),
     content: evidence(contentScore, contentReasons)
   };
+}
+
+function establishesSectionStyle(
+  candidate: BoundaryCandidate,
+  intrinsicCandidate: BoundaryCandidate,
+  line: LayoutLine
+): boolean {
+  if (
+    isCommonSectionHeading(line.text) &&
+    candidate.section.score >= COMMON_SECTION_HEADING_SCORE &&
+    candidate.section.score > candidate.content.score
+  ) {
+    return true;
+  }
+  return (
+    line.bold &&
+    intrinsicCandidate.section.score >= 0.5 &&
+    candidate.section.score >= 0.8 &&
+    roundScore(candidate.section.score - candidate.entry.score) >= 0.2
+  );
 }
 
 function scoreWhitespaceCandidate(
@@ -418,15 +642,65 @@ function alignmentChangeCandidates(
 export function generateBoundaryCandidates(
   input: BoundaryCandidateInput
 ): { lines: BoundaryCandidate[]; nonText: NonTextBoundaryCandidate[] } {
-  const lineCandidates = input.lines.map((line, lineIndex) => ({
+  const noSectionStyles = new Set<number>();
+  const intrinsicCandidates = input.lines.map((line, lineIndex) => ({
     lineIndex,
     ...scoreLineCandidate(
       line,
+      lineIndex,
       input.lines,
       input.metrics,
       input.separators,
       input.pageIndex,
-      input.pageHeight
+      input.pageHeight,
+      noSectionStyles,
+      RAW_SECTION_STYLE_MATCH_SCORE,
+      'raw section candidate'
+    )
+  }));
+  const rawSectionStyleLineIndexes = new Set(
+    input.lines
+      .map((line, lineIndex) => ({ line, lineIndex }))
+      .filter(({ line }) => isSectionStyleEligible(line, input.metrics))
+      .map(({ lineIndex }) => lineIndex)
+  );
+  const firstPassCandidates = input.lines.map((line, lineIndex) => ({
+    lineIndex,
+    ...scoreLineCandidate(
+      line,
+      lineIndex,
+      input.lines,
+      input.metrics,
+      input.separators,
+      input.pageIndex,
+      input.pageHeight,
+      rawSectionStyleLineIndexes,
+      RAW_SECTION_STYLE_MATCH_SCORE,
+      'raw section candidate'
+    )
+  }));
+  const establishedSectionLineIndexes = new Set(
+    firstPassCandidates
+      .filter((candidate) => establishesSectionStyle(
+        candidate,
+        intrinsicCandidates[candidate.lineIndex]!,
+        input.lines[candidate.lineIndex]!
+      ))
+      .map((candidate) => candidate.lineIndex)
+  );
+  const lineCandidates = input.lines.map((line, lineIndex) => ({
+    lineIndex,
+    ...scoreLineCandidate(
+      line,
+      lineIndex,
+      input.lines,
+      input.metrics,
+      input.separators,
+      input.pageIndex,
+      input.pageHeight,
+      establishedSectionLineIndexes,
+      TRUSTED_SECTION_STYLE_MATCH_SCORE,
+      'established section heading'
     )
   }));
   const nonText = [
