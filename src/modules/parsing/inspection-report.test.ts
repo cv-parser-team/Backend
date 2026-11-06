@@ -72,6 +72,31 @@ describe('parsing inspection report', () => {
           bullet: traceLine.bullet,
           links: traceLine.links
         }],
+        metrics: {
+          usualBodyHeight: 20,
+          usualVerticalGap: 6,
+          activeContentBox: traceLine.box,
+          leftEdges: [{ value: 50, count: 1, share: 1 }],
+          rightEdges: [{ value: 230, count: 1, share: 1 }],
+          rowBaselines: [{ value: 70, count: 1, share: 1 }],
+          heightClusters: [{ value: 20, count: 1, share: 1 }],
+          styleClusters: [{ height: 20, bold: true, italic: false, count: 1, share: 1 }],
+          verticalGutters: [],
+          horizontalBands: [],
+          separatorCoverage: [{ separatorIndex: 0, coverage: 1 }]
+        },
+        boundaryCandidates: [{
+          lineIndex: 0,
+          header: { score: 0.7, reasons: ['title-area prominence'] },
+          section: { score: 0.8, reasons: ['bold typography'] },
+          entry: { score: 0.4, reasons: ['compact anchor text'] },
+          content: { score: 0.1, reasons: [] }
+        }],
+        nonTextBoundaryCandidates: [{
+          kind: 'separator',
+          box: { x: 40, y: 90, width: 220, height: 1 },
+          evidence: { score: 0.75, reasons: ['thin relative to body text'] }
+        }],
         classifiedLines: [traceLine],
         splitRegions: [{ box: traceLine.box, confidence: 0.8, lines: [traceLine] }],
         ownedRegions: [{ box: traceLine.box, confidence: 0.8, lines: [traceLine] }]
@@ -87,8 +112,12 @@ describe('parsing inspection report', () => {
     expect(report).toContain('NO_TEXT_LAYER');
     expect(report).toContain('Parsing levels');
     expect(report).toContain('1. Extracted pieces');
-    expect(report).toContain('3. Classified boundaries');
-    expect(report).toContain('entry boundary');
+    expect(report).toContain('3. Page metrics');
+    expect(report).toContain('4. Scored boundary candidates');
+    expect(report).toContain('Usual body height: <code>20</code>');
+    expect(report).toContain('1 active-content coverage');
+    expect(report).toContain('title-area prominence');
+    expect(report).toContain('entry candidate');
     expect(report).toContain('section-boundary');
     expect(report).toContain('horizontal separator');
     expect(report).toContain('Marks (1)');

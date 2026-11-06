@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPages, reconstructLines } from './layout.js';
+import { buildPages, buildPagesWithTrace, measurePageMetrics, reconstructLines } from './layout.js';
 import { ParsedPage, TextPiece } from './parsing.types.js';
 
 // Each layout is written as positioned text pieces, so the expected regions
@@ -93,6 +93,126 @@ describe('visual line reconstruction', () => {
       ['Unmarked', false],
       ['• Analytics', true]
     ]);
+  });
+});
+
+describe('page metrics', () => {
+  it('uses the dominant body height instead of a large title', () => {
+    const lines = reconstructLines([
+      piece('LARGE TITLE', 72, 40, 30, true),
+      piece('First body line', 72, 100, 10),
+      piece('Second body line', 72, 120, 10),
+      piece('Third body line', 72, 140, 10)
+    ], []);
+
+    expect(measurePageMetrics(lines, []).usualBodyHeight).toBe(10);
+  });
+
+  it('measures vertical gaps within lanes instead of between parallel columns', () => {
+    const lines = reconstructLines([
+      piece('Left one', 50, 100, 10),
+      piece('Left two', 50, 120, 10),
+      piece('Right one', 300, 105, 10),
+      piece('Right two', 300, 125, 10)
+    ], []);
+
+    expect(measurePageMetrics(lines, []).usualVerticalGap).toBe(10);
+  });
+
+  it('provides deterministic sparse-page fallbacks', () => {
+    const lines = reconstructLines([piece('Only line', 72, 100, 10)], []);
+    const metrics = measurePageMetrics(lines, []);
+
+    expect(metrics.usualBodyHeight).toBe(10);
+    expect(metrics.usualVerticalGap).toBe(3);
+    expect(metrics.activeContentBox).toEqual({ x: 72, y: 100, width: 45, height: 10 });
+    expect(metrics.verticalGutters).toEqual([]);
+    expect(metrics.horizontalBands).toEqual([]);
+  });
+
+  it('clusters repeated edges, row baselines, heights, and styles', () => {
+    const lines = reconstructLines([
+      piece('Left one', 50, 100, 10, true),
+      piece('Right one', 300, 100, 10),
+      piece('Left two', 51, 120, 10, true),
+      piece('Right two', 301, 120, 10)
+    ], []);
+    const metrics = measurePageMetrics(lines, []);
+
+    expect(metrics.leftEdges.slice(0, 2)).toEqual([
+      { value: 50.5, count: 2, share: 0.5 },
+      { value: 300.5, count: 2, share: 0.5 }
+    ]);
+    expect(metrics.rowBaselines.slice(0, 2)).toEqual([
+      { value: 105, count: 2, share: 0.5 },
+      { value: 125, count: 2, share: 0.5 }
+    ]);
+    expect(metrics.heightClusters[0]).toEqual({ value: 10, count: 4, share: 1 });
+    expect(metrics.styleClusters).toEqual([
+      { height: 10, bold: false, italic: false, count: 2, share: 0.5 },
+      { height: 10, bold: true, italic: false, count: 2, share: 0.5 }
+    ]);
+  });
+
+  it('records vertical gutters and horizontal whitespace bands without splitting', () => {
+    const lines = reconstructLines([
+      piece('Left one', 50, 100, 10),
+      piece('Right one', 300, 100, 10),
+      piece('Left two', 50, 160, 10),
+      piece('Right two', 300, 160, 10)
+    ], []);
+    const metrics = measurePageMetrics(lines, []);
+
+    expect(metrics.verticalGutters).toContainEqual({
+      box: { x: 90, y: 100, width: 210, height: 70 },
+      size: 210,
+      coverage: 1
+    });
+    expect(metrics.horizontalBands).toEqual([{
+      box: { x: 50, y: 110, width: 295, height: 50 },
+      size: 50,
+      coverage: 1
+    }]);
+  });
+
+  it('measures separator coverage against active content', () => {
+    const lines = reconstructLines([
+      piece('Left', 50, 100, 10),
+      piece('Right', 300, 120, 10)
+    ], []);
+    const metrics = measurePageMetrics(lines, [{
+      orientation: 'horizontal',
+      box: { x: 50, y: 115, width: 137.5, height: 1 },
+      thickness: 1
+    }]);
+
+    expect(metrics.separatorCoverage).toEqual([{ separatorIndex: 0, coverage: 0.5 }]);
+  });
+
+  it('keeps page metrics independent in a multi-page trace', () => {
+    const { trace } = buildPagesWithTrace([
+      {
+        pageNumber: 1,
+        width: 612,
+        height: 792,
+        pieces: [piece('Page one A', 72, 100, 10), piece('Page one B', 72, 120, 10)],
+        marks: [],
+        separators: []
+      },
+      {
+        pageNumber: 2,
+        width: 612,
+        height: 792,
+        pieces: [piece('Page two A', 72, 100, 14), piece('Page two B', 72, 130, 14)],
+        marks: [],
+        separators: []
+      }
+    ]);
+
+    expect(trace.pages.map((page) => [
+      page.metrics.usualBodyHeight,
+      page.metrics.usualVerticalGap
+    ])).toEqual([[10, 10], [14, 16]]);
   });
 });
 

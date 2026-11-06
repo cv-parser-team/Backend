@@ -16,6 +16,11 @@ import {
   type HeadingClassification,
   type HeadingLayoutAction
 } from './heading-layout-policy.js';
+import {
+  generateBoundaryCandidates,
+  type BoundaryCandidate,
+  type NonTextBoundaryCandidate
+} from './boundary-candidates.js';
 
 // Layout works on text pieces with page coordinates and knows nothing about
 // the file format, so any source of positioned text can use it.
@@ -35,6 +40,47 @@ export interface PositionedPage {
 // Stage 2 output: visual text reconstructed from PDF pieces, before any
 // heading, section, entry, or column inference.
 export type LayoutLine = Omit<TextLine, 'order' | 'heading'>;
+
+export interface MetricCluster {
+  value: number;
+  count: number;
+  share: number;
+}
+
+export interface StyleCluster {
+  height: number;
+  bold: boolean;
+  italic: boolean;
+  count: number;
+  share: number;
+}
+
+export interface WhitespaceCandidate {
+  box: BoundingBox;
+  size: number;
+  coverage: number;
+}
+
+export interface SeparatorCoverage {
+  separatorIndex: number;
+  coverage: number;
+}
+
+// Stage 3 output: page-local observations only. Candidates in this structure
+// do not split lines, establish ownership, or classify document roles.
+export interface PageMetrics {
+  usualBodyHeight: number;
+  usualVerticalGap: number;
+  activeContentBox: BoundingBox | null;
+  leftEdges: MetricCluster[];
+  rightEdges: MetricCluster[];
+  rowBaselines: MetricCluster[];
+  heightClusters: MetricCluster[];
+  styleClusters: StyleCluster[];
+  verticalGutters: WhitespaceCandidate[];
+  horizontalBands: WhitespaceCandidate[];
+  separatorCoverage: SeparatorCoverage[];
+}
 
 export type LayoutTraceLine = LayoutLine & {
   heading: boolean;
@@ -57,6 +103,9 @@ export interface LayoutTracePage {
   marks: BoundingBox[];
   separators: DrawnSeparator[];
   reconstructedLines: LayoutLine[];
+  metrics: PageMetrics;
+  boundaryCandidates: BoundaryCandidate[];
+  nonTextBoundaryCandidates: NonTextBoundaryCandidate[];
   classifiedLines: LayoutTraceLine[];
   splitRegions: LayoutTraceRegion[];
   ownedRegions: LayoutTraceRegion[];
@@ -376,6 +425,238 @@ function lineGaps(lines: LayoutLine[]): number[] {
     const nearestBottom = Math.max(...above.map((other) => other.box.y + other.box.height));
     return [line.box.y - nearestBottom];
   });
+}
+
+function clusterValues(values: number[], tolerance: number): MetricCluster[] {
+  if (values.length === 0) {
+    return [];
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const groups: number[][] = [];
+  for (const value of sorted) {
+    const group = groups[groups.length - 1];
+    if (group && Math.abs(value - median(group)) <= tolerance) {
+      group.push(value);
+    } else {
+      groups.push([value]);
+    }
+  }
+  return groups
+    .map((group) => ({
+      value: round(median(group)),
+      count: group.length,
+      share: round(group.length / values.length)
+    }))
+    .sort((a, b) => b.count - a.count || a.value - b.value);
+}
+
+function usualClusterValue(values: number[], tolerance: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const clusters = clusterValues(values, tolerance);
+  const repeated = clusters.filter((cluster) => cluster.count > 1);
+  return repeated.length > 0 ? repeated[0]!.value : round(median(values));
+}
+
+function coveredLength(ranges: { start: number; end: number }[]): number {
+  if (ranges.length === 0) {
+    return 0;
+  }
+  const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
+  let total = 0;
+  let start = sorted[0]!.start;
+  let end = sorted[0]!.end;
+  for (const range of sorted.slice(1)) {
+    if (range.start <= end) {
+      end = Math.max(end, range.end);
+    } else {
+      total += end - start;
+      start = range.start;
+      end = range.end;
+    }
+  }
+  return total + end - start;
+}
+
+function styleClusters(lines: LayoutLine[], heightTolerance: number): StyleCluster[] {
+  const groups: { lines: LayoutLine[]; bold: boolean; italic: boolean }[] = [];
+  for (const line of [...lines].sort((a, b) => a.box.height - b.box.height)) {
+    const group = groups.find(
+      (candidate) =>
+        candidate.bold === line.bold &&
+        candidate.italic === line.italic &&
+        Math.abs(median(candidate.lines.map((item) => item.box.height)) - line.box.height) <=
+          heightTolerance
+    );
+    if (group) {
+      group.lines.push(line);
+    } else {
+      groups.push({ lines: [line], bold: line.bold, italic: line.italic });
+    }
+  }
+  return groups
+    .map((group) => ({
+      height: round(median(group.lines.map((line) => line.box.height))),
+      bold: group.bold,
+      italic: group.italic,
+      count: group.lines.length,
+      share: round(group.lines.length / lines.length)
+    }))
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.height - b.height ||
+        Number(a.bold) - Number(b.bold) ||
+        Number(a.italic) - Number(b.italic)
+    );
+}
+
+function verticalGutterCandidates(
+  lines: LayoutLine[],
+  activeBox: BoundingBox,
+  usualBodyHeight: number
+): WhitespaceCandidate[] {
+  const minimumWidth = Math.max(3, usualBodyHeight * LAYOUT_SETTINGS.minGutterLineHeights);
+  const repeatedRightEdges = clusterValues(
+    lines.map((line) => right(line.box)),
+    LAYOUT_SETTINGS.alignmentTolerance
+  ).filter((cluster) => cluster.count >= 2);
+  const repeatedLeftEdges = clusterValues(
+    lines.map((line) => line.box.x),
+    LAYOUT_SETTINGS.alignmentTolerance
+  ).filter((cluster) => cluster.count >= 2);
+  const candidates: WhitespaceCandidate[] = [];
+  for (const leftEdge of repeatedRightEdges) {
+    const rightEdge = repeatedLeftEdges
+      .filter((cluster) => cluster.value - leftEdge.value >= minimumWidth)
+      .sort((a, b) => a.value - b.value)[0];
+    if (!rightEdge) {
+      continue;
+    }
+    const crossingRanges = lines
+      .filter(
+        (line) => line.box.x < rightEdge.value && right(line.box) > leftEdge.value
+      )
+      .map((line) => ({ start: line.box.y, end: line.box.y + line.box.height }));
+    const coverage = activeBox.height === 0
+      ? 0
+      : clamp(1 - coveredLength(crossingRanges) / activeBox.height);
+    if (coverage < 0.6) {
+      continue;
+    }
+    candidates.push({
+      box: {
+        x: leftEdge.value,
+        y: activeBox.y,
+        width: round(rightEdge.value - leftEdge.value),
+        height: activeBox.height
+      },
+      size: round(rightEdge.value - leftEdge.value),
+      coverage: round(coverage)
+    });
+  }
+  return candidates
+    .sort((a, b) => b.coverage - a.coverage || b.size - a.size || a.box.x - b.box.x)
+    .filter(
+      (candidate, index, sorted) =>
+        sorted.findIndex(
+          (other) =>
+            Math.abs(other.box.x - candidate.box.x) <= LAYOUT_SETTINGS.alignmentTolerance &&
+            Math.abs(right(other.box) - right(candidate.box)) <= LAYOUT_SETTINGS.alignmentTolerance
+        ) === index
+    );
+}
+
+function horizontalBandCandidates(
+  lines: LayoutLine[],
+  activeBox: BoundingBox,
+  usualBodyHeight: number
+): WhitespaceCandidate[] {
+  const occupied = [...lines]
+    .map((line) => ({ start: line.box.y, end: line.box.y + line.box.height }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (occupied.length < 2) {
+    return [];
+  }
+  // Preserve plausible whitespace observations even on sparse pages, where
+  // the only measured line gap may itself be a section-sized band. Later
+  // boundary scoring decides how much authority the band receives.
+  const minimumHeight = Math.max(2, usualBodyHeight * 0.5);
+  const bands: WhitespaceCandidate[] = [];
+  let bottom = occupied[0]!.end;
+  for (const range of occupied.slice(1)) {
+    const gap = range.start - bottom;
+    if (gap >= minimumHeight) {
+      bands.push({
+        box: {
+          x: activeBox.x,
+          y: round(bottom),
+          width: activeBox.width,
+          height: round(gap)
+        },
+        size: round(gap),
+        coverage: 1
+      });
+    }
+    bottom = Math.max(bottom, range.end);
+  }
+  return bands.sort((a, b) => a.box.y - b.box.y);
+}
+
+export function measurePageMetrics(
+  lines: LayoutLine[],
+  separators: DrawnSeparator[]
+): PageMetrics {
+  if (lines.length === 0) {
+    return {
+      usualBodyHeight: 0,
+      usualVerticalGap: 0,
+      activeContentBox: null,
+      leftEdges: [],
+      rightEdges: [],
+      rowBaselines: [],
+      heightClusters: [],
+      styleClusters: [],
+      verticalGutters: [],
+      horizontalBands: [],
+      separatorCoverage: separators.map((_, separatorIndex) => ({ separatorIndex, coverage: 0 }))
+    };
+  }
+
+  const activeContentBox = unionBox(lines.map((line) => line.box));
+  const heights = lines.map((line) => line.box.height);
+  const heightTolerance = Math.max(0.5, median(heights) * 0.08);
+  const usualBodyHeight = usualClusterValue(heights, heightTolerance);
+  const positiveGaps = lineGaps(lines).filter((gap) => gap > 0);
+  const gapTolerance = Math.max(1, usualBodyHeight * 0.2);
+  const usualVerticalGap = usualClusterValue(positiveGaps, gapTolerance) || round(usualBodyHeight * 0.3);
+  const edgeTolerance = LAYOUT_SETTINGS.alignmentTolerance;
+
+  return {
+    usualBodyHeight,
+    usualVerticalGap,
+    activeContentBox,
+    leftEdges: clusterValues(lines.map((line) => line.box.x), edgeTolerance),
+    rightEdges: clusterValues(lines.map((line) => right(line.box)), edgeTolerance),
+    rowBaselines: clusterValues(lines.map((line) => centerY(line.box)), edgeTolerance),
+    heightClusters: clusterValues(heights, heightTolerance),
+    styleClusters: styleClusters(lines, heightTolerance),
+    verticalGutters: verticalGutterCandidates(lines, activeContentBox, usualBodyHeight),
+    horizontalBands: horizontalBandCandidates(
+      lines,
+      activeContentBox,
+      usualBodyHeight
+    ),
+    separatorCoverage: separators.map((separator, separatorIndex) => ({
+      separatorIndex,
+      coverage: round(
+        separator.orientation === 'horizontal'
+          ? clamp(separator.box.width / activeContentBox.width)
+          : clamp(separator.box.height / activeContentBox.height)
+      )
+    }))
+  };
 }
 
 function shareWithCommonLeftEdge(lines: LineDraft[]): number {
@@ -1058,6 +1339,9 @@ function buildPagesInternal(
   collectTrace: boolean
 ): { pages: ParsedPage[]; trace: LayoutTrace | null } {
   const pageLines = pages.map(({ pieces, marks }) => reconstructLines(pieces, marks));
+  const pageMetrics = pages.map((page, pageIndex) =>
+    measurePageMetrics(pageLines[pageIndex]!, page.separators)
+  );
   const allLines = pageLines.flat();
   const usualHeight = median(allLines.map((line) => line.box.height));
   const usualGap = median(pageLines.flatMap(lineGaps)) || usualHeight * 0.3;
@@ -1066,6 +1350,13 @@ function buildPagesInternal(
   const tracePages: LayoutTracePage[] = [];
 
   const parsedPages = pages.map(({ pieces, marks, separators, ...page }, pageIndex) => {
+    const candidates = generateBoundaryCandidates({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      separators,
+      pageIndex,
+      pageHeight: page.height
+    });
     const lines = markHeadings(
       pageLines[pageIndex]!,
       usualHeight,
@@ -1083,6 +1374,9 @@ function buildPagesInternal(
         marks,
         separators,
         reconstructedLines: pageLines[pageIndex]!,
+        metrics: pageMetrics[pageIndex]!,
+        boundaryCandidates: candidates.lines,
+        nonTextBoundaryCandidates: candidates.nonText,
         classifiedLines: entries,
         splitRegions: splitDrafts.map(traceRegion),
         ownedRegions: drafts.map(traceRegion)
