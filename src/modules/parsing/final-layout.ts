@@ -1,8 +1,10 @@
-import type { Association, EntryGroup } from './entry-groups.js';
+import type { EntryGroup } from './entry-groups.js';
+import { isCommonSectionHeading } from './boundary-candidates.js';
 import type { LayoutLine } from './layout.js';
 import type { LayoutZoneCandidate } from './macro-layout.js';
 import type { SectionScope } from './section-scopes.js';
 import type { BoundingBox } from './parsing.types.js';
+import { normalizeSemanticText } from './semantic-text.js';
 
 export type FinalRegionRole = 'independent' | 'section' | 'entry' | 'content';
 
@@ -18,6 +20,7 @@ export interface SectionColumn {
   lineIndexes: number[];
   box: BoundingBox;
   confidence: number;
+  source: 'layout-zone' | 'section-local';
 }
 
 export interface FinalRegionDraft {
@@ -43,12 +46,15 @@ interface FinalLayoutInput {
   lines: LayoutLine[];
   layoutZoneCandidates: LayoutZoneCandidate[];
   sectionScopes: SectionScope[];
-  associations: Association[];
   entryGroups: EntryGroup[];
   lineReferences?: number[];
 }
 
 const METADATA = /(?:\b(?:19|20)\d{2}\b|\b(?:present|now)\b|@|https?:\/\/|www\.|\+?\d[\d ().-]{6,}\d)/iu;
+
+function isMetadata(text: string): boolean {
+  return METADATA.test(normalizeSemanticText(text));
+}
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
@@ -83,63 +89,204 @@ function crossesVerticalBoundary(indexes: number[], boundary: BoundingBox, lines
 }
 
 function validateZones(input: FinalLayoutInput): ValidatedLayoutZone[] {
-  return input.layoutZoneCandidates.map((zone, candidateIndex) => {
+  return input.layoutZoneCandidates.flatMap<ValidatedLayoutZone>((zone, candidateIndex) => {
     const reasons = [...zone.reasons];
     if (!zone.boundaryBox || zone.boundaryBox.width >= zone.boundaryBox.height) {
-      return {
-        candidateIndex,
-        accepted: zone.kind === 'header-body' || zone.kind === 'full-width-section',
-        confidence: zone.confidence,
-        reasons
-      };
-    }
-    if (zone.kind === 'unresolved-gutter') {
-      return {
-        candidateIndex,
-        accepted: false,
-        confidence: zone.confidence,
-        reasons: [...reasons, 'ambiguous gutter remains unsplit']
-      };
+      return [];
     }
     const cutGroup = input.entryGroups.find((group) =>
       crossesVerticalBoundary(group.lineIndexes, zone.boundaryBox!, input.lines)
     );
     if (cutGroup) {
-      return {
+      return [{
         candidateIndex,
         accepted: false,
         confidence: zone.confidence,
         reasons: [...reasons, `rejected because it divides entry anchored at line ${cutGroup.anchorLineIndex + 1}`]
-      };
+      }];
     }
-    const protectedAssociation = input.associations.find((association) =>
-      association.confidence >= 0.75 &&
-      crossesVerticalBoundary(association.lineIndexes, zone.boundaryBox!, input.lines)
-    );
-    if (protectedAssociation) {
-      return {
-        candidateIndex,
-        accepted: false,
-        confidence: zone.confidence,
-        reasons: [...reasons, `rejected because it cuts a protected ${protectedAssociation.kind} association`]
-      };
-    }
-    reasons.push('accepted without dividing a protected association or entry group');
-    return { candidateIndex, accepted: true, confidence: zone.confidence, reasons };
+    reasons.push('accepted without dividing an entry group');
+    return [{ candidateIndex, accepted: true, confidence: zone.confidence, reasons }];
   });
 }
 
-function geometricOrder(indexes: number[], lines: LayoutLine[]): number[] {
-  return [...indexes].sort((a, b) =>
-    lines[a]!.box.y - lines[b]!.box.y || lines[a]!.box.x - lines[b]!.box.x || a - b
-  );
+function rowAwareOrder(
+  indexes: number[],
+  lines: LayoutLine[],
+  priorityIndexes: ReadonlySet<number> = new Set()
+): number[] {
+  const sorted = [...indexes].sort((a, b) => {
+    const first = lines[a]!;
+    const second = lines[b]!;
+    const firstCenter = first.box.y + first.box.height / 2;
+    const secondCenter = second.box.y + second.box.height / 2;
+    return firstCenter - secondCenter || first.box.x - second.box.x || a - b;
+  });
+  const rows: number[][] = [];
+  for (const index of sorted) {
+    const row = rows.at(-1);
+    if (!row) {
+      rows.push([index]);
+      continue;
+    }
+    const anchor = lines[row[0]!]!;
+    const line = lines[index]!;
+    const centerDistance = Math.abs(
+      anchor.box.y + anchor.box.height / 2 - (line.box.y + line.box.height / 2)
+    );
+    if (centerDistance <= Math.min(anchor.box.height, line.box.height) / 2) {
+      row.push(index);
+    } else {
+      rows.push([index]);
+    }
+  }
+  return rows.flatMap((row) => row.sort((a, b) =>
+    Number(priorityIndexes.has(b)) - Number(priorityIndexes.has(a)) ||
+    lines[a]!.box.x - lines[b]!.box.x || a - b
+  ));
 }
 
 function entryReadingOrder(group: EntryGroup, lines: LayoutLine[]): number[] {
   const rest = group.lineIndexes.filter((index) => index !== group.anchorLineIndex);
-  const metadata = geometricOrder(rest.filter((index) => METADATA.test(lines[index]!.text)), lines);
-  const body = geometricOrder(rest.filter((index) => !METADATA.test(lines[index]!.text)), lines);
+  const metadata = rowAwareOrder(rest.filter((index) => isMetadata(lines[index]!.text)), lines);
+  const body = rowAwareOrder(rest.filter((index) => !isMetadata(lines[index]!.text)), lines);
   return [group.anchorLineIndex, ...metadata, ...body];
+}
+
+function splitHeadingContinuations(
+  scope: SectionScope,
+  indexes: number[],
+  lines: LayoutLine[]
+): number[] {
+  const heading = lines[scope.headingLineIndex]!;
+  return indexes
+    .filter((index) => {
+      if (index === scope.headingLineIndex) {
+        return false;
+      }
+      const line = lines[index]!;
+      const gap = line.box.y - bottom(heading.box);
+      return (
+        line.bold === heading.bold &&
+        line.italic === heading.italic &&
+        Math.abs(line.box.x - heading.box.x) <= 3 &&
+        Math.abs(line.box.height - heading.box.height) <= 1 &&
+        gap >= -heading.box.height / 4 &&
+        gap <= heading.box.height * 0.75 &&
+        isCommonSectionHeading(`${heading.text} ${line.text}`)
+      );
+    })
+    .sort((a, b) => lines[a]!.box.y - lines[b]!.box.y);
+}
+
+interface LocalColumnSplit {
+  parts: [number[], number[]];
+  confidence: number;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1]! + sorted[middle]!) / 2
+    : sorted[middle]!;
+}
+
+function repeatedLeftEdgeClusters(
+  indexes: number[],
+  lines: LayoutLine[],
+  tolerance: number
+): { value: number; indexes: number[] }[] {
+  const clusters: { value: number; indexes: number[] }[] = [];
+  for (const index of [...indexes].sort((a, b) => lines[a]!.box.x - lines[b]!.box.x)) {
+    const x = lines[index]!.box.x;
+    const cluster = clusters.find((candidate) => Math.abs(candidate.value - x) <= tolerance);
+    if (cluster) {
+      cluster.indexes.push(index);
+      cluster.value = median(cluster.indexes.map((lineIndex) => lines[lineIndex]!.box.x));
+    } else {
+      clusters.push({ value: x, indexes: [index] });
+    }
+  }
+  return clusters.sort((a, b) => a.value - b.value);
+}
+
+function verticalOverlap(indexes: number[], lines: LayoutLine[]): { top: number; bottom: number } {
+  return {
+    top: Math.min(...indexes.map((index) => lines[index]!.box.y)),
+    bottom: Math.max(...indexes.map((index) => bottom(lines[index]!.box)))
+  };
+}
+
+function isStandaloneMetadata(text: string): boolean {
+  const normalized = normalizeSemanticText(text).trim();
+  return /^(?:(?:19|20)\d{2})(?:\s*[-–—|/]\s*(?:(?:19|20)\d{2}|present|now))?$/iu.test(
+    normalized
+  );
+}
+
+function localColumnSplit(
+  scope: SectionScope,
+  indexes: number[],
+  lines: LayoutLine[]
+): LocalColumnSplit | null {
+  if (indexes.length < 4) {
+    return null;
+  }
+  const usualHeight = median(indexes.map((index) => lines[index]!.box.height));
+  const clusters = repeatedLeftEdgeClusters(indexes, lines, Math.max(2, usualHeight * 0.35));
+  const minimumGutter = Math.max(usualHeight * 1.5, scope.box.width * 0.03);
+  const candidates: (LocalColumnSplit & { gutter: number })[] = [];
+
+  for (let clusterIndex = 0; clusterIndex < clusters.length - 1; clusterIndex += 1) {
+    const leftClusters = clusters.slice(0, clusterIndex + 1);
+    const rightClusters = clusters.slice(clusterIndex + 1);
+    if (
+      Math.max(...leftClusters.map((cluster) => cluster.indexes.length)) < 2 ||
+      Math.max(...rightClusters.map((cluster) => cluster.indexes.length)) < 2
+    ) {
+      continue;
+    }
+    const left = leftClusters.flatMap((cluster) => cluster.indexes);
+    const rightIndexes = rightClusters.flatMap((cluster) => cluster.indexes);
+    if (left.length < 2 || rightIndexes.length < 2) {
+      continue;
+    }
+    const gutterStart = Math.max(...left.map((index) => right(lines[index]!.box)));
+    const gutterEnd = Math.min(...rightIndexes.map((index) => lines[index]!.box.x));
+    const gutter = gutterEnd - gutterStart;
+    if (gutter < minimumGutter) {
+      continue;
+    }
+    const leftRange = verticalOverlap(left, lines);
+    const rightRange = verticalOverlap(rightIndexes, lines);
+    const overlap = Math.min(leftRange.bottom, rightRange.bottom) -
+      Math.max(leftRange.top, rightRange.top);
+    if (overlap < usualHeight) {
+      continue;
+    }
+    if (
+      left.every((index) => isStandaloneMetadata(lines[index]!.text)) ||
+      rightIndexes.every((index) => isStandaloneMetadata(lines[index]!.text))
+    ) {
+      continue;
+    }
+    const balance = Math.min(left.length, rightIndexes.length) /
+      Math.max(left.length, rightIndexes.length);
+    if (balance < 0.35) {
+      continue;
+    }
+    candidates.push({
+      parts: [
+        left.sort((a, b) => lines[a]!.box.y - lines[b]!.box.y || a - b),
+        rightIndexes.sort((a, b) => lines[a]!.box.y - lines[b]!.box.y || a - b)
+      ],
+      confidence: round(Math.min(0.95, 0.7 + balance * 0.15 + gutter / scope.box.width)),
+      gutter
+    });
+  }
+
+  return candidates.sort((a, b) => b.confidence - a.confidence || b.gutter - a.gutter)[0] ?? null;
 }
 
 function resolveSectionColumns(
@@ -148,8 +295,16 @@ function resolveSectionColumns(
 ): SectionColumn[] {
   return input.sectionScopes
     .filter((scope) => scope.status === 'confirmed' && scope.mode === 'cross-lane')
-    .flatMap((scope) => {
+    .flatMap<SectionColumn>((scope) => {
       const scopeIndexes = new Set(scope.lineIndexes);
+      const groupedIndexes = new Set(
+        input.entryGroups
+          .filter((group) => group.sectionHeadingLineIndex === scope.headingLineIndex)
+          .flatMap((group) => group.lineIndexes)
+      );
+      const headingContinuations = new Set(
+        splitHeadingContinuations(scope, scope.lineIndexes, input.lines)
+      );
       const candidates = validatedZones
         .filter((validated) => validated.accepted)
         .map((validated) => ({
@@ -178,7 +333,24 @@ function resolveSectionColumns(
           sectionHeadingLineIndex: scope.headingLineIndex,
           lineIndexes,
           box: unionBox(input.lines, lineIndexes),
-          confidence: validated.confidence
+          confidence: validated.confidence,
+          source: 'layout-zone' as const
+        }));
+      }
+      const localIndexes = scope.lineIndexes.filter(
+        (index) =>
+          index !== scope.headingLineIndex &&
+          !headingContinuations.has(index) &&
+          !groupedIndexes.has(index)
+      );
+      const local = localColumnSplit(scope, localIndexes, input.lines);
+      if (local) {
+        return local.parts.map((lineIndexes) => ({
+          sectionHeadingLineIndex: scope.headingLineIndex,
+          lineIndexes,
+          box: unionBox(input.lines, lineIndexes),
+          confidence: local.confidence,
+          source: 'section-local' as const
         }));
       }
       return [];
@@ -198,6 +370,7 @@ function createRegions(
   const claimed = new Set<number>();
   const drafts: Omit<FinalRegionDraft, 'index' | 'parentIndex'>[] = [];
   const sectionDraftIndexes = new Map<number, number>();
+  const headingIndexes = new Set(input.sectionScopes.map((scope) => scope.headingLineIndex));
 
   for (const scope of confirmedScopes) {
     const groups = input.entryGroups.filter(
@@ -216,6 +389,8 @@ function createRegions(
       (index) => !grouped.has(index) && !columnLines.has(index)
     );
     if (direct.length > 0) {
+      const headingContinuations = splitHeadingContinuations(scope, direct, input.lines);
+      const headingContinuationSet = new Set(headingContinuations);
       sectionDraftIndexes.set(scope.headingLineIndex, drafts.length);
       drafts.push({
         role: 'section',
@@ -225,7 +400,15 @@ function createRegions(
         lineIndexes: direct,
         readingOrderLineIndexes: [
           scope.headingLineIndex,
-          ...geometricOrder(direct.filter((index) => index !== scope.headingLineIndex), input.lines)
+          ...headingContinuations,
+          ...rowAwareOrder(
+            direct.filter(
+              (index) =>
+                index !== scope.headingLineIndex && !headingContinuationSet.has(index)
+            ),
+            input.lines,
+            headingIndexes
+          )
         ]
       });
       direct.forEach((index) => claimed.add(index));
@@ -237,7 +420,7 @@ function createRegions(
         confidence: column.confidence,
         box: unionBox(input.lines, column.lineIndexes),
         lineIndexes: column.lineIndexes,
-        readingOrderLineIndexes: geometricOrder(column.lineIndexes, input.lines)
+        readingOrderLineIndexes: rowAwareOrder(column.lineIndexes, input.lines)
       });
       column.lineIndexes.forEach((index) => claimed.add(index));
     }
@@ -265,7 +448,7 @@ function createRegions(
       confidence: 0.5,
       box: unionBox(input.lines, unclaimed),
       lineIndexes: unclaimed,
-      readingOrderLineIndexes: geometricOrder(unclaimed, input.lines)
+      readingOrderLineIndexes: rowAwareOrder(unclaimed, input.lines, headingIndexes)
     });
   }
 
@@ -291,6 +474,17 @@ function createRegions(
 function assertUniqueFinalOwnership(regions: FinalRegionDraft[], lineCount: number): void {
   const owners = new Map<number, number>();
   for (const region of regions) {
+    const readingOrder = new Set(region.readingOrderLineIndexes);
+    const owned = new Set(region.lineIndexes);
+    if (
+      readingOrder.size !== region.readingOrderLineIndexes.length ||
+      readingOrder.size !== owned.size ||
+      [...readingOrder].some((lineIndex) => !owned.has(lineIndex))
+    ) {
+      throw new Error(
+        `Layout invariant failed: region ${region.index} reading order must contain each owned line exactly once`
+      );
+    }
     for (const lineIndex of region.lineIndexes) {
       const existing = owners.get(lineIndex);
       if (existing !== undefined) {

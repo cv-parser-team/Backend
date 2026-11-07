@@ -228,7 +228,7 @@ describe('resolved page layout', () => {
     expect(page.regions.map((region) => region.lines[0]!.heading)).toEqual([true, true]);
   });
 
-  it('persists entry ownership and association-aware reading order', () => {
+  it('persists entry ownership and anchor-first reading order', () => {
     const page = layout([
       piece('EXPERIENCE', 50, 200, 15, true),
       piece('2022 - 2024', 50, 240, 10),

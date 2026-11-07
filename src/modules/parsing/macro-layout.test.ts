@@ -39,38 +39,11 @@ function generate(
     lines,
     metrics,
     boundaryCandidates: boundaries.lines,
-    nonTextBoundaryCandidates: boundaries.nonText,
-    pageIndex,
-    pageWidth: 600,
-    pageHeight: 800
+    nonTextBoundaryCandidates: boundaries.nonText
   });
 }
 
 describe('provisional macro layout hypotheses', () => {
-  it('proposes a full-width header above the body', () => {
-    const lines = [
-      line('SAMPLE CANDIDATE', 100, 30, 350, 24, true),
-      line('sample@example.com', 100, 65, 160),
-      line('EXPERIENCE', 50, 120, 100, 14, true),
-      line('Built reliable systems.', 50, 150, 400)
-    ];
-    const separator: DrawnSeparator = {
-      orientation: 'horizontal',
-      box: { x: 50, y: 95, width: 400, height: 1 },
-      thickness: 1
-    };
-    const header = generate(lines, [separator]).find(
-      (candidate) => candidate.kind === 'header-body'
-    );
-
-    expect(header).toBeDefined();
-    expect(header!.parts.map((part) => [part.label, part.lineIndexes])).toEqual([
-      ['header', [0, 1]],
-      ['body', [2, 3]]
-    ]);
-    expect(header!.boundaryBox).not.toBeNull();
-  });
-
   it('proposes a narrow persistent sidebar without assigning ownership', () => {
     const lines = [
       line('Contact', 40, 80, 70, 12, true),
@@ -113,8 +86,7 @@ describe('provisional macro layout hypotheses', () => {
     ];
     const zones = generate(lines, [], 1);
 
-    expect(zones.some((candidate) => candidate.kind === 'unresolved-gutter')).toBe(true);
-    expect(zones.flatMap((candidate) => candidate.reasons).join(' ')).not.toMatch(/table|grid/);
+    expect(zones).toEqual([]);
   });
 
   it('leaves right-aligned date rails unresolved', () => {
@@ -128,8 +100,7 @@ describe('provisional macro layout hypotheses', () => {
     ];
     const zones = generate(lines, [], 1);
 
-    expect(zones.some((candidate) => candidate.kind === 'unresolved-gutter')).toBe(true);
-    expect(zones.some((candidate) => candidate.kind !== 'unresolved-gutter')).toBe(false);
+    expect(zones).toEqual([]);
   });
 
   it('keeps a line crossing a provisional gutter in both visual parts', () => {
@@ -140,9 +111,7 @@ describe('provisional macro layout hypotheses', () => {
       line('Experience', 200, 105, 300, 14, true),
       line('Built reliable systems.', 200, 140, 300)
     ];
-    const gutter = generate(lines).find((candidate) =>
-      candidate.kind === 'sidebar-main' || candidate.kind === 'unresolved-gutter'
-    );
+    const gutter = generate(lines).find((candidate) => candidate.kind === 'sidebar-main');
 
     expect(gutter).toBeDefined();
     expect(gutter!.parts[0]!.lineIndexes).toContain(0);

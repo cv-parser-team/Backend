@@ -119,7 +119,6 @@ describe('parsing inspection report', () => {
           governingZoneCandidateIndexes: [0]
         }],
         entryAnchors: [],
-        associations: [],
         entryGroups: [],
         validatedZones: [],
         sectionColumns: [],
@@ -141,7 +140,7 @@ describe('parsing inspection report', () => {
     expect(report).toContain('4. Scored boundary candidates');
     expect(report).toContain('5. Provisional macro layout hypotheses');
     expect(report).toContain('6. Section scopes');
-    expect(report).toContain('7. Entries and associations');
+    expect(report).toContain('7. Entry groups');
     expect(report).toContain('8. Validated section columns');
     expect(report).toContain('9. Final ownership and reading order');
     expect(report).toContain('10. Revised compact AI input');

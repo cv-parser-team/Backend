@@ -17,6 +17,61 @@ function line(text: string, x: number, y: number, width: number): LayoutLine {
 }
 
 describe('constrained final layout', () => {
+  it('keeps a split section heading together before same-row content', () => {
+    const lines = [
+      line('PROFESSIONAL', 50, 100, 90),
+      line('Current role', 220, 100, 100),
+      line('EXPERIENCE', 50, 113, 90)
+    ];
+    lines[0]!.bold = true;
+    lines[2]!.bold = true;
+    const scope: SectionScope = {
+      headingLineIndex: 0,
+      lineIndexes: [0, 1, 2],
+      box: { x: 50, y: 100, width: 270, height: 23 },
+      status: 'confirmed',
+      mode: 'cross-lane',
+      confidence: 0.9,
+      reasons: [],
+      governingZoneCandidateIndexes: []
+    };
+    const result = resolveFinalLayout({
+      pageNumber: 1,
+      lines,
+      layoutZoneCandidates: [],
+      sectionScopes: [scope],
+      entryGroups: []
+    });
+
+    expect(result.regions[0]!.readingOrderLineIndexes).toEqual([0, 2, 1]);
+  });
+
+  it('orders a provisional heading before slightly higher same-row values', () => {
+    const lines = [
+      line('CONTACT', 50, 100.5, 80),
+      line('Phone: 123-456-7890', 160, 100, 130)
+    ];
+    const provisional: SectionScope = {
+      headingLineIndex: 0,
+      lineIndexes: [0, 1],
+      box: { x: 50, y: 100, width: 240, height: 10.5 },
+      status: 'provisional',
+      mode: 'cross-lane',
+      confidence: 0.7,
+      reasons: [],
+      governingZoneCandidateIndexes: []
+    };
+    const result = resolveFinalLayout({
+      pageNumber: 1,
+      lines,
+      layoutZoneCandidates: [],
+      sectionScopes: [provisional],
+      entryGroups: []
+    });
+
+    expect(result.regions[0]!.readingOrderLineIndexes).toEqual([0, 1]);
+  });
+
   it('rejects a gutter that divides an entry and produces unique final ownership', () => {
     const lines = [
       line('Candidate', 50, 30, 120),
@@ -40,8 +95,7 @@ describe('constrained final layout', () => {
       sectionHeadingLineIndex: 1,
       lineIndexes: [2, 3, 4],
       box: { x: 50, y: 140, width: 380, height: 30 },
-      confidence: 0.9,
-      associationIndexes: []
+      confidence: 0.9
     };
     const zone: LayoutZoneCandidate = {
       kind: 'parallel-columns',
@@ -57,7 +111,6 @@ describe('constrained final layout', () => {
       lines,
       layoutZoneCandidates: [zone],
       sectionScopes: [scope],
-      associations: [],
       entryGroups: [group]
     });
 
@@ -110,7 +163,6 @@ describe('constrained final layout', () => {
       lines,
       layoutZoneCandidates: [zone],
       sectionScopes: [scope],
-      associations: [],
       entryGroups: []
     });
 
@@ -121,6 +173,101 @@ describe('constrained final layout', () => {
       ['content', 0]
     ]);
     expect(result.regions[0]!.lineIndexes).toEqual([0]);
+  });
+
+  it('detects clean section-local columns without a page-wide layout zone', () => {
+    const lines = [
+      line('CERTIFICATES', 34, 100, 75),
+      line('Project Management | 2027', 140, 100, 133),
+      line('System Optimization | 2028', 362, 100, 135),
+      line('The Project Management Institute', 140, 116, 157),
+      line('Scrum Learning Society', 362, 116, 110),
+      line('Risk Management and Mitigation | 2028', 140, 146, 191),
+      line('Vendor Relations | 2030', 362, 146, 116),
+      line('Internal Auditors Team', 140, 163, 105),
+      line('South City College', 362, 163, 86)
+    ];
+    lines[0]!.bold = true;
+    lines[1]!.bold = true;
+    lines[2]!.bold = true;
+    lines[5]!.bold = true;
+    lines[6]!.bold = true;
+    const scope: SectionScope = {
+      headingLineIndex: 0,
+      lineIndexes: lines.map((_, index) => index),
+      box: { x: 34, y: 100, width: 463, height: 73 },
+      status: 'confirmed',
+      mode: 'cross-lane',
+      confidence: 1,
+      reasons: [],
+      governingZoneCandidateIndexes: []
+    };
+
+    const result = resolveFinalLayout({
+      pageNumber: 1,
+      lines,
+      layoutZoneCandidates: [],
+      sectionScopes: [scope],
+      entryGroups: []
+    });
+
+    expect(result.sectionColumns.map((column) => column.lineIndexes)).toEqual([
+      [1, 3, 5, 7],
+      [2, 4, 6, 8]
+    ]);
+    expect(result.sectionColumns.every((column) => column.source === 'section-local')).toBe(true);
+    expect(result.regions.map((region) => region.readingOrderLineIndexes)).toEqual([
+      [0],
+      [1, 3, 5, 7],
+      [2, 4, 6, 8]
+    ]);
+    expect(result.aiInputLines).toEqual([
+      '[P1 R0 section]',
+      'L1 CERTIFICATES',
+      '[P1 R1 content parent R0]',
+      'L2 Project Management | 2027',
+      'L4 The Project Management Institute',
+      'L6 Risk Management and Mitigation | 2028',
+      'L8 Internal Auditors Team',
+      '[P1 R2 content parent R0]',
+      'L3 System Optimization | 2028',
+      'L5 Scrum Learning Society',
+      'L7 Vendor Relations | 2030',
+      'L9 South City College'
+    ]);
+  });
+
+  it('does not mistake indentation inside one section lane for separate columns', () => {
+    const lines = [
+      line('EXPERIENCE', 34, 100, 75),
+      line('Research Engineer | 2022-2025', 140, 100, 180),
+      line('Innovation Lab', 140, 117, 90),
+      line('Built a long system that crosses any indentation gap.', 157, 140, 300),
+      line('Improved reliability across the platform.', 157, 156, 230)
+    ];
+    lines[0]!.bold = true;
+    lines[1]!.bold = true;
+    const scope: SectionScope = {
+      headingLineIndex: 0,
+      lineIndexes: lines.map((_, index) => index),
+      box: { x: 34, y: 100, width: 423, height: 66 },
+      status: 'confirmed',
+      mode: 'cross-lane',
+      confidence: 1,
+      reasons: [],
+      governingZoneCandidateIndexes: []
+    };
+
+    const result = resolveFinalLayout({
+      pageNumber: 1,
+      lines,
+      layoutZoneCandidates: [],
+      sectionScopes: [scope],
+      entryGroups: []
+    });
+
+    expect(result.sectionColumns).toEqual([]);
+    expect(result.regions).toHaveLength(1);
   });
 
   it('keeps crossing grid cells together instead of creating columns', () => {
@@ -158,7 +305,6 @@ describe('constrained final layout', () => {
       lines,
       layoutZoneCandidates: [zone],
       sectionScopes: [scope],
-      associations: [],
       entryGroups: []
     });
 

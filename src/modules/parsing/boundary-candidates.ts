@@ -1,5 +1,6 @@
 import type { LayoutLine, PageMetrics, WhitespaceCandidate } from './layout.js';
 import type { BoundingBox, DrawnSeparator } from './parsing.types.js';
+import { normalizeSectionKey, normalizeSemanticText } from './semantic-text.js';
 
 export interface ScoredEvidence {
   score: number;
@@ -35,6 +36,7 @@ export interface BoundaryCandidateInput {
 }
 
 export const COMMON_SECTION_HEADINGS = [
+  'about',
   'about me',
   'profile',
   'summary',
@@ -44,6 +46,7 @@ export const COMMON_SECTION_HEADINGS = [
   'contact details',
   'personal details',
   'education',
+  'education background',
   'academic background',
   'academic history',
   'qualifications',
@@ -52,27 +55,36 @@ export const COMMON_SECTION_HEADINGS = [
   'professional experience',
   'employment history',
   'work history',
+  'educational history',
   'skills',
   'technical skills',
   'core competencies',
+  'core skills',
+  'key competencies',
   'competencies',
   'projects',
   'certifications',
   'certification',
+  'certificates',
   'licenses',
   'courses',
   'relevant courses',
   'training',
   'languages',
+  'language',
   'awards',
   'awards and certifications',
   'awards and certification',
+  'education and certifications',
   'achievements',
   'publications',
   'volunteering',
   'volunteer experience',
+  'extracurricular activities',
+  'memberships',
   'interests',
   'references',
+  'testimonials',
   'additional information'
 ] as const;
 
@@ -123,20 +135,63 @@ function overlapsHorizontally(first: BoundingBox, second: BoundingBox): boolean 
 }
 
 function wordCount(text: string): number {
-  return text.trim().split(/\s+/u).filter(Boolean).length;
-}
-
-function normalizeSectionHeading(text: string): string {
-  return text
-    .normalize('NFKC')
-    .replace(/[.:|]+$/gu, '')
-    .replace(/\s+/gu, ' ')
-    .trim()
-    .toLowerCase();
+  return normalizeSemanticText(text).split(/\s+/u).filter(Boolean).length;
 }
 
 export function isCommonSectionHeading(text: string): boolean {
-  return COMMON_SECTION_HEADING_SET.has(normalizeSectionHeading(text));
+  return COMMON_SECTION_HEADING_SET.has(normalizeSectionKey(text));
+}
+
+function adjacentHeadingFragment(
+  first: LayoutLine,
+  second: LayoutLine,
+  metrics: PageMetrics
+): boolean {
+  const gap = second.box.y - (first.box.y + first.box.height);
+  return (
+    first.bold === second.bold &&
+    first.italic === second.italic &&
+    Math.abs(first.box.x - second.box.x) <= 3 &&
+    Math.abs(first.box.height - second.box.height) <= 1 &&
+    gap >= -first.box.height / 4 &&
+    gap <= Math.max(metrics.usualVerticalGap * 1.5, metrics.usualBodyHeight * 0.75)
+  );
+}
+
+function commonSectionHeadingState(
+  lineIndex: number,
+  lines: LayoutLine[],
+  metrics: PageMetrics
+): { starts: boolean; continuation: boolean } {
+  const line = lines[lineIndex]!;
+  const sameLane = lines
+    .map((candidate, index) => ({ candidate, index }))
+    .filter(({ index, candidate }) =>
+      index !== lineIndex &&
+      candidate.bold === line.bold &&
+      candidate.italic === line.italic &&
+      Math.abs(candidate.box.x - line.box.x) <= 3 &&
+      Math.abs(candidate.box.height - line.box.height) <= 1
+    );
+  const previous = sameLane
+    .filter(({ candidate }) => candidate.box.y < line.box.y)
+    .sort((a, b) => b.candidate.box.y - a.candidate.box.y)[0]?.candidate;
+  const next = sameLane
+    .filter(({ candidate }) => candidate.box.y > line.box.y)
+    .sort((a, b) => a.candidate.box.y - b.candidate.box.y)[0]?.candidate;
+  const continuation = previous !== undefined &&
+    adjacentHeadingFragment(previous, line, metrics) &&
+    (
+      isCommonSectionHeading(`${previous.text} ${line.text}`) ||
+      (!isCommonSectionHeading(previous.text) && isCommonSectionHeading(line.text))
+    );
+  const startsSplitHeading = next !== undefined &&
+    adjacentHeadingFragment(line, next, metrics) &&
+    isCommonSectionHeading(`${line.text} ${next.text}`);
+  return {
+    starts: !continuation && (isCommonSectionHeading(line.text) || startsSplitHeading),
+    continuation
+  };
 }
 
 function hasSentenceShape(line: LayoutLine): boolean {
@@ -144,7 +199,7 @@ function hasSentenceShape(line: LayoutLine): boolean {
 }
 
 function hasNumericMetadataShape(text: string): boolean {
-  const tokens = text.trim().split(/\s+/u).filter(Boolean);
+  const tokens = normalizeSemanticText(text).split(/\s+/u).filter(Boolean);
   if (tokens.length === 0) {
     return false;
   }
@@ -275,6 +330,7 @@ function sectionStyleMatches(
 }
 
 function isSectionStyleEligible(line: LayoutLine, metrics: PageMetrics): boolean {
+  const semanticText = normalizeSemanticText(line.text);
   const words = wordCount(line.text);
   const short = words > 0 && words <= 8;
   const larger = metrics.usualBodyHeight > 0 &&
@@ -282,9 +338,9 @@ function isSectionStyleEligible(line: LayoutLine, metrics: PageMetrics): boolean
   return (
     short &&
     !line.bullet &&
-    !DATE.test(line.text) &&
-    !CONTACT.test(line.text) &&
-    !hasNumericMetadataShape(line.text) &&
+    !DATE.test(semanticText) &&
+    !CONTACT.test(semanticText) &&
+    !hasNumericMetadataShape(semanticText) &&
     !hasSentenceShape(line) &&
     (line.bold || larger || isCommonSectionHeading(line.text))
   );
@@ -366,11 +422,13 @@ function scoreLineCandidate(
     sectionStyleLineIndexes,
     metrics
   );
-  const commonSectionHeading = isCommonSectionHeading(line.text);
+  const semanticText = normalizeSemanticText(line.text);
+  const commonHeading = commonSectionHeadingState(lineIndex, lines, metrics);
+  const commonSectionHeading = commonHeading.starts;
   const sentence = hasSentenceShape(line);
-  const date = DATE.test(line.text);
-  const contact = CONTACT.test(line.text);
-  const numeric = hasNumericMetadataShape(line.text);
+  const date = DATE.test(semanticText);
+  const contact = CONTACT.test(semanticText);
+  const numeric = hasNumericMetadataShape(semanticText);
   const negativeHeading = negativeHeadingEvidence(line, date, contact, sentence, numeric);
   const separator = nearbyHorizontalSeparator(line, separators, metrics);
 
@@ -440,6 +498,10 @@ function scoreLineCandidate(
     sectionScore -= negativeHeading.score;
     sectionReasons.push(...negativeHeading.reasons);
   }
+  if (commonHeading.continuation) {
+    sectionScore -= 0.7;
+    sectionReasons.push('continues a split common section heading');
+  }
 
   let entryScore = 0;
   const entryReasons: string[] = [];
@@ -474,6 +536,10 @@ function scoreLineCandidate(
   if (line.bullet || date || contact || sentence) {
     entryScore -= 0.5;
     entryReasons.push('body, metadata, or list shape reduces entry authority');
+  }
+  if (commonHeading.continuation) {
+    entryScore -= 0.7;
+    entryReasons.push('continues a split common section heading');
   }
 
   let contentScore = 0;

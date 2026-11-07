@@ -36,6 +36,7 @@ interface ResolvedHeading {
   reasons: string[];
   zoneIndexes: number[];
   lanePart: LayoutZonePart | null;
+  startsLayoutBand: boolean;
 }
 
 function clamp(value: number): number {
@@ -101,7 +102,13 @@ function parallelLaneForLine(
   const lineCenter = centerX(lines[lineIndex]!.box);
   return zones
     .map((zone, zoneIndex) => ({ zone, zoneIndex }))
-    .filter(({ zone }) => zone.kind === 'parallel-columns')
+    .filter(({ zone }) =>
+      zone.kind === 'parallel-columns' ||
+      (
+        zone.kind === 'sidebar-main' &&
+        zone.reasons.includes('both lanes have independent section candidates')
+      )
+    )
     .flatMap(({ zone, zoneIndex }) => zone.parts
       .filter((part) =>
         part.lineIndexes.includes(lineIndex) &&
@@ -156,12 +163,25 @@ function isStrongSameRowSectionGroup(
   return groupIndexes.every((lineIndex) => {
     const peerCandidate = candidates.find((item) => item.lineIndex === lineIndex);
     const line = lines[lineIndex];
+    const common = peerCandidate?.section.reasons.includes('exact common section heading') ?? false;
+    const commonPeerToRight = groupIndexes.some((otherIndex) => {
+      const otherCandidate = candidates.find((item) => item.lineIndex === otherIndex);
+      return (
+        otherIndex !== lineIndex &&
+        otherCandidate?.section.reasons.includes('exact common section heading') === true &&
+        lines[otherIndex]!.box.x > (line?.box.x ?? Number.POSITIVE_INFINITY)
+      );
+    });
     return (
       peerCandidate !== undefined &&
       line !== undefined &&
       line.bold &&
       peerCandidate.section.score >= 0.8 &&
-      peerCandidate.section.score - peerCandidate.entry.score >= 0.15
+      (
+        common ||
+        commonPeerToRight ||
+        peerCandidate.section.score - peerCandidate.entry.score >= 0.25
+      )
     );
   });
 }
@@ -185,7 +205,38 @@ function hasStrongHorizontalSupport(
   );
 }
 
+function hasPageWideWhitespaceBefore(
+  line: LayoutLine,
+  metrics: PageMetrics
+): boolean {
+  const activeBox = metrics.activeContentBox;
+  if (!activeBox) {
+    return false;
+  }
+  const leftEdgeTolerance = Math.max(
+    metrics.usualBodyHeight * 2,
+    activeBox.width * 0.05
+  );
+  if (line.box.x > activeBox.x + leftEdgeTolerance) {
+    return false;
+  }
+  const minimumHeight = Math.max(
+    metrics.usualBodyHeight * 1.5,
+    metrics.usualVerticalGap * 2
+  );
+  const edgeTolerance = Math.max(1, metrics.usualBodyHeight * 0.25);
+  return metrics.horizontalBands.some((band) =>
+    band.coverage >= 0.9 &&
+    band.size >= minimumHeight &&
+    Math.abs(bottom(band.box) - line.box.y) <= edgeTolerance
+  );
+}
+
 function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
+  const firstRecognizedSectionY = input.boundaryCandidates
+    .filter((candidate) => candidate.section.reasons.includes('exact common section heading'))
+    .map((candidate) => input.lines[candidate.lineIndex]!.box.y)
+    .sort((a, b) => a - b)[0];
   const resolved = input.boundaryCandidates.flatMap((candidate) => {
     if (candidate.section.score < 0.6) {
       return [];
@@ -210,11 +261,41 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       input.metrics,
       input.nonTextBoundaryCandidates
     );
+    const startsLayoutBand = peers.length === 0 &&
+      (fullWidth || hasPageWideWhitespaceBefore(line, input.metrics));
     // A visually prominent entry anchor often looks like a weak section
     // heading in isolation. Require a useful margin before confirming it as a
-    // standalone section; Stage 7 can resolve the remaining competition from
-    // repeated entry structure.
-    const entryCompetition = candidate.entry.score >= candidate.section.score - 0.15;
+    // standalone section; entry resolution later uses repeated structure only
+    // inside the section scopes established here.
+    const commonSection = candidate.section.reasons.includes('exact common section heading');
+    const sameLaneHeading = input.boundaryCandidates.some((other) =>
+      other.lineIndex !== lineIndex &&
+      other.section.reasons.includes('exact common section heading') &&
+      Math.abs(input.lines[other.lineIndex]!.box.x - line.box.x) <= 3 &&
+      Math.abs(input.lines[other.lineIndex]!.box.y - line.box.y) <=
+        input.metrics.usualBodyHeight * 15
+    );
+    const distinctHeadingLane = input.boundaryCandidates.find((other) =>
+      other.section.reasons.includes('exact common section heading') &&
+      Math.abs(input.lines[other.lineIndex]!.box.x - line.box.x) >=
+        input.metrics.usualBodyHeight * 4
+    );
+    const repeatedParallelLane = sameLaneHeading && distinctHeadingLane !== undefined;
+    const preSectionPreamble = !commonSection &&
+      firstRecognizedSectionY !== undefined &&
+      line.box.y < firstRecognizedSectionY;
+    const governsContent = input.lines.filter((other) =>
+      other !== line &&
+      other.box.y > line.box.y &&
+      other.box.y - line.box.y <= Math.max(input.metrics.usualBodyHeight * 8, 80) &&
+      other.box.x < right(line.box) + input.metrics.usualBodyHeight * 8 &&
+      right(other.box) > line.box.x - input.metrics.usualBodyHeight * 8
+    ).length >= 2;
+    // Entry roles are contextual children of sections. A recognized section
+    // label must therefore establish its scope before entry evidence is
+    // allowed to compete inside that scope.
+    const entryCompetition = !commonSection &&
+      candidate.entry.score >= candidate.section.score - 0.2;
     const headerCompetition = candidate.header.score >= candidate.section.score;
     const zoneIndexes = zoneIndexesForLine(lineIndex, input.layoutZoneCandidates);
     const reasons = [`section evidence scored ${candidate.section.score}`];
@@ -228,7 +309,19 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
     let confidence = candidate.section.score * 0.75;
     let lanePart: LayoutZonePart | null = null;
 
-    if (fullWidth) {
+    if (preSectionPreamble) {
+      reasons.push('non-section preamble before the first recognized section');
+    } else if (commonSection) {
+      status = 'confirmed';
+      mode = startsLayoutBand
+        ? 'cross-lane'
+        : parallelLane || peers.length > 0 || repeatedParallelLane
+          ? 'lane-local'
+          : 'cross-lane';
+      confidence += 0.2;
+      lanePart = mode === 'lane-local' ? parallelLane?.part ?? null : null;
+      reasons.push('recognized section label establishes scope before entry resolution');
+    } else if (fullWidth && governsContent) {
       status = 'confirmed';
       mode = 'cross-lane';
       confidence += 0.2;
@@ -238,7 +331,13 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       mode = 'lane-local';
       confidence += 0.15;
       reasons.push('strong same-row section peers confirm independent lane-local sections');
-    } else if (parallelLane && (!entryCompetition || peers.length > 0)) {
+    } else if (
+      parallelLane &&
+      !entryCompetition &&
+      governsContent &&
+      candidate.section.score >= 0.8 &&
+      candidate.section.score - candidate.entry.score >= 0.3
+    ) {
       status = 'confirmed';
       mode = 'lane-local';
       confidence += 0.15;
@@ -248,6 +347,8 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       candidate.section.score >= 0.8 &&
       line.bold &&
       !entryCompetition &&
+      governsContent &&
+      candidate.section.score - candidate.entry.score >= 0.3 &&
       peers.length === 0
     ) {
       status = 'confirmed';
@@ -268,9 +369,13 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       confidence += 0.05;
       reasons.push('nearby strong horizontal boundary evidence');
     }
+    if (startsLayoutBand && status === 'confirmed') {
+      confidence += 0.05;
+      reasons.push('page-wide whitespace starts a new layout band');
+    }
     const verticalZone = input.layoutZoneCandidates.some(
       (zone) =>
-        ['unresolved-gutter', 'sidebar-main', 'parallel-columns'].includes(zone.kind) &&
+        ['sidebar-main', 'parallel-columns'].includes(zone.kind) &&
         zone.participatingLineIndexes.includes(lineIndex)
     );
     if (verticalZone && mode === 'cross-lane') {
@@ -284,7 +389,8 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       confidence: round(clamp(confidence)),
       reasons,
       zoneIndexes,
-      lanePart
+      lanePart,
+      startsLayoutBand: startsLayoutBand && status === 'confirmed'
     }];
   });
   return resolved;
@@ -296,18 +402,18 @@ function provisionalCellBounds(
   input: SectionScopeInput
 ): { left: number; right: number } {
   const line = input.lines[heading.candidate.lineIndex]!;
-  const peers = headings
-    .filter(
-      (candidate) =>
-        candidate !== heading &&
-        sharesRow(line, input.lines[candidate.candidate.lineIndex]!)
-    )
+  const laneRepresentatives = headings
     .map((candidate) => input.lines[candidate.candidate.lineIndex]!)
-    .sort((a, b) => a.box.x - b.box.x);
-  const all = [line, ...peers].sort((a, b) => a.box.x - b.box.x);
-  const index = all.indexOf(line);
-  const previous = all[index - 1];
-  const next = all[index + 1];
+    .sort((a, b) => a.box.x - b.box.x)
+    .filter(
+      (candidate, index, all) =>
+        index === 0 || Math.abs(candidate.box.x - all[index - 1]!.box.x) > 3
+    );
+  const index = laneRepresentatives.findIndex(
+    (candidate) => Math.abs(candidate.box.x - line.box.x) <= 3
+  );
+  const previous = laneRepresentatives[index - 1];
+  const next = laneRepresentatives[index + 1];
   const dividerBetween = (leftLine: LayoutLine, rightLine: LayoutLine): number => {
     const gutter = input.metrics.verticalGutters
       .filter(
@@ -375,6 +481,27 @@ function compatibleNextHeading(
     )[0] ?? null;
 }
 
+function nextLayoutBandHeading(
+  heading: ResolvedHeading,
+  headings: ResolvedHeading[],
+  input: SectionScopeInput
+): ResolvedHeading | null {
+  const line = input.lines[heading.candidate.lineIndex]!;
+  return headings
+    .filter((candidate) => {
+      if (candidate === heading || !candidate.startsLayoutBand) {
+        return false;
+      }
+      const candidateLine = input.lines[candidate.candidate.lineIndex]!;
+      return candidateLine.box.y > line.box.y && !sharesRow(line, candidateLine);
+    })
+    .sort(
+      (a, b) =>
+        input.lines[a.candidate.lineIndex]!.box.y -
+        input.lines[b.candidate.lineIndex]!.box.y
+    )[0] ?? null;
+}
+
 export function establishSectionScopes(input: SectionScopeInput): SectionScope[] {
   if (input.lines.length === 0 || !input.metrics.activeContentBox) {
     return [];
@@ -384,9 +511,14 @@ export function establishSectionScopes(input: SectionScopeInput): SectionScope[]
     const headingLine = input.lines[heading.candidate.lineIndex]!;
     const area = headingArea(heading, headings, input);
     const next = compatibleNextHeading(heading, headings, input, area);
-    const endY = next
+    const nextLayoutBand = nextLayoutBandHeading(heading, headings, input);
+    const nextHeadingY = next
       ? input.lines[next.candidate.lineIndex]!.box.y
       : Number.POSITIVE_INFINITY;
+    const nextLayoutBandY = nextLayoutBand
+      ? input.lines[nextLayoutBand.candidate.lineIndex]!.box.y
+      : Number.POSITIVE_INFINITY;
+    const endY = Math.min(nextHeadingY, nextLayoutBandY);
     const cellBounded = heading.mode === 'provisional-cell' ||
       (heading.mode === 'lane-local' && heading.lanePart === null);
     const lineIndexes = input.lines
@@ -400,6 +532,10 @@ export function establishSectionScopes(input: SectionScopeInput): SectionScope[]
             : line.box.x < area.right && right(line.box) > area.left)
       )
       .map(({ index }) => index);
+    const reasons = [...heading.reasons];
+    if (nextLayoutBand && nextLayoutBandY <= nextHeadingY) {
+      reasons.push('next page-wide layout band ends this scope');
+    }
     return {
       headingLineIndex: heading.candidate.lineIndex,
       lineIndexes,
@@ -407,7 +543,7 @@ export function establishSectionScopes(input: SectionScopeInput): SectionScope[]
       status: heading.status,
       mode: heading.mode,
       confidence: heading.confidence,
-      reasons: heading.reasons,
+      reasons,
       governingZoneCandidateIndexes: heading.zoneIndexes
     };
   });

@@ -2,15 +2,7 @@ import type { BoundaryCandidate } from './boundary-candidates.js';
 import type { LayoutLine, PageMetrics } from './layout.js';
 import type { SectionScope } from './section-scopes.js';
 import type { BoundingBox } from './parsing.types.js';
-
-export type AssociationKind =
-  | 'same-entry'
-  | 'anchor-metadata'
-  | 'anchor-body'
-  | 'metadata-body'
-  | 'wrapped-line'
-  | 'same-row-cell'
-  | 'section-content';
+import { normalizeSemanticText } from './semantic-text.js';
 
 export interface ResolvedEntryAnchor {
   lineIndex: number;
@@ -20,25 +12,16 @@ export interface ResolvedEntryAnchor {
   demotedSectionCandidate: boolean;
 }
 
-export interface Association {
-  kind: AssociationKind;
-  lineIndexes: number[];
-  confidence: number;
-  reasons: string[];
-}
-
 export interface EntryGroup {
   anchorLineIndex: number;
   sectionHeadingLineIndex: number;
   lineIndexes: number[];
   box: BoundingBox;
   confidence: number;
-  associationIndexes: number[];
 }
 
 export interface EntryResolution {
   anchors: ResolvedEntryAnchor[];
-  associations: Association[];
   groups: EntryGroup[];
 }
 
@@ -50,6 +33,10 @@ interface EntryResolutionInput {
 }
 
 const METADATA = /(?:\b(?:19|20)\d{2}\b|\b(?:present|now)\b|@|https?:\/\/|www\.|\+?\d[\d ().-]{6,}\d)/iu;
+
+function isMetadata(text: string): boolean {
+  return METADATA.test(normalizeSemanticText(text));
+}
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
@@ -108,7 +95,7 @@ function anchorsInScope(
     }));
   const styleCounts = new Map<string, number>();
   for (const { line, candidate } of candidates) {
-    if (line.bold && candidate.entry.score >= 0.2 && !METADATA.test(line.text)) {
+    if (line.bold && candidate.entry.score >= 0.2 && !isMetadata(line.text)) {
       const key = styleKey(line, input.metrics.usualBodyHeight);
       styleCounts.set(key, (styleCounts.get(key) ?? 0) + 1);
     }
@@ -125,10 +112,10 @@ function anchorsInScope(
       .map((candidate) => candidate.headingLineIndex)
   );
   return candidates.flatMap(({ lineIndex, line, candidate }) => {
-    const repeatedStyle = !METADATA.test(line.text) &&
+    const repeatedStyle = !isMetadata(line.text) &&
       (styleCounts.get(styleKey(line, input.metrics.usualBodyHeight)) ?? 0) >= 2;
     const demoted = provisionalHeadings.has(lineIndex);
-    const strongAnchor = line.bold && candidate.entry.score >= 0.7 && !METADATA.test(line.text);
+    const strongAnchor = line.bold && candidate.entry.score >= 0.7 && !isMetadata(line.text);
     const precedingBoldLine = candidates
       .filter(({ line: other }) =>
         other.box.y < line.box.y &&
@@ -216,7 +203,7 @@ function linesForAnchor(
       ))
     : Number.POSITIVE_INFINITY;
   const rowHasCards = row.length > 1;
-  return scope.lineIndexes.filter((lineIndex) => {
+  const owned = scope.lineIndexes.filter((lineIndex) => {
     if (lineIndex === scope.headingLineIndex) {
       return false;
     }
@@ -233,71 +220,14 @@ function linesForAnchor(
     )[0];
     return nearest?.lineIndex === anchor.lineIndex;
   });
+  return [...new Set([anchor.lineIndex, ...owned])].sort((a, b) => a - b);
 }
 
-function associationsForGroup(
-  anchor: ResolvedEntryAnchor,
-  indexes: number[],
-  lines: LayoutLine[],
-  metrics: PageMetrics
-): Association[] {
-  const associations: Association[] = [];
-  const anchorLine = lines[anchor.lineIndex]!;
-  for (const lineIndex of indexes) {
-    if (lineIndex === anchor.lineIndex) {
-      continue;
-    }
-    const line = lines[lineIndex]!;
-    const metadata = METADATA.test(line.text);
-    const sameRow = sharesRow(anchorLine, line);
-    associations.push({
-      kind: metadata ? 'anchor-metadata' : 'anchor-body',
-      lineIndexes: [anchor.lineIndex, lineIndex],
-      confidence: round(Math.min(1, anchor.confidence * 0.55 + (sameRow ? 0.25 : 0.15))),
-      reasons: [
-        metadata ? 'metadata falls inside the anchor entry band' : 'content follows the anchor inside its section',
-        ...(sameRow ? ['row alignment supports the relationship'] : [])
-      ]
-    });
-  }
-  const ordered = [...indexes].sort((a, b) =>
-    lines[a]!.box.y - lines[b]!.box.y || lines[a]!.box.x - lines[b]!.box.x
-  );
-  for (let index = 1; index < ordered.length; index++) {
-    const aboveIndex = ordered[index - 1]!;
-    const belowIndex = ordered[index]!;
-    const above = lines[aboveIndex]!;
-    const below = lines[belowIndex]!;
-    const gap = below.box.y - bottom(above.box);
-    if (
-      Math.abs(above.box.x - below.box.x) <= 3 &&
-      gap >= -above.box.height / 3 &&
-      gap <= Math.max(metrics.usualVerticalGap * 1.8, metrics.usualBodyHeight * 0.7)
-    ) {
-      associations.push({
-        kind: 'wrapped-line',
-        lineIndexes: [aboveIndex, belowIndex],
-        confidence: 0.82,
-        reasons: ['adjacent lines share a text lane and normal wrapping gap']
-      });
-    } else if (sharesRow(above, below)) {
-      associations.push({
-        kind: 'same-row-cell',
-        lineIndexes: [aboveIndex, belowIndex],
-        confidence: 0.72,
-        reasons: ['lines occupy the same visual row inside one entry band']
-      });
-    }
-  }
-  return associations;
-}
-
-export function resolveEntriesAndAssociations(
+export function resolveEntries(
   input: EntryResolutionInput
 ): EntryResolution {
   const confirmedScopes = input.sectionScopes.filter((scope) => scope.status === 'confirmed');
   const anchors = confirmedScopes.flatMap((scope) => anchorsInScope(scope, input));
-  const associations: Association[] = [];
   const groups: EntryGroup[] = [];
   for (const scope of confirmedScopes) {
     const scopeAnchors = anchors.filter(
@@ -313,26 +243,15 @@ export function resolveEntriesAndAssociations(
           scope,
           input.lines
         );
-        const firstAssociation = associations.length;
-        associations.push(...associationsForGroup(
-          anchor,
-          lineIndexes,
-          input.lines,
-          input.metrics
-        ));
         groups.push({
           anchorLineIndex: anchor.lineIndex,
           sectionHeadingLineIndex: scope.headingLineIndex,
           lineIndexes,
           box: unionBox(input.lines, lineIndexes),
-          confidence: anchor.confidence,
-          associationIndexes: Array.from(
-            { length: associations.length - firstAssociation },
-            (_, index) => firstAssociation + index
-          )
+          confidence: anchor.confidence
         });
       }
     });
   }
-  return { anchors, associations, groups };
+  return { anchors, groups };
 }

@@ -100,9 +100,9 @@ CV's layout from geometry; AI interprets the meaning of each region in Part 2.
 The parser divides each PDF page into rectangular regions using only text
 positions, alignment, and whitespace. It does not try to understand the CV.
 
-**Status:** region detection is planned and not built yet. The current tests
-prove text extraction and storage only; they do not prove that columns,
-regions, or reading order work.
+**Status:** region detection, section and entry ownership, and deterministic
+reading order are implemented. Tests cover unique line ownership and emitted
+reading order in addition to extraction and storage.
 
 **Guiding principle:** the goal is a correct split that keeps related
 information together, not the largest number of regions. When in doubt, text
@@ -137,6 +137,13 @@ completely in reading direction, so a heading always precedes the content it
 owns. A later standalone section heading closes all parallel lanes above it;
 another aligned row of section headings starts or continues parallel lanes.
 Ordinary tables and title/date pairs do not receive this exception.
+
+An isolated section heading aligned with the active content's left edge also
+starts a new page-wide layout band when a sufficiently large horizontal
+whitespace band ends immediately above it. This closes every earlier
+lane-local section, even when the page has no drawn horizontal rule. A rule can
+support the same decision, but it is not required; aligned headings on the same
+row continue to establish independent lanes instead.
 
 A title or compact metadata value may sit on either side of the body it
 describes. The parser keeps these **cross-lane ownership links** intact instead
@@ -215,6 +222,22 @@ A region's width comes from its containing region, not from its first line.
 Values aligned on the right of the same rows, such as dates next to job titles,
 stay in the same region. A narrow strip of short values whose rows line up with
 the rows beside it is not treated as a separate column.
+
+### Section-local columns
+
+Page-wide whitespace is only provisional evidence because unrelated short
+lines can create several overlapping false gutters. After section ownership is
+known, the parser can instead accept columns inside that section. It excludes
+the section heading, split heading continuations, and existing entry groups,
+then requires repeated left-edge anchors on both sides, a clean non-crossing
+gap, vertically overlapping content, and reasonably balanced lanes. A lane
+containing only standalone dates is rejected so title/date rows stay together.
+
+Accepted local columns are read one complete lane at a time in reading
+direction. This preserves card-like relationships such as a certificate title
+followed by its issuer, rather than interleaving the titles and issuers of two
+side-by-side cards. When the local evidence is weak, the section remains
+unsplit and uses row-aware ordering.
 
 ### Tables
 
@@ -317,9 +340,14 @@ page after each deterministic stage:
 
 1. extracted PDF text pieces;
 2. pieces reconstructed into lines;
-3. section and entry boundary classification;
-4. recursive region splits before ownership repair;
-5. final regions after section ownership.
+3. page-local layout metrics;
+4. scored text and non-text boundary evidence;
+5. provisional full-width and lane hypotheses;
+6. hierarchical section scopes;
+7. contextual entry groups inside confirmed sections;
+8. section-local column validation;
+9. unique final ownership and row-aware reading order;
+10. compact AI input with stable line references.
 
 Each stage includes positioned boxes and an exact text/coordinate list.
 Section boundaries, entry boundaries, and region outlines use different

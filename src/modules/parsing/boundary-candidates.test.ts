@@ -36,6 +36,21 @@ function generate(
 }
 
 describe('boundary candidate scoring', () => {
+  it('normalizes spaced dates and split section headings before classification', () => {
+    const result = generate([
+      line('PROFESSIONAL', 50, 100, 10, true),
+      line('Current role', 250, 100, 10, true),
+      line('EXPERIENCE', 50, 113, 10, true),
+      line('2 0 2 0 – 2 0 2 3', 420, 140, 10, true)
+    ], [], 1);
+
+    expect(result.lines[0]!.section.reasons).toContain('exact common section heading');
+    expect(result.lines[2]!.section.reasons).toContain(
+      'continues a split common section heading'
+    );
+    expect(result.lines[3]!.section.reasons).toContain('date value reduces heading authority');
+  });
+
   it('recognizes normalized common section names without matching substrings', () => {
     const result = generate([
       line('PROFESSIONAL SUMMARY:', 50, 100, 13, true),

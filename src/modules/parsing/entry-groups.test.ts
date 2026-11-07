@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoundaryCandidate } from './boundary-candidates.js';
-import { resolveEntriesAndAssociations } from './entry-groups.js';
+import { resolveEntries } from './entry-groups.js';
 import { measurePageMetrics, type LayoutLine } from './layout.js';
 import type { SectionScope } from './section-scopes.js';
 
@@ -39,7 +39,7 @@ function scope(lineIndexes: number[]): SectionScope {
   };
 }
 
-describe('entry resolution and associations', () => {
+describe('entry resolution', () => {
   it('keeps a metadata rail with the title and body in the opposite rail', () => {
     const lines = [
       line('EXPERIENCE', 50, 100, 100, true),
@@ -55,7 +55,7 @@ describe('entry resolution and associations', () => {
     const boundaryCandidates = lines.map((_, index) =>
       candidate(index, [3, 7].includes(index) ? 0.9 : 0)
     );
-    const result = resolveEntriesAndAssociations({
+    const result = resolveEntries({
       lines,
       metrics: measurePageMetrics(lines, []),
       boundaryCandidates,
@@ -66,9 +66,7 @@ describe('entry resolution and associations', () => {
       [1, 2, 3, 4],
       [5, 6, 7, 8]
     ]);
-    expect(result.associations.some((association) =>
-      association.kind === 'anchor-metadata' && association.lineIndexes.includes(1)
-    )).toBe(true);
+    expect(result.groups[0]!.lineIndexes).toContain(1);
   });
 
   it('keeps same-row reference cards separate by their nearest anchor lane', () => {
@@ -90,7 +88,7 @@ describe('entry resolution and associations', () => {
       status: 'provisional',
       mode: 'provisional-cell'
     }));
-    const result = resolveEntriesAndAssociations({
+    const result = resolveEntries({
       lines,
       metrics: measurePageMetrics(lines, []),
       boundaryCandidates: boundaries,
@@ -121,7 +119,7 @@ describe('entry resolution and associations', () => {
       status: 'provisional',
       mode: 'provisional-cell'
     };
-    const result = resolveEntriesAndAssociations({
+    const result = resolveEntries({
       lines,
       metrics: measurePageMetrics(lines, []),
       boundaryCandidates: boundaries,

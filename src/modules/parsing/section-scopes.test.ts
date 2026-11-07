@@ -36,10 +36,7 @@ function resolve(lines: LayoutLine[], separators: DrawnSeparator[] = []) {
     lines,
     metrics,
     boundaryCandidates: boundaries.lines,
-    nonTextBoundaryCandidates: boundaries.nonText,
-    pageIndex: 1,
-    pageWidth: 600,
-    pageHeight: 800
+    nonTextBoundaryCandidates: boundaries.nonText
   });
   return {
     zones,
@@ -62,6 +59,19 @@ function separator(y: number): DrawnSeparator {
 }
 
 describe('section scopes', () => {
+  it('establishes a recognized section before competing entry evidence', () => {
+    const lines = [
+      line('EDUCATION', 40, 100, 90, 10, true),
+      line('University | 2020-2024', 160, 100, 170, 10, true),
+      line('Bachelor of Engineering', 160, 120, 180)
+    ];
+    const { scopes } = resolve(lines);
+
+    expect(scopes.find((scope) => scope.headingLineIndex === 0)).toMatchObject({
+      status: 'confirmed'
+    });
+  });
+
   it('confirms common same-row headings through established repeated styles', () => {
     const lines = [
       line('PROFESSIONAL SUMMARY', 47, 216, 145, 13, true),
@@ -226,5 +236,29 @@ describe('section scopes', () => {
     expect(scopes.find((candidate) => candidate.headingLineIndex === 0)?.lineIndexes).toEqual([0, 1]);
     expect(scopes.find((candidate) => candidate.headingLineIndex === 2)?.lineIndexes).toEqual([2, 3]);
     expect(scopes.find((candidate) => candidate.headingLineIndex === 4)?.lineIndexes).toEqual([4, 5]);
+  });
+
+  it('starts a cross-lane layout band after page-wide whitespace without a drawn rule', () => {
+    const lines = [
+      line('TESTIMONIALS', 40, 100, 105, 14, true),
+      line('AWARDS', 415, 100, 70, 14, true),
+      line('A regulated assessment mechanism.', 40, 140, 230),
+      line('Employee Excellence', 415, 140, 120, 10, true),
+      line('Award details continue here.', 415, 165, 145),
+      line('SKILLS', 40, 300, 60, 14, true),
+      line('Time management', 55, 340, 95),
+      line('Project management', 190, 340, 105),
+      line('Analytics', 345, 340, 50),
+      line('Problem solving', 455, 340, 80)
+    ];
+    const { scopes } = resolve(lines);
+    const awards = scopes.find((candidate) => candidate.headingLineIndex === 1);
+    const skills = scopes.find((candidate) => candidate.headingLineIndex === 5);
+
+    expect(awards).toMatchObject({ status: 'confirmed', mode: 'lane-local' });
+    expect(awards!.lineIndexes).toEqual([1, 3, 4]);
+    expect(skills).toMatchObject({ status: 'confirmed', mode: 'cross-lane' });
+    expect(skills!.lineIndexes).toEqual([5, 6, 7, 8, 9]);
+    expect(skills!.reasons).toContain('page-wide whitespace starts a new layout band');
   });
 });

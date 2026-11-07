@@ -20,8 +20,7 @@ import {
   type SectionScope
 } from './section-scopes.js';
 import {
-  resolveEntriesAndAssociations,
-  type Association,
+  resolveEntries,
   type EntryGroup,
   type ResolvedEntryAnchor
 } from './entry-groups.js';
@@ -106,7 +105,6 @@ export interface LayoutTracePage {
   layoutZoneCandidates: LayoutZoneCandidate[];
   sectionScopes: SectionScope[];
   entryAnchors: ResolvedEntryAnchor[];
-  associations: Association[];
   entryGroups: EntryGroup[];
   validatedZones: ValidatedLayoutZone[];
   sectionColumns: SectionColumn[];
@@ -535,8 +533,8 @@ export function measurePageMetrics(
   };
 }
 
-// Builds pages from the resolved section scopes, entries, associations, and
-// constrained final ownership. Reading order is unique across the document.
+// Builds pages from the resolved section scopes, entry groups, and constrained
+// final ownership. Reading order is unique across the document.
 export function buildPages(pages: PositionedPage[]): ParsedPage[] {
   return buildPagesInternal(pages, false).pages;
 }
@@ -578,10 +576,7 @@ function buildPagesInternal(
       lines: pageLines[pageIndex]!,
       metrics: pageMetrics[pageIndex]!,
       boundaryCandidates: candidates.lines,
-      nonTextBoundaryCandidates: candidates.nonText,
-      pageIndex,
-      pageWidth: page.width,
-      pageHeight: page.height
+      nonTextBoundaryCandidates: candidates.nonText
     });
     const sectionScopes = establishSectionScopes({
       lines: pageLines[pageIndex]!,
@@ -590,7 +585,7 @@ function buildPagesInternal(
       nonTextBoundaryCandidates: candidates.nonText,
       layoutZoneCandidates
     });
-    const entryResolution = resolveEntriesAndAssociations({
+    const entryResolution = resolveEntries({
       lines: pageLines[pageIndex]!,
       metrics: pageMetrics[pageIndex]!,
       boundaryCandidates: candidates.lines,
@@ -601,7 +596,6 @@ function buildPagesInternal(
       lines: pageLines[pageIndex]!,
       layoutZoneCandidates,
       sectionScopes,
-      associations: entryResolution.associations,
       entryGroups: entryResolution.groups
     });
     if (collectTrace) {
@@ -617,7 +611,6 @@ function buildPagesInternal(
         layoutZoneCandidates,
         sectionScopes,
         entryAnchors: entryResolution.anchors,
-        associations: entryResolution.associations,
         entryGroups: entryResolution.groups,
         validatedZones: finalLayout.validatedZones,
         sectionColumns: finalLayout.sectionColumns,
@@ -632,6 +625,14 @@ function buildPagesInternal(
     );
     candidates.lines.forEach((candidate) => {
       if (candidate.header.score >= 0.8 && candidate.header.score > candidate.section.score) {
+        headingLineIndexes.add(candidate.lineIndex);
+      }
+      if (
+        candidate.section.reasons.includes('continues a split common section heading') &&
+        sectionScopes.some(
+          (scope) => scope.status === 'confirmed' && scope.lineIndexes.includes(candidate.lineIndex)
+        )
+      ) {
         headingLineIndexes.add(candidate.lineIndex);
       }
     });

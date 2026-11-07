@@ -176,16 +176,18 @@ describe('pdf parser', () => {
     expect(result.pages[1]!.regions[0]!.lines[0]!.order).toBe(pageLines(result.pages[0]!).length + 1);
   });
 
-  it('keeps an unresolved page as one independent region', async () => {
+  it('keeps the preamble independent while preserving a recognized section', async () => {
     const result = await parseFixture('single-page.pdf');
 
-    expect(result.pages[0]!.regions).toHaveLength(1);
+    expect(result.pages[0]!.regions).toHaveLength(2);
     expect(result.pages[0]!.regions[0]).toMatchObject({
       index: 0,
       role: 'independent',
       parentIndex: null,
       confidence: 0.5
     });
+    expect(result.pages[0]!.regions[1]).toMatchObject({ role: 'section' });
+    expect(result.pages[0]!.regions[1]!.lines[0]!.text).toBe('Experience');
   });
 
   it('does not merge text from side-by-side columns', async () => {
@@ -197,24 +199,27 @@ describe('pdf parser', () => {
     expect(texts.some((text) => text.includes('Skills') && text.includes('Experience'))).toBe(false);
   });
 
-  it('keeps an ambiguous sidebar and main column together', async () => {
+  it('keeps recognized sidebar and main sections in their own lanes', async () => {
     const result = await parseFixture('sidebar-columns.pdf');
     const regions = result.pages[0]!.regions;
 
-    expect(regions).toHaveLength(1);
-    expect(regions[0]).toMatchObject({ role: 'independent', parentIndex: null });
-    expect(regions[0]!.lines.map((line) => line.text)).toEqual(
-      expect.arrayContaining(['Contact', 'Experience', 'Skills', 'Education'])
-    );
+    expect(regions.filter((region) => region.role === 'section').map(
+      (region) => region.lines[0]!.text
+    )).toEqual(['Contact', 'Experience', 'Skills', 'Education']);
     expect(pageLines(result.pages[0]!).map((line) => line.order)).toEqual(
       Array.from({ length: 21 }, (_, index) => index + 1)
     );
   });
 
-  it('keeps unresolved columns under a full-width header in one final region', async () => {
+  it('keeps a full-width header before independently scoped columns', async () => {
     const result = await parseFixture('header-columns.pdf');
 
-    expect(result.pages[0]!.regions).toHaveLength(1);
+    expect(result.pages[0]!.regions.map((region) => region.role)).toEqual([
+      'independent',
+      'section',
+      'section',
+      'section'
+    ]);
     expect(lineTexts(result, 1)).toEqual(expect.arrayContaining([
       'Sample Candidate',
       'Experience',
@@ -223,10 +228,10 @@ describe('pdf parser', () => {
     ]));
   });
 
-  it('keeps unresolved parallel heading lanes together', async () => {
+  it('keeps parallel recognized headings in lane-local sections', async () => {
     const result = await parseFixture('sidebar-headings.pdf');
 
-    expect(result.pages[0]!.regions).toHaveLength(1);
+    expect(result.pages[0]!.regions.filter((region) => region.role === 'section')).toHaveLength(4);
     expect(lineTexts(result, 1)).toEqual(expect.arrayContaining([
       'Contact',
       'About Me',

@@ -400,20 +400,17 @@ function sectionScopeStage(page: LayoutTracePage): string {
     .join('')}</div><details><summary>Section scopes (${page.sectionScopes.length})</summary><ol>${rows}</ol></details></details>`;
 }
 
-function entryAssociationStage(page: LayoutTracePage): string {
+function entryGroupStage(page: LayoutTracePage): string {
   const groupBoxes = page.entryGroups.map((group, index) =>
     `<div class="trace-entry-group" style="left:${percentage(group.box.x, page.width)};top:${percentage(group.box.y, page.height)};width:${percentage(group.box.width, page.width)};height:${percentage(group.box.height, page.height)}" title="G${index + 1} anchor L${group.anchorLineIndex + 1}"></div>`
   ).join('');
   const anchors = page.entryAnchors.map((anchor, index) =>
     `<li><code>E${index + 1}</code><span>${escapeHtml(page.reconstructedLines[anchor.lineIndex]!.text)}</span><small>line ${anchor.lineIndex + 1} · section heading ${anchor.sectionHeadingLineIndex + 1} · confidence ${anchor.confidence} · ${escapeHtml(anchor.reasons.join('; '))}</small></li>`
   ).join('');
-  const associations = page.associations.map((association, index) =>
-    `<li><code>A${index + 1}</code><span>${association.kind}</span><small>confidence ${association.confidence} · lines ${association.lineIndexes.map((lineIndex) => lineIndex + 1).join(', ')} · ${escapeHtml(association.reasons.join('; '))}</small></li>`
-  ).join('');
   const groups = page.entryGroups.map((group, index) =>
     `<li><code>G${index + 1}</code><span>anchor L${group.anchorLineIndex + 1}</span><small>section heading L${group.sectionHeadingLineIndex + 1} · confidence ${group.confidence} · lines ${group.lineIndexes.map((lineIndex) => lineIndex + 1).join(', ')}</small></li>`
   ).join('');
-  return `<details class="trace-stage"><summary><strong>7. Entries and associations</strong> — contextual entry anchors and protected cross-lane relationships</summary><div class="trace-page" style="aspect-ratio:${page.width}/${page.height}">${groupBoxes}${page.reconstructedLines.map((line) => tracePositionedItem(line, page, 'line')).join('')}</div><details><summary>Entry anchors (${page.entryAnchors.length})</summary><ol>${anchors}</ol></details><details><summary>Associations (${page.associations.length})</summary><ol>${associations}</ol></details><details><summary>Entry groups (${page.entryGroups.length})</summary><ol>${groups}</ol></details></details>`;
+  return `<details class="trace-stage"><summary><strong>7. Entry groups</strong> — contextual anchors and the lines they own inside confirmed sections</summary><div class="trace-page" style="aspect-ratio:${page.width}/${page.height}">${groupBoxes}${page.reconstructedLines.map((line) => tracePositionedItem(line, page, 'line')).join('')}</div><details><summary>Entry anchors (${page.entryAnchors.length})</summary><ol>${anchors}</ol></details><details><summary>Entry groups (${page.entryGroups.length})</summary><ol>${groups}</ol></details></details>`;
 }
 
 function validatedLayoutStage(page: LayoutTracePage): string {
@@ -422,9 +419,9 @@ function validatedLayoutStage(page: LayoutTracePage): string {
     return `<li><code>H${zone.candidateIndex + 1}</code><span>${zone.accepted ? 'accepted' : 'rejected'} ${candidate.kind}</span><small>confidence ${zone.confidence} · ${escapeHtml(zone.reasons.join('; '))}</small></li>`;
   }).join('');
   const columns = page.sectionColumns.map((column, index) =>
-    `<li><code>C${index + 1}</code><span>section column</span><small>section heading L${column.sectionHeadingLineIndex + 1} · confidence ${column.confidence} · lines ${column.lineIndexes.map((lineIndex) => lineIndex + 1).join(', ')}</small></li>`
+    `<li><code>C${index + 1}</code><span>section column</span><small>${column.source} · section heading L${column.sectionHeadingLineIndex + 1} · confidence ${column.confidence} · lines ${column.lineIndexes.map((lineIndex) => lineIndex + 1).join(', ')}</small></li>`
   ).join('');
-  return `<details class="trace-stage"><summary><strong>8. Validated section columns</strong> — vertical lanes are accepted only inside a confirmed section and after association checks</summary><details><summary>Zone decisions (${page.validatedZones.length})</summary><ol>${rows}</ol></details><details><summary>Section columns (${page.sectionColumns.length})</summary><ol>${columns}</ol></details></details>`;
+  return `<details class="trace-stage"><summary><strong>8. Validated section columns</strong> — clean local gaps or validated layout zones create lanes only inside a confirmed section and outside entry groups</summary><details><summary>Zone decisions (${page.validatedZones.length})</summary><ol>${rows}</ol></details><details><summary>Section columns (${page.sectionColumns.length})</summary><ol>${columns}</ol></details></details>`;
 }
 
 function finalOwnershipStage(page: LayoutTracePage): string {
@@ -451,7 +448,7 @@ ${metricsStage(page, page.metrics)}
 ${boundaryCandidateStage(page)}
 ${layoutZoneCandidateStage(page)}
 ${sectionScopeStage(page)}
-${entryAssociationStage(page)}
+${entryGroupStage(page)}
 ${validatedLayoutStage(page)}
 ${finalOwnershipStage(page)}
 ${revisedAiInputStage(page)}

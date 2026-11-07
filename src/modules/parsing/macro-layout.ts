@@ -6,15 +6,11 @@ import type { LayoutLine, PageMetrics } from './layout.js';
 import type { BoundingBox } from './parsing.types.js';
 
 export type LayoutZoneKind =
-  | 'header-body'
   | 'full-width-section'
   | 'sidebar-main'
-  | 'parallel-columns'
-  | 'unresolved-gutter';
+  | 'parallel-columns';
 
 export type LayoutZonePartLabel =
-  | 'header'
-  | 'body'
   | 'full-width-section'
   | 'left-lane'
   | 'right-lane';
@@ -40,9 +36,6 @@ export interface LayoutZoneCandidateInput {
   metrics: PageMetrics;
   boundaryCandidates: BoundaryCandidate[];
   nonTextBoundaryCandidates: NonTextBoundaryCandidate[];
-  pageIndex: number;
-  pageWidth: number;
-  pageHeight: number;
 }
 
 const DATE = /(?:\b(?:19|20)\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\bpresent\b)/iu;
@@ -133,68 +126,6 @@ function nearestHorizontalBoundary(
     .sort((a, b) => Math.abs(a.box.y - y) - Math.abs(b.box.y - y))[0] ?? null;
 }
 
-function headerBodyCandidate(input: LayoutZoneCandidateInput): LayoutZoneCandidate | null {
-  const activeBox = input.metrics.activeContentBox;
-  if (!activeBox || input.pageIndex !== 0) {
-    return null;
-  }
-  const headerAnchors = input.boundaryCandidates.filter(
-    (candidate) =>
-      candidate.header.score >= 0.65 &&
-      input.lines[candidate.lineIndex]!.box.y <= input.pageHeight * 0.25
-  );
-  if (headerAnchors.length === 0) {
-    return null;
-  }
-  const anchorBottom = Math.max(
-    ...headerAnchors.map((candidate) => bottom(input.lines[candidate.lineIndex]!.box))
-  );
-  const boundary = horizontalEvidence(input.nonTextBoundaryCandidates)
-    .filter(
-      (candidate) =>
-        candidate.box.y >= anchorBottom + input.metrics.usualVerticalGap &&
-        candidate.box.y <= input.pageHeight * 0.4 &&
-        coverage(candidate, activeBox) >= 0.6
-    )
-    .sort((a, b) => a.box.y - b.box.y)[0] ?? null;
-  const boundaryY = boundary?.box.y ?? anchorBottom + input.metrics.usualVerticalGap * 3;
-  const headerIndexes = input.lines
-    .map((_, index) => index)
-    .filter((index) => input.lines[index]!.box.y < boundaryY);
-  const bodyIndexes = input.lines
-    .map((_, index) => index)
-    .filter((index) => input.lines[index]!.box.y >= boundaryY);
-  if (headerIndexes.length === 0 || bodyIndexes.length === 0) {
-    return null;
-  }
-  const strongestHeader = Math.max(...headerAnchors.map((candidate) => candidate.header.score));
-  let confidence = strongestHeader * 0.55;
-  const reasons = ['prominent first-page header candidate'];
-  if (boundary) {
-    confidence += boundary.evidence.score * 0.3;
-    reasons.push('spanning horizontal boundary below the header area');
-  }
-  const gap = Math.min(...bodyIndexes.map((index) => input.lines[index]!.box.y)) -
-    Math.max(...headerIndexes.map((index) => bottom(input.lines[index]!.box)));
-  if (gap >= input.metrics.usualVerticalGap * 2) {
-    confidence += 0.15;
-    reasons.push('supporting whitespace between header and body');
-  }
-  const participating = [...new Set([...headerIndexes, ...bodyIndexes])].sort((a, b) => a - b);
-  return {
-    kind: 'header-body',
-    box: unionBox(input.lines, participating),
-    boundaryBox: boundary?.box ?? null,
-    confidence: round(clamp(confidence)),
-    reasons,
-    participatingLineIndexes: participating,
-    parts: [
-      part('header', input.lines, headerIndexes),
-      part('body', input.lines, bodyIndexes)
-    ]
-  };
-}
-
 function fullWidthSectionCandidates(input: LayoutZoneCandidateInput): LayoutZoneCandidate[] {
   const activeBox = input.metrics.activeContentBox;
   if (!activeBox) {
@@ -278,7 +209,15 @@ function hasIndependentSectionCandidate(
   candidates: BoundaryCandidate[]
 ): boolean {
   return indexes.some(
-    (index) => candidates[index]?.section.score !== undefined && candidates[index]!.section.score >= 0.6
+    (index) => {
+      const candidate = candidates[index];
+      return candidate !== undefined &&
+        candidate.section.score >= 0.6 &&
+        (
+          candidate.section.reasons.includes('exact common section heading') ||
+          candidate.section.score - candidate.entry.score >= 0.3
+        );
+    }
   );
 }
 
@@ -372,7 +311,7 @@ function gutterZoneCandidate(
 
   sidebarScore = clamp(sidebarScore);
   parallelScore = clamp(parallelScore);
-  let kind: LayoutZoneKind = 'unresolved-gutter';
+  let kind: LayoutZoneKind | null = null;
   let confidence = Math.max(sidebarScore, parallelScore, gutter.evidence.score * 0.45);
   if (sidebarScore >= 0.65 && narrowLane && !metadataRail) {
     kind = 'sidebar-main';
@@ -386,6 +325,10 @@ function gutterZoneCandidate(
     confidence = parallelScore;
   } else {
     reasons.push('insufficient evidence to confirm independent macro zones');
+  }
+
+  if (kind === null) {
+    return null;
   }
 
   const participating = [...new Set([
@@ -428,7 +371,6 @@ export function generateLayoutZoneCandidates(
   if (input.lines.length === 0 || !input.metrics.activeContentBox) {
     return [];
   }
-  const header = headerBodyCandidate(input);
   const fullWidthSections = fullWidthSectionCandidates(input);
   const gutterZones = input.nonTextBoundaryCandidates
     .filter(
@@ -442,7 +384,6 @@ export function generateLayoutZoneCandidates(
     .filter((candidate): candidate is LayoutZoneCandidate => candidate !== null)
     .sort((a, b) => a.box.height - b.box.height || b.confidence - a.confidence);
   return [
-    ...(header ? [header] : []),
     ...fullWidthSections,
     ...gutterZones
   ];
