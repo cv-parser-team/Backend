@@ -35,7 +35,6 @@ interface ResolvedHeading {
   confidence: number;
   reasons: string[];
   zoneIndexes: number[];
-  lanePart: LayoutZonePart | null;
   startsLayoutBand: boolean;
 }
 
@@ -94,46 +93,6 @@ function zoneIndexesForLine(
     .map(({ zoneIndex }) => zoneIndex);
 }
 
-function parallelLaneForLine(
-  lineIndex: number,
-  lines: LayoutLine[],
-  zones: LayoutZoneCandidate[]
-): { zoneIndex: number; part: LayoutZonePart } | null {
-  const lineCenter = centerX(lines[lineIndex]!.box);
-  return zones
-    .map((zone, zoneIndex) => ({ zone, zoneIndex }))
-    .filter(({ zone }) =>
-      zone.kind === 'parallel-columns' ||
-      (
-        zone.kind === 'sidebar-main' &&
-        zone.reasons.includes('both lanes have independent section candidates')
-      )
-    )
-    .flatMap(({ zone, zoneIndex }) => zone.parts
-      .filter((part) =>
-        part.lineIndexes.includes(lineIndex) &&
-        lineCenter >= part.box.x && lineCenter <= right(part.box)
-      )
-      .map((part) => ({ zoneIndex, part })))
-    .sort((a, b) => {
-      const aBoundaryWidth = zones[a.zoneIndex]!.boundaryBox?.width ?? Number.POSITIVE_INFINITY;
-      const bBoundaryWidth = zones[b.zoneIndex]!.boundaryBox?.width ?? Number.POSITIVE_INFINITY;
-      return aBoundaryWidth - bBoundaryWidth ||
-        a.part.box.width * a.part.box.height - b.part.box.width * b.part.box.height;
-    })[0] ?? null;
-}
-
-function hasFullWidthSupport(
-  lineIndex: number,
-  zones: LayoutZoneCandidate[]
-): boolean {
-  return zones.some(
-    (zone) =>
-      zone.kind === 'full-width-section' &&
-      zone.participatingLineIndexes.includes(lineIndex)
-  );
-}
-
 function sameRowSectionPeers(
   lineIndex: number,
   lines: LayoutLine[],
@@ -148,6 +107,47 @@ function sameRowSectionPeers(
         sharesRow(line, lines[candidate.lineIndex]!)
     )
     .map((candidate) => candidate.lineIndex);
+}
+
+function hasParallelHeadingPeer(
+  candidate: BoundaryCandidate,
+  input: SectionScopeInput,
+  includeEstablishedLanes = true
+): boolean {
+  const line = input.lines[candidate.lineIndex]!;
+  const activeWidth = input.metrics.activeContentBox?.width ?? line.box.width;
+  const minimumHorizontalDistance = Math.max(
+    input.metrics.usualBodyHeight * 4,
+    activeWidth * 0.15
+  );
+  const maximumVerticalDistance = Math.max(
+    input.metrics.usualBodyHeight * 8,
+    input.metrics.usualVerticalGap * 3
+  );
+  const recognizedHeadings = input.boundaryCandidates.filter((other) =>
+    other.section.reasons.includes('exact common section heading')
+  );
+  const nearbyParallelPeer = recognizedHeadings.some((other) => {
+    if (other.lineIndex === candidate.lineIndex || other.section.score < 0.8) {
+      return false;
+    }
+    const otherLine = input.lines[other.lineIndex]!;
+    return (
+      otherLine.bold &&
+      Math.abs(otherLine.box.x - line.box.x) >= minimumHorizontalDistance &&
+      Math.abs(otherLine.box.y - line.box.y) <= maximumVerticalDistance
+    );
+  });
+  const repeatsEstablishedLane = recognizedHeadings.some((other) =>
+    other.lineIndex !== candidate.lineIndex &&
+    Math.abs(input.lines[other.lineIndex]!.box.x - line.box.x) <=
+      input.metrics.usualBodyHeight * 0.5
+  );
+  const hasDistinctLane = recognizedHeadings.some((other) =>
+    Math.abs(input.lines[other.lineIndex]!.box.x - line.box.x) >= minimumHorizontalDistance
+  );
+  return nearbyParallelPeer ||
+    (includeEstablishedLanes && repeatsEstablishedLane && hasDistinctLane);
 }
 
 function isStrongSameRowSectionGroup(
@@ -232,6 +232,199 @@ function hasPageWideWhitespaceBefore(
   );
 }
 
+function persistentLaneBoundary(
+  candidate: BoundaryCandidate,
+  input: SectionScopeInput
+): { left: number; right: number } | undefined {
+  const gutter = input.metrics.verticalGutters
+    .filter((candidate) => candidate.coverage >= 0.6)
+    .sort(
+      (first, second) =>
+        second.coverage - first.coverage ||
+        second.box.width - first.box.width
+    )[0];
+  if (gutter) {
+    return { left: gutter.box.x, right: right(gutter.box) };
+  }
+  const heading = input.lines[candidate.lineIndex]!;
+  const distinctHeadingXs = input.boundaryCandidates
+    .filter((other) =>
+      other.section.reasons.includes('exact common section heading')
+    )
+    .map((other) => input.lines[other.lineIndex]!.box.x)
+    .sort((first, second) => first - second)
+    .filter(
+      (value, index, values) =>
+        index === 0 || value - values[index - 1]! > input.metrics.usualBodyHeight
+    );
+  const otherLaneX = distinctHeadingXs
+    .filter((value) =>
+      Math.abs(value - heading.box.x) >= input.metrics.usualBodyHeight * 4
+    )
+    .sort(
+      (first, second) =>
+        Math.abs(first - heading.box.x) - Math.abs(second - heading.box.x)
+    )[0];
+  if (otherLaneX === undefined) {
+    return undefined;
+  }
+  const divider = (heading.box.x + otherLaneX) / 2;
+  return { left: divider, right: divider };
+}
+
+function laneSide(
+  line: LayoutLine,
+  boundary: { left: number; right: number }
+): 'left' | 'right' | null {
+  if (centerX(line.box) < boundary.left) {
+    return 'left';
+  }
+  if (centerX(line.box) > boundary.right) {
+    return 'right';
+  }
+  return null;
+}
+
+function hasOppositeLaneContinuation(
+  candidate: BoundaryCandidate,
+  input: SectionScopeInput
+): boolean {
+  const heading = input.lines[candidate.lineIndex]!;
+  const recognizedHeadings = input.boundaryCandidates.filter((other) =>
+    other.section.reasons.includes('exact common section heading')
+  );
+  const activeOppositeHeading = recognizedHeadings
+    .filter((other) => {
+      const otherLine = input.lines[other.lineIndex]!;
+      return (
+        otherLine.box.y < heading.box.y &&
+        Math.abs(otherLine.box.x - heading.box.x) >= input.metrics.usualBodyHeight * 4
+      );
+    })
+    .sort(
+      (first, second) =>
+        input.lines[second.lineIndex]!.box.y - input.lines[first.lineIndex]!.box.y
+    )[0];
+  if (!activeOppositeHeading) {
+    return false;
+  }
+  const activeHeadingLine = input.lines[activeOppositeHeading.lineIndex]!;
+  const divider = (heading.box.x + activeHeadingLine.box.x) / 2;
+  const boundary = { left: divider, right: divider };
+  const headingSide = laneSide(heading, boundary);
+  if (!headingSide) {
+    return false;
+  }
+  const oppositeSide = headingSide === 'left' ? 'right' : 'left';
+  const nextOppositeHeadingY = recognizedHeadings
+    .filter((other) => {
+      const otherLine = input.lines[other.lineIndex]!;
+      return (
+        other.lineIndex !== activeOppositeHeading.lineIndex &&
+        otherLine.box.y > activeHeadingLine.box.y &&
+        laneSide(otherLine, boundary) === oppositeSide
+      );
+    })
+    .map((other) => input.lines[other.lineIndex]!.box.y)
+    .sort((first, second) => first - second)[0] ?? Number.POSITIVE_INFINITY;
+  const maximumDistance = Math.max(
+    input.metrics.usualBodyHeight * 8,
+    input.metrics.usualVerticalGap * 3,
+    80
+  );
+  const recognizedHeadingIndexes = new Set(
+    recognizedHeadings.map((other) => other.lineIndex)
+  );
+  const firstHeadingSideContentY = input.lines
+    .filter(
+      (line, lineIndex) =>
+        !recognizedHeadingIndexes.has(lineIndex) &&
+        line.box.y >= heading.box.y &&
+        line.box.y - heading.box.y <= maximumDistance &&
+        laneSide(line, boundary) === headingSide
+    )
+    .map((line) => line.box.y)
+    .sort((first, second) => first - second)[0] ?? Number.POSITIVE_INFINITY;
+  return input.lines.some(
+    (line, lineIndex) =>
+      !recognizedHeadingIndexes.has(lineIndex) &&
+      line.box.y >= heading.box.y &&
+      line.box.y < nextOppositeHeadingY &&
+      line.box.y < firstHeadingSideContentY &&
+      line.box.y - heading.box.y <= maximumDistance &&
+      laneSide(line, boundary) === oppositeSide
+  );
+}
+
+function hasDirectCrossLaneEvidence(
+  candidate: BoundaryCandidate,
+  input: SectionScopeInput
+): boolean {
+  const boundary = persistentLaneBoundary(candidate, input);
+  if (!boundary) {
+    return false;
+  }
+  const heading = input.lines[candidate.lineIndex]!;
+  const crossesGutter = (line: LayoutLine) =>
+    line.box.x <= boundary.left && right(line.box) >= boundary.right;
+  if (crossesGutter(heading)) {
+    return true;
+  }
+  const maximumDistance = Math.max(
+    input.metrics.usualBodyHeight * 8,
+    input.metrics.usualVerticalGap * 3,
+    80
+  );
+  const nextRecognizedHeadingY = input.boundaryCandidates
+    .filter(
+      (other) =>
+        other.lineIndex !== candidate.lineIndex &&
+        other.section.reasons.includes('exact common section heading') &&
+        input.lines[other.lineIndex]!.box.y > heading.box.y
+    )
+    .map((other) => input.lines[other.lineIndex]!.box.y)
+    .sort((first, second) => first - second)[0] ?? Number.POSITIVE_INFINITY;
+  const recognizedHeadingIndexes = new Set(
+    input.boundaryCandidates
+      .filter((other) =>
+        other.section.reasons.includes('exact common section heading')
+      )
+      .map((other) => other.lineIndex)
+  );
+  const followingLines = input.lines.filter(
+    (line, lineIndex) =>
+      !recognizedHeadingIndexes.has(lineIndex) &&
+      line.box.y > heading.box.y &&
+      line.box.y < nextRecognizedHeadingY &&
+      line.box.y - heading.box.y <= maximumDistance
+  );
+  if (followingLines.some(crossesGutter)) {
+    return true;
+  }
+  const crossLaneRows = followingLines.filter((line, lineIndex, lines) => {
+    if (lines.findIndex((other) => sharesRow(line, other)) !== lineIndex) {
+      return false;
+    }
+    const row = lines.filter((other) => sharesRow(line, other));
+    const leftCount = row.filter((other) => centerX(other.box) < boundary.left).length;
+    const rightCount = row.filter(
+      (other) => centerX(other.box) > boundary.right
+    ).length;
+    return leftCount > 0 && rightCount > 0;
+  });
+  if (crossLaneRows.length >= 2) {
+    return true;
+  }
+  return followingLines.some((line) => {
+    const row = followingLines.filter((other) => sharesRow(line, other));
+    const leftCount = row.filter((other) => centerX(other.box) < boundary.left).length;
+    const rightCount = row.filter(
+      (other) => centerX(other.box) > boundary.right
+    ).length;
+    return leftCount > 0 && rightCount > 0 && row.length >= 3;
+  });
+}
+
 function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
   const firstRecognizedSectionY = input.boundaryCandidates
     .filter((candidate) => candidate.section.reasons.includes('exact common section heading'))
@@ -243,12 +436,6 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
     }
     const lineIndex = candidate.lineIndex;
     const line = input.lines[lineIndex]!;
-    const fullWidth = hasFullWidthSupport(lineIndex, input.layoutZoneCandidates);
-    const parallelLane = parallelLaneForLine(
-      lineIndex,
-      input.lines,
-      input.layoutZoneCandidates
-    );
     const peers = sameRowSectionPeers(lineIndex, input.lines, input.boundaryCandidates);
     const strongSameRowGroup = isStrongSameRowSectionGroup(
       candidate,
@@ -261,26 +448,22 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       input.metrics,
       input.nonTextBoundaryCandidates
     );
+    const parallelHeadingPeer = hasParallelHeadingPeer(candidate, input);
+    const nearbyParallelHeadingPeer = hasParallelHeadingPeer(candidate, input, false);
+    const layoutBandEvidence =
+      horizontalSupport || hasPageWideWhitespaceBefore(line, input.metrics);
+    const directCrossLaneEvidence = hasDirectCrossLaneEvidence(candidate, input);
+    const oppositeLaneContinuation = hasOppositeLaneContinuation(candidate, input);
     const startsLayoutBand = peers.length === 0 &&
-      (fullWidth || hasPageWideWhitespaceBefore(line, input.metrics));
+      !nearbyParallelHeadingPeer &&
+      layoutBandEvidence &&
+      !oppositeLaneContinuation &&
+      (!parallelHeadingPeer || directCrossLaneEvidence);
     // A visually prominent entry anchor often looks like a weak section
     // heading in isolation. Require a useful margin before confirming it as a
     // standalone section; entry resolution later uses repeated structure only
     // inside the section scopes established here.
     const commonSection = candidate.section.reasons.includes('exact common section heading');
-    const sameLaneHeading = input.boundaryCandidates.some((other) =>
-      other.lineIndex !== lineIndex &&
-      other.section.reasons.includes('exact common section heading') &&
-      Math.abs(input.lines[other.lineIndex]!.box.x - line.box.x) <= 3 &&
-      Math.abs(input.lines[other.lineIndex]!.box.y - line.box.y) <=
-        input.metrics.usualBodyHeight * 15
-    );
-    const distinctHeadingLane = input.boundaryCandidates.find((other) =>
-      other.section.reasons.includes('exact common section heading') &&
-      Math.abs(input.lines[other.lineIndex]!.box.x - line.box.x) >=
-        input.metrics.usualBodyHeight * 4
-    );
-    const repeatedParallelLane = sameLaneHeading && distinctHeadingLane !== undefined;
     const preSectionPreamble = !commonSection &&
       firstRecognizedSectionY !== undefined &&
       line.box.y < firstRecognizedSectionY;
@@ -296,18 +479,19 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
     // allowed to compete inside that scope.
     const entryCompetition = !commonSection &&
       candidate.entry.score >= candidate.section.score - 0.2;
-    const headerCompetition = candidate.header.score >= candidate.section.score;
+    const documentTitle = !commonSection &&
+      candidate.header.score >= 0.8 &&
+      candidate.header.score >= candidate.section.score;
     const zoneIndexes = zoneIndexesForLine(lineIndex, input.layoutZoneCandidates);
     const reasons = [`section evidence scored ${candidate.section.score}`];
 
-    if (headerCompetition && !fullWidth) {
+    if (documentTitle) {
       return [];
     }
 
     let status: SectionScopeStatus = 'provisional';
     let mode: SectionScopeMode = peers.length > 0 ? 'provisional-cell' : 'cross-lane';
     let confidence = candidate.section.score * 0.75;
-    let lanePart: LayoutZonePart | null = null;
 
     if (preSectionPreamble) {
       reasons.push('non-section preamble before the first recognized section');
@@ -315,34 +499,28 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       status = 'confirmed';
       mode = startsLayoutBand
         ? 'cross-lane'
-        : parallelLane || peers.length > 0 || repeatedParallelLane
+        : parallelHeadingPeer || peers.length > 0 || oppositeLaneContinuation
           ? 'lane-local'
           : 'cross-lane';
       confidence += 0.2;
-      lanePart = mode === 'lane-local' ? parallelLane?.part ?? null : null;
       reasons.push('recognized section label establishes scope before entry resolution');
-    } else if (fullWidth && governsContent) {
-      status = 'confirmed';
-      mode = 'cross-lane';
-      confidence += 0.2;
-      reasons.push('standalone full-width section hypothesis');
     } else if (strongSameRowGroup) {
       status = 'confirmed';
       mode = 'lane-local';
       confidence += 0.15;
       reasons.push('strong same-row section peers confirm independent lane-local sections');
     } else if (
-      parallelLane &&
-      !entryCompetition &&
+      horizontalSupport &&
       governsContent &&
+      !parallelHeadingPeer &&
+      !entryCompetition &&
       candidate.section.score >= 0.8 &&
       candidate.section.score - candidate.entry.score >= 0.3
     ) {
       status = 'confirmed';
-      mode = 'lane-local';
-      confidence += 0.15;
-      lanePart = parallelLane.part;
-      reasons.push('independent heading inside a confirmed parallel-lane hypothesis');
+      mode = 'cross-lane';
+      confidence += 0.2;
+      reasons.push('strong horizontal boundary establishes a section band');
     } else if (
       candidate.section.score >= 0.8 &&
       line.bold &&
@@ -372,6 +550,17 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
     if (startsLayoutBand && status === 'confirmed') {
       confidence += 0.05;
       reasons.push('page-wide whitespace starts a new layout band');
+    } else if (
+      layoutBandEvidence &&
+      (parallelHeadingPeer || oppositeLaneContinuation) &&
+      status === 'confirmed' &&
+      mode === 'lane-local'
+    ) {
+      reasons.push(
+        oppositeLaneContinuation
+          ? 'active section continues in the opposite lane'
+          : 'persistent lane alignment keeps this section lane-local'
+      );
     }
     const verticalZone = input.layoutZoneCandidates.some(
       (zone) =>
@@ -389,20 +578,23 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       confidence: round(clamp(confidence)),
       reasons,
       zoneIndexes,
-      lanePart,
       startsLayoutBand: startsLayoutBand && status === 'confirmed'
     }];
   });
   return resolved;
 }
 
-function provisionalCellBounds(
+function laneBounds(
   heading: ResolvedHeading,
   headings: ResolvedHeading[],
   input: SectionScopeInput
 ): { left: number; right: number } {
   const line = input.lines[heading.candidate.lineIndex]!;
   const laneRepresentatives = headings
+    .filter((candidate) =>
+      (candidate.status === 'confirmed' && candidate.mode === 'lane-local') ||
+      (heading.status === 'provisional' && candidate.mode === 'provisional-cell')
+    )
     .map((candidate) => input.lines[candidate.candidate.lineIndex]!)
     .sort((a, b) => a.box.x - b.box.x)
     .filter(
@@ -436,21 +628,153 @@ function provisionalCellBounds(
   };
 }
 
+interface HorizontalBounds {
+  left: number;
+  right: number;
+  reasons: string[];
+}
+
+function structuralLanePart(
+  heading: ResolvedHeading,
+  input: SectionScopeInput
+): LayoutZonePart | null {
+  const headingLine = input.lines[heading.candidate.lineIndex]!;
+  return input.layoutZoneCandidates
+    .filter(
+      (zone) =>
+        (zone.kind === 'parallel-columns' || zone.kind === 'sidebar-main') &&
+        zone.confidence >= 0.65 &&
+        zone.participatingLineIndexes.includes(heading.candidate.lineIndex)
+    )
+    .map((zone) => ({
+      zone,
+      part: zone.parts.find(
+        (candidate) =>
+          candidate.lineIndexes.includes(heading.candidate.lineIndex) &&
+          centerX(headingLine.box) >= candidate.box.x &&
+          centerX(headingLine.box) < right(candidate.box)
+      )
+    }))
+    .filter(
+      (candidate): candidate is { zone: LayoutZoneCandidate; part: LayoutZonePart } =>
+        candidate.part !== undefined
+    )
+    .sort(
+      (first, second) =>
+        second.zone.confidence - first.zone.confidence ||
+        first.part.box.width - second.part.box.width
+    )[0]?.part ?? null;
+}
+
+function projectedSectionBottom(
+  heading: ResolvedHeading,
+  headings: ResolvedHeading[],
+  lane: LayoutZonePart,
+  input: SectionScopeInput
+): number {
+  const headingLine = input.lines[heading.candidate.lineIndex]!;
+  return headings
+    .filter((candidate) => candidate !== heading && candidate.status === 'confirmed')
+    .map((candidate) => input.lines[candidate.candidate.lineIndex]!)
+    .filter(
+      (candidate) =>
+        candidate.box.y > headingLine.box.y &&
+        centerX(candidate.box) >= lane.box.x &&
+        centerX(candidate.box) < right(lane.box)
+    )
+    .sort((first, second) => first.box.y - second.box.y)[0]?.box.y ??
+    bottom(input.metrics.activeContentBox!);
+}
+
+function refineStructuralLane(
+  heading: ResolvedHeading,
+  headings: ResolvedHeading[],
+  lane: LayoutZonePart,
+  input: SectionScopeInput
+): HorizontalBounds {
+  const headingLine = input.lines[heading.candidate.lineIndex]!;
+  const projectedBottom = projectedSectionBottom(heading, headings, lane, input);
+  const projectedHeight = Math.max(projectedBottom - headingLine.box.y, 1);
+  const edgeTolerance = Math.max(
+    input.metrics.usualBodyHeight * 2,
+    lane.box.width * 0.08
+  );
+  const separators = input.nonTextBoundaryCandidates
+    .filter((candidate) => {
+      if (
+        candidate.kind !== 'separator' ||
+        candidate.box.height <= candidate.box.width ||
+        candidate.evidence.score < 0.55
+      ) {
+        return false;
+      }
+      const overlap = Math.max(
+        0,
+        Math.min(projectedBottom, bottom(candidate.box)) -
+          Math.max(headingLine.box.y, candidate.box.y)
+      );
+      const nearLeft = Math.abs(centerX(candidate.box) - lane.box.x) <= edgeTolerance;
+      const nearRight = Math.abs(centerX(candidate.box) - right(lane.box)) <= edgeTolerance;
+      return overlap / projectedHeight >= 0.5 && (nearLeft || nearRight);
+    })
+    .sort((first, second) =>
+      Math.min(
+        Math.abs(centerX(first.box) - lane.box.x),
+        Math.abs(centerX(first.box) - right(lane.box))
+      ) -
+      Math.min(
+        Math.abs(centerX(second.box) - lane.box.x),
+        Math.abs(centerX(second.box) - right(lane.box))
+      ) || second.evidence.score - first.evidence.score
+    );
+  const separator = separators[0];
+  if (!separator) {
+    return {
+      left: lane.box.x,
+      right: right(lane.box),
+      reasons: ['persistent macro-layout lane sets horizontal ownership']
+    };
+  }
+  const refinesLeft =
+    Math.abs(centerX(separator.box) - lane.box.x) <=
+    Math.abs(centerX(separator.box) - right(lane.box));
+  return {
+    left: refinesLeft ? right(separator.box) : lane.box.x,
+    right: refinesLeft ? right(lane.box) : separator.box.x,
+    reasons: [
+      'persistent macro-layout lane sets horizontal ownership',
+      'corroborating vertical separator refines the lane edge'
+    ]
+  };
+}
+
 function headingArea(
   heading: ResolvedHeading,
   headings: ResolvedHeading[],
   input: SectionScopeInput
-): { left: number; right: number } {
+): HorizontalBounds {
   const activeBox = input.metrics.activeContentBox!;
   if (heading.mode === 'lane-local') {
-    return heading.lanePart
-      ? { left: heading.lanePart.box.x, right: right(heading.lanePart.box) }
-      : provisionalCellBounds(heading, headings, input);
+    const lane = structuralLanePart(heading, input);
+    if (lane) {
+      return refineStructuralLane(heading, headings, lane, input);
+    }
+    return {
+      ...laneBounds(heading, headings, input),
+      reasons: ['neighboring section headings set fallback horizontal ownership']
+    };
   }
   if (heading.mode === 'provisional-cell') {
-    return provisionalCellBounds(heading, headings, input);
+    return {
+      ...laneBounds(heading, headings, input),
+      reasons: ['neighboring section headings set provisional cell ownership']
+    };
   }
-  return { left: activeBox.x, right: right(activeBox) };
+  return {
+    left: activeBox.x,
+    right: right(activeBox),
+    reasons: ['active-content page edges set cross-lane ownership']
+  };
 }
 
 function compatibleNextHeading(
@@ -519,9 +843,8 @@ export function establishSectionScopes(input: SectionScopeInput): SectionScope[]
       ? input.lines[nextLayoutBand.candidate.lineIndex]!.box.y
       : Number.POSITIVE_INFINITY;
     const endY = Math.min(nextHeadingY, nextLayoutBandY);
-    const cellBounded = heading.mode === 'provisional-cell' ||
-      (heading.mode === 'lane-local' && heading.lanePart === null);
-    const lineIndexes = input.lines
+    const cellBounded = heading.mode !== 'cross-lane';
+    const governedLineIndexes = input.lines
       .map((line, index) => ({ line, index }))
       .filter(
         ({ line }) =>
@@ -532,7 +855,11 @@ export function establishSectionScopes(input: SectionScopeInput): SectionScope[]
             : line.box.x < area.right && right(line.box) > area.left)
       )
       .map(({ index }) => index);
-    const reasons = [...heading.reasons];
+    const lineIndexes = [...new Set([
+      heading.candidate.lineIndex,
+      ...governedLineIndexes
+    ])].sort((first, second) => first - second);
+    const reasons = [...heading.reasons, ...area.reasons];
     if (nextLayoutBand && nextLayoutBandY <= nextHeadingY) {
       reasons.push('next page-wide layout band ends this scope');
     }

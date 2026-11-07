@@ -78,7 +78,12 @@ function unionBox(lines: LayoutLine[], indexes: number[]): BoundingBox {
 }
 
 function styleKey(line: LayoutLine, bodyHeight: number): string {
-  return [line.bold ? 'bold' : 'regular', Math.round(line.box.height / Math.max(bodyHeight, 1))]
+  return [
+    line.bold ? 'bold' : 'regular',
+    line.italic ? 'italic' : 'upright',
+    line.bullet ? 'bullet' : 'plain',
+    Math.round(line.box.height / Math.max(bodyHeight, 1))
+  ]
     .join(':');
 }
 
@@ -93,49 +98,39 @@ function anchorsInScope(
       line: input.lines[lineIndex]!,
       candidate: input.boundaryCandidates[lineIndex]!
     }));
-  const styleCounts = new Map<string, number>();
+  const stylePositions = new Map<string, number[]>();
   for (const { line, candidate } of candidates) {
-    if (line.bold && candidate.entry.score >= 0.2 && !isMetadata(line.text)) {
+    const anchorTypography = line.bold || line.italic || line.bullet;
+    if (anchorTypography && candidate.entry.score >= 0.15 && !isMetadata(line.text)) {
       const key = styleKey(line, input.metrics.usualBodyHeight);
-      styleCounts.set(key, (styleCounts.get(key) ?? 0) + 1);
+      stylePositions.set(key, [...(stylePositions.get(key) ?? []), line.box.y]);
     }
   }
-  const provisionalHeadings = new Set(
-    input.sectionScopes
-      .filter((candidate) =>
-        candidate.status === 'provisional' &&
-        candidate.headingLineIndex !== scope.headingLineIndex &&
-        scope.lineIndexes.includes(candidate.headingLineIndex) &&
-        input.boundaryCandidates[candidate.headingLineIndex]!.entry.score >
-          input.boundaryCandidates[candidate.headingLineIndex]!.section.score
-      )
-      .map((candidate) => candidate.headingLineIndex)
-  );
   return candidates.flatMap(({ lineIndex, line, candidate }) => {
-    const repeatedStyle = !isMetadata(line.text) &&
-      (styleCounts.get(styleKey(line, input.metrics.usualBodyHeight)) ?? 0) >= 2;
-    const demoted = provisionalHeadings.has(lineIndex);
-    const strongAnchor = line.bold && candidate.entry.score >= 0.7 && !isMetadata(line.text);
-    const precedingBoldLine = candidates
+    const anchorTypography = line.bold || line.italic || line.bullet;
+    const positions = stylePositions.get(styleKey(line, input.metrics.usualBodyHeight)) ?? [];
+    const repeatedAtEntrySpacing = positions.length >= 2 &&
+      (line.bold ||
+        (positions.at(-1)! - positions[0]!) / (positions.length - 1) >=
+          input.metrics.usualBodyHeight * 3);
+    const repeatedStyle = !isMetadata(line.text) && repeatedAtEntrySpacing;
+    const strongAnchor = anchorTypography &&
+      candidate.entry.score >= 0.7 &&
+      !isMetadata(line.text);
+    const precedingAnchorLine = candidates
       .filter(({ line: other }) =>
         other.box.y < line.box.y &&
         Math.abs(other.box.x - line.box.x) <= 3 &&
-        other.bold &&
-        Math.abs(other.box.height - line.box.height) <= 1
+        (other.bold || other.italic || other.bullet) &&
+        Math.abs(other.box.height - line.box.height) <= 2
       )
       .sort((a, b) => b.line.box.y - a.line.box.y)[0];
-    const continuesBoldAnchor = precedingBoldLine !== undefined &&
-      line.box.y - bottom(precedingBoldLine.line.box) <=
+    const continuesAnchor = precedingAnchorLine !== undefined &&
+      line.box.y - bottom(precedingAnchorLine.line.box) <=
         Math.max(input.metrics.usualVerticalGap * 1.5, input.metrics.usualBodyHeight * 0.5);
-    const headingLine = input.lines[scope.headingLineIndex]!;
-    const continuesSectionHeading = demoted &&
-      Math.abs(line.box.x - headingLine.box.x) <= 3 &&
-      Math.abs(line.box.height - headingLine.box.height) <= 1 &&
-      line.box.y - bottom(headingLine.box) <= input.metrics.usualBodyHeight;
     if (
-      continuesBoldAnchor ||
-      continuesSectionHeading ||
-      (!demoted && !strongAnchor && !(repeatedStyle && candidate.entry.score >= 0.2))
+      continuesAnchor ||
+      (!strongAnchor && !(anchorTypography && repeatedStyle && candidate.entry.score >= 0.15))
     ) {
       return [];
     }
@@ -145,20 +140,16 @@ function anchorsInScope(
       confidence += 0.45;
       reasons.push('anchor typography repeats inside the section');
     }
-    if (demoted) {
-      confidence += 0.1;
-      reasons.push('context demotes a provisional section candidate to an entry anchor');
-    }
-    if (line.bold) {
+    if (anchorTypography) {
       confidence += 0.05;
-      reasons.push('bold compact anchor typography');
+      reasons.push('compact anchor typography');
     }
     return [{
       lineIndex,
       sectionHeadingLineIndex: scope.headingLineIndex,
       confidence: round(Math.min(1, confidence)),
       reasons,
-      demotedSectionCandidate: demoted
+      demotedSectionCandidate: false
     }];
   });
 }

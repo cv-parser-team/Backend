@@ -257,10 +257,10 @@ describe('pdf parser', () => {
     expect(pageLines(result.pages[0]!).map((line) => [line.text, line.bullet])).toEqual([
       ['KEY SKILLS', false],
       ['Client Acquisition', true],
-      ['Relationship', true],
       ['B2B Sales', true],
-      ['Management', false],
       ['Negotiation', true],
+      ['Relationship', true],
+      ['Management', false],
       ['Market Analysis', true]
     ]);
   });

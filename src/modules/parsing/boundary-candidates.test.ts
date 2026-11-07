@@ -130,10 +130,10 @@ describe('boundary candidate scoring', () => {
     expect(result.lines[0]!.section.reasons).toContain(
       'style matches 5 established section headings in the same lane'
     );
-    expect(result.lines[0]!.section.score).toBe(0.95);
+    expect(result.lines[0]!.section.score).toBe(1);
   });
 
-  it('increases repeated established-section evidence up to a 0.35 cap', () => {
+  it('increases repeated established-section evidence up to a 0.45 cap', () => {
     const result = generate([
       line('EXPERIENCE', 50, 100, 13, true),
       line('EDUCATION', 50, 150, 13, true),
@@ -149,7 +149,7 @@ describe('boundary candidate scoring', () => {
     expect(customHeading.section.reasons).toContain(
       'style matches 5 established section headings in the same lane'
     );
-    expect(customHeading.section.score).toBe(0.65);
+    expect(customHeading.section.score).toBe(0.75);
   });
 
   it('scores a prominent first-page title as a header without committing an action', () => {
@@ -162,6 +162,29 @@ describe('boundary candidate scoring', () => {
     expect(result.lines[0]!.header.score).toBe(1);
     expect(result.lines[0]!.header.reasons).toContain('within the first-page title area');
     expect(result.lines[0]).not.toHaveProperty('layoutAction');
+  });
+
+  it('does not establish repeated document-title styles as section styles', () => {
+    const result = generate([
+      line('SAMPLE', 100, 20, 24, true),
+      line('CANDIDATE', 100, 48, 24, true),
+      line('PROFESSIONAL', 100, 76, 24, true),
+      line('ACCOUNTANT', 100, 104, 24, true),
+      line('RESUME', 100, 132, 24, true),
+      line('Supporting body copy one', 100, 200),
+      line('Supporting body copy two', 100, 220),
+      line('Supporting body copy three', 100, 240),
+      line('Supporting body copy four', 100, 260),
+      line('Supporting body copy five', 100, 280),
+      line('Supporting body copy six', 100, 300)
+    ]);
+
+    for (const candidate of result.lines.slice(0, 5)) {
+      expect(candidate.header.score).toBeGreaterThanOrEqual(0.8);
+      expect(candidate.section.reasons).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('established section heading')])
+      );
+    }
   });
 
   it('keeps repeated bold names ambiguous between section and entry roles', () => {

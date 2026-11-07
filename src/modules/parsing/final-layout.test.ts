@@ -46,7 +46,7 @@ describe('constrained final layout', () => {
     expect(result.regions[0]!.readingOrderLineIndexes).toEqual([0, 2, 1]);
   });
 
-  it('orders a provisional heading before slightly higher same-row values', () => {
+  it('keeps a provisional heading diagnostic-only', () => {
     const lines = [
       line('CONTACT', 50, 100.5, 80),
       line('Phone: 123-456-7890', 160, 100, 130)
@@ -69,7 +69,47 @@ describe('constrained final layout', () => {
       entryGroups: []
     });
 
-    expect(result.regions[0]!.readingOrderLineIndexes).toEqual([0, 1]);
+    expect(result.regions).toHaveLength(1);
+    expect(result.regions[0]).toMatchObject({
+      role: 'independent',
+      sectionHeadingLineIndex: null,
+      readingOrderLineIndexes: [0, 1]
+    });
+  });
+
+  it('separates the first-page header from distant unclaimed content', () => {
+    const lines = [
+      line('SAMPLE CANDIDATE', 180, 30, 220),
+      line('hello@example.com', 210, 55, 160),
+      line('SUMMARY', 40, 120, 80),
+      line('Experienced engineer.', 40, 150, 300),
+      line('Professional', 160, 700, 80),
+      line('TypeScript', 160, 725, 70)
+    ];
+    const scope: SectionScope = {
+      headingLineIndex: 2,
+      lineIndexes: [2, 3],
+      box: { x: 40, y: 120, width: 300, height: 40 },
+      status: 'confirmed',
+      mode: 'cross-lane',
+      confidence: 1,
+      reasons: [],
+      governingZoneCandidateIndexes: []
+    };
+
+    const result = resolveFinalLayout({
+      pageNumber: 1,
+      lines,
+      layoutZoneCandidates: [],
+      sectionScopes: [scope],
+      entryGroups: []
+    });
+
+    expect(result.regions.map((region) => [region.role, region.lineIndexes])).toEqual([
+      ['independent', [0, 1]],
+      ['section', [2, 3]],
+      ['independent', [4, 5]]
+    ]);
   });
 
   it('rejects a gutter that divides an entry and produces unique final ownership', () => {
@@ -234,6 +274,49 @@ describe('constrained final layout', () => {
       'L5 Scrum Learning Society',
       'L7 Vendor Relations | 2030',
       'L9 South City College'
+    ]);
+  });
+
+  it('reads every lane top-to-bottom before advancing across a multi-column section', () => {
+    const lines = [
+      line('SKILLS', 40, 100, 60),
+      line('TypeScript', 140, 140, 70),
+      line('PostgreSQL', 140, 160, 70),
+      line('Docker', 290, 140, 50),
+      line('Kubernetes', 290, 160, 70),
+      line('English', 440, 140, 55),
+      line('Arabic', 440, 160, 50)
+    ];
+    lines[0]!.bold = true;
+    const scope: SectionScope = {
+      headingLineIndex: 0,
+      lineIndexes: lines.map((_, index) => index),
+      box: { x: 40, y: 100, width: 455, height: 70 },
+      status: 'confirmed',
+      mode: 'cross-lane',
+      confidence: 1,
+      reasons: [],
+      governingZoneCandidateIndexes: []
+    };
+
+    const result = resolveFinalLayout({
+      pageNumber: 1,
+      lines,
+      layoutZoneCandidates: [],
+      sectionScopes: [scope],
+      entryGroups: []
+    });
+
+    expect(result.sectionColumns.map((column) => column.lineIndexes)).toEqual([
+      [1, 2],
+      [3, 4],
+      [5, 6]
+    ]);
+    expect(result.regions.map((region) => region.readingOrderLineIndexes)).toEqual([
+      [0],
+      [1, 2],
+      [3, 4],
+      [5, 6]
     ]);
   });
 

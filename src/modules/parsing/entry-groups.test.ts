@@ -95,10 +95,46 @@ describe('entry resolution', () => {
       sectionScopes: [scope(lines.map((_, index) => index)), ...provisional]
     });
 
-    expect(result.anchors.every((anchor) => anchor.demotedSectionCandidate)).toBe(true);
+    expect(result.anchors.every((anchor) => !anchor.demotedSectionCandidate)).toBe(true);
     expect(result.groups.map((group) => group.lineIndexes)).toEqual([
       [1, 2, 3],
       [4, 5, 6]
+    ]);
+  });
+
+  it('uses repeated bullet roles instead of adjacent italic company lines', () => {
+    const lines = [
+      line('EXPERIENCE', 280, 100, 90, true),
+      line('Product Design Manager', 272, 140, 128),
+      line('Arowwai Industries', 272, 153, 90),
+      line('2016 - 2020', 508, 154, 45),
+      line('Built reliable products.', 272, 170, 280),
+      line('Marketing Manager', 272, 220, 101),
+      line('Arowwai Industries', 272, 233, 90),
+      line('2019 - 2020', 508, 234, 45),
+      line('Led successful campaigns.', 272, 250, 280)
+    ];
+    lines[1]!.bullet = true;
+    lines[2]!.italic = true;
+    lines[5]!.bullet = true;
+    lines[6]!.italic = true;
+    const boundaries = lines.map((_, index) =>
+      candidate(
+        index,
+        [1, 5].includes(index) ? 0.15 : [2, 6].includes(index) ? 0.75 : 0
+      )
+    );
+    const result = resolveEntries({
+      lines,
+      metrics: measurePageMetrics(lines, []),
+      boundaryCandidates: boundaries,
+      sectionScopes: [scope(lines.map((_, index) => index))]
+    });
+
+    expect(result.anchors.map((anchor) => anchor.lineIndex)).toEqual([1, 5]);
+    expect(result.groups.map((group) => group.lineIndexes)).toEqual([
+      [1, 2, 3, 4],
+      [5, 6, 7, 8]
     ]);
   });
 

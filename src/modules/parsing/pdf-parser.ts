@@ -7,7 +7,11 @@ import {
   VerbosityLevel,
   version
 } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type { PDFPageProxy, TextItem } from 'pdfjs-dist/types/src/display/api.js';
+import type {
+  PDFDocumentLoadingTask,
+  PDFPageProxy,
+  TextItem
+} from 'pdfjs-dist/types/src/display/api.js';
 import { hasTooMuchArabic, removeArabic } from './language.js';
 import {
   buildPages,
@@ -441,12 +445,18 @@ export function createPdfParser(options: PdfParserOptions = {}): DocumentParser 
     mediaTypes: ['application/pdf'],
 
     async parse(content) {
-      const task = getDocument({
-        data: new Uint8Array(content),
-        standardFontDataUrl,
-        fontExtraProperties: true,
-        verbosity: VerbosityLevel.ERRORS
-      });
+      let task: PDFDocumentLoadingTask;
+      try {
+        task = getDocument({
+          data: new Uint8Array(content),
+          standardFontDataUrl,
+          fontExtraProperties: true,
+          verbosity: VerbosityLevel.ERRORS
+        });
+      } catch {
+        return failedResult('UNREADABLE', null);
+      }
+      let pageCount: number | null = null;
 
       try {
         let pdf;
@@ -458,6 +468,7 @@ export function createPdfParser(options: PdfParserOptions = {}): DocumentParser 
             null
           );
         }
+        pageCount = pdf.numPages;
 
         if (pdf.numPages > MAX_PDF_PAGES) {
           return failedResult('TOO_MANY_PAGES', pdf.numPages);
@@ -537,8 +548,12 @@ export function createPdfParser(options: PdfParserOptions = {}): DocumentParser 
           failures,
           parserVersion
         };
+      } catch {
+        return failedResult('UNREADABLE', pageCount);
       } finally {
-        await task.destroy();
+        try {
+          await task.destroy();
+        } catch {}
       }
     }
   };

@@ -89,11 +89,10 @@ export const COMMON_SECTION_HEADINGS = [
 ] as const;
 
 const COMMON_SECTION_HEADING_SET = new Set<string>(COMMON_SECTION_HEADINGS);
-export const REPEATED_SECTION_STYLE_CAP = 0.35;
+export const REPEATED_SECTION_STYLE_CAP = 0.45;
 export const NEGATIVE_HEADING_EVIDENCE_CAP = 0.65;
 const COMMON_SECTION_HEADING_SCORE = 0.4;
-const RAW_SECTION_STYLE_MATCH_SCORE = 0.05;
-const TRUSTED_SECTION_STYLE_MATCH_SCORE = 0.1;
+const SECTION_STYLE_MATCH_SCORE = 0.1;
 const BULLET_HEADING_PENALTY = 0.35;
 const DATE_HEADING_PENALTY = 0.45;
 const CONTACT_HEADING_PENALTY = 0.5;
@@ -313,8 +312,7 @@ function sectionStyleMatches(
   line: LayoutLine,
   lineIndex: number,
   lines: LayoutLine[],
-  candidateLineIndexes: ReadonlySet<number>,
-  metrics: PageMetrics
+  candidateLineIndexes: ReadonlySet<number>
 ): number {
   return [...candidateLineIndexes].filter((candidateIndex) => {
     const candidate = lines[candidateIndex];
@@ -322,9 +320,7 @@ function sectionStyleMatches(
       candidateIndex !== lineIndex &&
       candidate !== undefined &&
       sameFontStyle(line, candidate) &&
-      sameLetterCapping(line, candidate) &&
-      Math.abs(candidate.box.x - line.box.x) <= 3 &&
-      Math.abs(centerY(candidate.box) - centerY(line.box)) >= metrics.usualBodyHeight * 1.5
+      sameLetterCapping(line, candidate)
     );
   }).length;
 }
@@ -419,8 +415,7 @@ function scoreLineCandidate(
     line,
     lineIndex,
     lines,
-    sectionStyleLineIndexes,
-    metrics
+    sectionStyleLineIndexes
   );
   const semanticText = normalizeSemanticText(line.text);
   const commonHeading = commonSectionHeadingState(lineIndex, lines, metrics);
@@ -582,6 +577,13 @@ function establishesSectionStyle(
   intrinsicCandidate: BoundaryCandidate,
   line: LayoutLine
 ): boolean {
+  const documentTitle =
+    !isCommonSectionHeading(line.text) &&
+    candidate.header.score >= 0.8 &&
+    candidate.header.score >= candidate.section.score;
+  if (documentTitle) {
+    return false;
+  }
   if (
     isCommonSectionHeading(line.text) &&
     candidate.section.score >= COMMON_SECTION_HEADING_SCORE &&
@@ -720,7 +722,7 @@ export function generateBoundaryCandidates(
       input.pageIndex,
       input.pageHeight,
       noSectionStyles,
-      RAW_SECTION_STYLE_MATCH_SCORE,
+      SECTION_STYLE_MATCH_SCORE,
       'raw section candidate'
     )
   }));
@@ -741,7 +743,7 @@ export function generateBoundaryCandidates(
       input.pageIndex,
       input.pageHeight,
       rawSectionStyleLineIndexes,
-      RAW_SECTION_STYLE_MATCH_SCORE,
+      SECTION_STYLE_MATCH_SCORE,
       'raw section candidate'
     )
   }));
@@ -765,7 +767,7 @@ export function generateBoundaryCandidates(
       input.pageIndex,
       input.pageHeight,
       establishedSectionLineIndexes,
-      TRUSTED_SECTION_STYLE_MATCH_SCORE,
+      SECTION_STYLE_MATCH_SCORE,
       'established section heading'
     )
   }));
