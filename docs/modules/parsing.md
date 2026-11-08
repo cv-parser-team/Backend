@@ -75,6 +75,38 @@ fragments are removed and the remainder is retained.
 Unsupported media types return `415 UNSUPPORTED_DOCUMENT_TYPE` and are not
 saved.
 
+## Component responsibilities
+
+```mermaid
+flowchart LR
+    Caller[Documents service] --> Service[Parsing service]
+    Service --> PDF[PDF parser]
+    Service --> DOCX[DOCX parser]
+    PDF --> Layout[PDF layout pipeline]
+    DOCX --> Blocks[DOCX HTML block builder]
+    Layout --> Result[Extraction result]
+    Blocks --> Result
+    Result --> Repository[Parsing repository]
+    Repository --> Database[(document_extractions)]
+    Result --> AI[AI input builder]
+    Layout -. diagnostic trace .-> Report[Inspection report]
+```
+
+| Component | Responsibility | Must not do |
+| --- | --- | --- |
+| Parsing service | Select a parser by exact media type and persist its result | Interpret CV meaning or contain format-specific parsing rules |
+| PDF parser | Open and validate PDFs; extract page primitives, links, styles, marks, and separators; record page failures | Decide final layout ownership |
+| DOCX parser and HTML builder | Convert DOCX to ordered paragraph/table blocks and preserve explicit Word structure | Invent page coordinates or run the PDF layout pipeline |
+| Language policy | Apply the shared Arabic threshold and remove permitted fragments | Perform OCR or reconstruct Arabic layout |
+| PDF layout pipeline | Reconstruct lines, measure geometry, score candidates, resolve scopes and groups, and produce compatibility plus shadow layouts | Normalize résumé claims or infer broad section meaning |
+| AI input builder | Format stored output into compact text with stable references and conservative joins | Modify stored text or repair incorrect ownership |
+| Parsing repository | Upsert and retrieve one versioned extraction per document | Recompute parsing results or query inside the JSON as domain data |
+| Inspection report | Render stage evidence, scores, associations, ownership, and AI previews for diagnostics | Define persisted behavior or become a production contract |
+
+The documents module owns file metadata, storage, lifecycle status, and the
+decision to invoke parsing. The parsing module owns extraction results from the
+point it receives bytes and a media type.
+
 ## PDF layout pipeline
 
 The deterministic trace executes these stages in order.
@@ -268,16 +300,73 @@ PDF lines store text, box, unique order, heading/style/list hints, and links.
 Regions store an index, box, and split confidence. Changing stored JSON shape
 requires incrementing `EXTRACTION_CONTENT_VERSION` and reviewing readers.
 
-## Inspection and debugging
+## Data model
 
-Generate one report or regenerate a fixture directory:
+`document_extractions` is owned by this module and has a one-to-zero-or-one
+relationship with `documents`. `document_id` is unique, so reparsing replaces
+the existing extraction. The foreign key uses cascade deletion.
 
-```bash
-npm run parsing:inspect -- "testResumes/example.pdf"
-npm run parsing:inspect:all -- testResumes
+```mermaid
+erDiagram
+    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "has extraction"
+
+    DOCUMENTS {
+        uuid document_id PK
+        uuid owner_user_id FK
+        document_purpose purpose
+        text media_type
+        document_status status
+    }
+
+    DOCUMENT_EXTRACTIONS {
+        uuid extraction_id PK
+        uuid document_id FK, UK
+        extraction_status status
+        document_format format
+        integer page_count "nullable"
+        jsonb content
+        jsonb failures
+        text parser_version
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
-The report exposes:
+| Column | Purpose |
+| --- | --- |
+| `extraction_id` | Generated primary key for the extraction record |
+| `document_id` | Unique parent document; cascades on document deletion |
+| `status` | `succeeded`, `partial`, or `failed` |
+| `format` | `pdf` or `docx` |
+| `page_count` | Positive source PDF page count; `null` for DOCX or an unopened file |
+| `content` | Versioned JSON object containing `pages` and `blocks` |
+| `failures` | Page- or file-level failure codes; defaults to an empty array |
+| `parser_version` | Library name and version that produced the extraction |
+| `created_at`, `updated_at` | Initial and latest extraction timestamps |
+
+The current JSON shape is version `3`:
+
+```text
+content
+├── version
+├── pages[]                 PDF; empty for DOCX
+│   ├── pageNumber, width, height
+│   └── regions[]
+│       ├── index, box, role, parentIndex, confidence
+│       └── lines[]
+│           └── order, text, box, heading, bold, italic, bullet, links
+└── blocks[]                DOCX; empty for PDF
+    ├── paragraph           index, text, styles, links
+    └── table               index, optional columns, rows
+```
+
+`failures` is stored outside `content` because it describes extraction status,
+not successfully extracted document content. PDF `page_count` includes failed
+pages. Detailed document metadata and lifecycle status remain in `documents`.
+
+## Diagnostic trace
+
+The inspection report exposes:
 
 1. extracted primitives, marks, and separators;
 2. reconstructed lines;
@@ -290,9 +379,10 @@ The report exposes:
 9. final ownership and reading order;
 10. compact AI-input preview.
 
-Debug the first incorrect stage. Add synthetic layout tests for deterministic
-rules and binary fixtures only for extraction behavior. Generated
-`*.parsing.html` reports are diagnostics, not specifications.
+The trace is not persisted and is not part of the public extraction contract.
+Contributor commands, stage-to-file ownership, debugging steps, and heuristic
+maintenance guidance live in
+[`src/modules/parsing/README.md`](../../src/modules/parsing/README.md).
 
 ## Acceptance criteria
 
@@ -312,13 +402,6 @@ Focused coverage includes reversed metadata/body rails, independent parallel
 sections, education and experience entries across lanes, reference cards,
 skills grids, separators, decorative underlines, table borders, and contextual
 demotion of repeated entry labels.
-
-For parsing changes, run the focused test first, then:
-
-```bash
-npx vitest run src/modules/parsing
-npm run build
-```
 
 ## Known limitations
 

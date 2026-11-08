@@ -3,7 +3,7 @@
 This file is the fast path for changing `src/modules/parsing`. It describes the
 implemented pipeline and the precedence rules that are easiest to miss when
 working on layout bugs. The longer rationale, heading-scoring rules, rollout
-status, and acceptance criteria live in
+status, component boundaries, data model, and acceptance criteria live in
 [`docs/modules/parsing.md`](../../../docs/modules/parsing.md).
 
 ## What this module owns
@@ -29,7 +29,8 @@ Use these sources in this order when investigating existing behavior:
    remain stable.
 3. The current stage implementation and its exported settings/constants.
 4. This README as a navigation and decision guide.
-5. `docs/modules/parsing.md` for design rationale and planned behavior.
+5. `docs/modules/parsing.md` for architecture, design rationale, and planned
+   behavior.
 
 If these disagree, do not silently choose one. Determine whether the code has
 drifted from the intended design, then update the implementation, focused
