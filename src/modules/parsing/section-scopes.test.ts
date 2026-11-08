@@ -39,6 +39,7 @@ function resolve(lines: LayoutLine[], separators: DrawnSeparator[] = []) {
     nonTextBoundaryCandidates: boundaries.nonText
   });
   return {
+    metrics,
     zones,
     scopes: establishSectionScopes({
       lines,
@@ -113,6 +114,56 @@ describe('section scopes', () => {
     expect(scope!.reasons).toContain('provisional vertical zones do not limit this scope');
   });
 
+  it('contains a section to its gutter lane without repeated local bridge rows', () => {
+    const lines = [
+      line('EXPERIENCE', 40, 100, 110, 15, true),
+      line('Built reliable services.', 40, 140, 190),
+      line('Improved production reliability.', 40, 165, 190),
+      line('Unrelated right-lane detail.', 340, 165, 180),
+      line('Independent right-lane details.', 340, 230, 180),
+      line('Additional right-lane details.', 340, 255, 180)
+    ];
+    const vertical: DrawnSeparator = {
+      orientation: 'vertical',
+      box: { x: 280, y: 80, width: 1, height: 220 },
+      thickness: 1
+    };
+    const { scopes } = resolve(lines, [vertical]);
+    const experience = scopes.find((scope) => scope.headingLineIndex === 0);
+
+    expect(experience).toMatchObject({
+      kind: 'experience',
+      status: 'confirmed',
+      mode: 'lane-local'
+    });
+    expect(experience!.lineIndexes).toEqual([0, 1, 2]);
+    expect(experience!.reasons).toContain(
+      'persistent gutter blocks cross-lane ownership without local bridge evidence'
+    );
+  });
+
+  it('does not let a provisional section candidate cross a persistent gutter', () => {
+    const lines = [
+      line('EXPERIENCE', 40, 100, 110, 15, true),
+      line('SKILLS', 340, 100, 70, 15, true),
+      line('Left-lane detail.', 40, 140, 180),
+      line('Independent right-lane detail.', 340, 140, 180),
+      line('People skills', 40, 220, 120, 15),
+      line('More independent detail.', 340, 250, 180)
+    ];
+    const vertical: DrawnSeparator = {
+      orientation: 'vertical',
+      box: { x: 280, y: 80, width: 1, height: 220 },
+      thickness: 1
+    };
+    const { scopes } = resolve(lines, [vertical]);
+    const label = scopes.find((scope) => scope.headingLineIndex === 4);
+
+    expect(label).toMatchObject({ status: 'provisional', mode: 'lane-local' });
+    expect(label!.lineIndexes).toEqual([4]);
+    expect(label!.reasons).toContain('provisional section cannot cross a persistent gutter');
+  });
+
   it('ends a scope at the next compatible confirmed section', () => {
     const lines = [
       line('EXPERIENCE', 50, 100, 110, 15, true),
@@ -124,6 +175,24 @@ describe('section scopes', () => {
 
     expect(scopes.find((scope) => scope.headingLineIndex === 0)?.lineIndexes).toEqual([0, 1]);
     expect(scopes.find((scope) => scope.headingLineIndex === 2)?.lineIndexes).toEqual([2, 3]);
+  });
+
+  it('recognizes key skills as a section and ends the preceding education scope', () => {
+    const lines = [
+      line('EDUCATION', 50, 100, 110, 15, true),
+      line('Example University', 50, 140, 180, 11, true),
+      line('Bachelor of Engineering', 50, 158, 180),
+      line('KEY SKILLS', 50, 230, 90, 15, true),
+      line('TypeScript, Node.js, PostgreSQL', 50, 270, 230)
+    ];
+    const { scopes } = resolve(lines);
+    const education = scopes.find((scope) => scope.headingLineIndex === 0);
+    const skills = scopes.find((scope) => scope.headingLineIndex === 3);
+
+    expect(education).toMatchObject({ status: 'confirmed', kind: 'education' });
+    expect(education!.lineIndexes).toEqual([0, 1, 2]);
+    expect(skills).toMatchObject({ status: 'confirmed', kind: 'other' });
+    expect(skills!.lineIndexes).toEqual([3, 4]);
   });
 
   it('confirms independent parallel headings as lane-local scopes', () => {
@@ -411,6 +480,38 @@ describe('section scopes', () => {
     expect(education!.lineIndexes).toEqual([14, 16, 17, 18, 19, 21, 22]);
     expect(achievements).toMatchObject({ status: 'confirmed', mode: 'lane-local' });
     expect(achievements!.lineIndexes).toEqual([20, 23]);
+  });
+
+  it('keeps a new sidebar section lane-local when opposite content overlaps its heading row', () => {
+    const lines = [
+      line('EDUCATION', 40, 100, 90, 14, true),
+      line('PROFILE', 320, 100, 70, 14, true),
+      line('Education details.', 40, 140, 170),
+      line('Profile details.', 320, 140, 220),
+      line('WORK EXPERIENCE', 320, 200, 140, 14, true),
+      line('First role', 320, 240, 100, 11, true),
+      line('First role description.', 320, 265, 220),
+      line('Continuation on the skills heading row.', 320, 299, 220),
+      line('SKILLS', 40, 300, 60, 14, true),
+      line('Management', 55, 340, 80),
+      line('Second role', 320, 340, 100, 11, true),
+      line('Second role description.', 320, 365, 220),
+      line('Communication', 55, 380, 90)
+    ];
+    const vertical: DrawnSeparator = {
+      orientation: 'vertical',
+      box: { x: 270, y: 80, width: 1, height: 340 },
+      thickness: 1
+    };
+    const { scopes } = resolve(lines, [vertical]);
+    const work = scopes.find((scope) => scope.headingLineIndex === 4);
+    const skills = scopes.find((scope) => scope.headingLineIndex === 8);
+
+    expect(work).toMatchObject({ status: 'confirmed', mode: 'lane-local' });
+    expect(work!.lineIndexes).toEqual([4, 5, 6, 7, 10, 11]);
+    expect(skills).toMatchObject({ status: 'confirmed', mode: 'lane-local' });
+    expect(skills!.lineIndexes).toEqual([8, 9, 12]);
+    expect(skills!.reasons).toContain('active section continues in the opposite lane');
   });
 
   it('does not promote a sidebar heading over an active opposite-lane section', () => {

@@ -242,8 +242,10 @@ function evidenceText(label: string, item: ScoredEvidence): string {
   return `${label} ${item.score}${reasons}`;
 }
 
-function strongestCandidate(candidate: BoundaryCandidate): keyof Omit<BoundaryCandidate, 'lineIndex'> {
-  const roles: (keyof Omit<BoundaryCandidate, 'lineIndex'>)[] = [
+type BoundaryRole = 'header' | 'section' | 'entry' | 'content';
+
+function strongestCandidate(candidate: BoundaryCandidate): BoundaryRole {
+  const roles: BoundaryRole[] = [
     'header',
     'section',
     'entry',
@@ -381,7 +383,7 @@ function sectionScopeStage(page: LayoutTracePage): string {
       )};top:${percentage(scope.box.y, page.height)};width:${percentage(
         scope.box.width,
         page.width
-      )};height:${percentage(scope.box.height, page.height)}" title="S${index + 1} ${scope.status} ${scope.mode}"></div>`
+      )};height:${percentage(scope.box.height, page.height)}" title="S${index + 1} ${scope.kind} ${scope.status} ${scope.mode}"></div>`
     )
     .join('');
   const rows = page.sectionScopes
@@ -390,7 +392,7 @@ function sectionScopeStage(page: LayoutTracePage): string {
       const hypotheses = scope.governingZoneCandidateIndexes.length > 0
         ? ` · hypotheses ${scope.governingZoneCandidateIndexes.map((zoneIndex) => `H${zoneIndex + 1}`).join(', ')}`
         : '';
-      return `<li><code>S${index + 1}</code><span>${escapeHtml(heading.text)}</span><small>${scope.status} · ${scope.mode} · confidence ${scope.confidence} · heading line ${scope.headingLineIndex + 1} · governed lines ${scope.lineIndexes
+      return `<li><code>S${index + 1}</code><span>${escapeHtml(heading.text)}</span><small>${scope.kind} · ${scope.status} · ${scope.mode} · confidence ${scope.confidence} · heading line ${scope.headingLineIndex + 1} · governed lines ${scope.lineIndexes
         .map((lineIndex) => lineIndex + 1)
         .join(', ')}${hypotheses} · ${escapeHtml(scope.reasons.join('; '))}</small></li>`;
     })

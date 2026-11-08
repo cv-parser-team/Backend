@@ -349,6 +349,7 @@ function columnFirstOrder(
   const lanes = localColumnLanes(
     {
       headingLineIndex: -1,
+      kind: 'other',
       lineIndexes: indexes,
       box,
       status: 'confirmed',

@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { pathToFileURL } from 'node:url';
 import { buildParsingInspectionReport } from '../modules/parsing/inspection-report.js';
 import type { LayoutTrace } from '../modules/parsing/layout.js';
 import type { DocumentParser } from '../modules/parsing/parsing.types.js';
@@ -59,17 +60,32 @@ async function parserFor(filename: string): Promise<InspectionParser> {
   throw new Error(`Unsupported file extension '${extension || '(none)'}'; use PDF or DOCX`);
 }
 
-const [, , inputArgument, outputArgument] = process.argv;
-const inputPath = resolve(await selectInputPath(inputArgument));
-const outputPath = resolve(outputArgument ?? `${inputPath}.parsing.html`);
-const inspection = await parserFor(inputPath);
-const result = await inspection.parser.parse(new Uint8Array(await readFile(inputPath)));
+export async function generateParsingInspection(
+  input: string,
+  output?: string
+): Promise<void> {
+  const inputPath = resolve(input);
+  const outputPath = resolve(output ?? `${inputPath}.parsing.html`);
+  const inspection = await parserFor(inputPath);
+  const result = await inspection.parser.parse(new Uint8Array(await readFile(inputPath)));
 
-await writeFile(
-  outputPath,
-  buildParsingInspectionReport(result, basename(inputPath), inspection.layoutTrace()),
-  'utf8'
-);
+  await writeFile(
+    outputPath,
+    buildParsingInspectionReport(result, basename(inputPath), inspection.layoutTrace()),
+    'utf8'
+  );
 
-console.log(`Parsing status: ${result.status}`);
-console.log(`Report: ${outputPath}`);
+  console.log(`Parsing status: ${result.status}`);
+  console.log(`Report: ${outputPath}`);
+}
+
+async function main(): Promise<void> {
+  const [, , inputArgument, outputArgument] = process.argv;
+  const inputPath = await selectInputPath(inputArgument);
+  await generateParsingInspection(inputPath, outputArgument);
+}
+
+const executedPath = process.argv[1];
+if (executedPath && pathToFileURL(resolve(executedPath)).href === import.meta.url) {
+  await main();
+}

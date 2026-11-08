@@ -9,11 +9,14 @@ export interface ScoredEvidence {
 
 export interface BoundaryCandidate {
   lineIndex: number;
+  sectionKind: SectionKind;
   header: ScoredEvidence;
   section: ScoredEvidence;
   entry: ScoredEvidence;
   content: ScoredEvidence;
 }
+
+export type SectionKind = 'experience' | 'education' | 'other';
 
 export type NonTextBoundaryKind =
   | 'vertical-gutter'
@@ -57,7 +60,12 @@ export const COMMON_SECTION_HEADINGS = [
   'work history',
   'educational history',
   'skills',
+  'key skills',
   'technical skills',
+  'professional skills',
+  'skills summary',
+  'technical expertise',
+  'technical proficiencies',
   'core competencies',
   'core skills',
   'key competencies',
@@ -89,6 +97,22 @@ export const COMMON_SECTION_HEADINGS = [
 ] as const;
 
 const COMMON_SECTION_HEADING_SET = new Set<string>(COMMON_SECTION_HEADINGS);
+const EXPERIENCE_SECTION_HEADING_SET = new Set([
+  'experience',
+  'work experience',
+  'professional experience',
+  'employment history',
+  'work history',
+  'volunteer experience'
+]);
+const EDUCATION_SECTION_HEADING_SET = new Set([
+  'education',
+  'education background',
+  'academic background',
+  'academic history',
+  'qualifications',
+  'educational history'
+]);
 export const REPEATED_SECTION_STYLE_CAP = 0.45;
 export const NEGATIVE_HEADING_EVIDENCE_CAP = 0.65;
 const COMMON_SECTION_HEADING_SCORE = 0.4;
@@ -141,6 +165,17 @@ export function isCommonSectionHeading(text: string): boolean {
   return COMMON_SECTION_HEADING_SET.has(normalizeSectionKey(text));
 }
 
+export function classifySectionHeading(text: string): SectionKind {
+  const key = normalizeSectionKey(text);
+  if (EXPERIENCE_SECTION_HEADING_SET.has(key)) {
+    return 'experience';
+  }
+  if (EDUCATION_SECTION_HEADING_SET.has(key)) {
+    return 'education';
+  }
+  return 'other';
+}
+
 function adjacentHeadingFragment(
   first: LayoutLine,
   second: LayoutLine,
@@ -161,7 +196,7 @@ function commonSectionHeadingState(
   lineIndex: number,
   lines: LayoutLine[],
   metrics: PageMetrics
-): { starts: boolean; continuation: boolean } {
+): { starts: boolean; continuation: boolean; kind: SectionKind } {
   const line = lines[lineIndex]!;
   const sameLane = lines
     .map((candidate, index) => ({ candidate, index }))
@@ -187,9 +222,14 @@ function commonSectionHeadingState(
   const startsSplitHeading = next !== undefined &&
     adjacentHeadingFragment(line, next, metrics) &&
     isCommonSectionHeading(`${line.text} ${next.text}`);
+  const starts = !continuation && (isCommonSectionHeading(line.text) || startsSplitHeading);
+  const semanticHeading = startsSplitHeading && next
+    ? `${line.text} ${next.text}`
+    : line.text;
   return {
-    starts: !continuation && (isCommonSectionHeading(line.text) || startsSplitHeading),
-    continuation
+    starts,
+    continuation,
+    kind: starts ? classifySectionHeading(semanticHeading) : 'other'
   };
 }
 
@@ -565,6 +605,7 @@ function scoreLineCandidate(
   }
 
   return {
+    sectionKind: commonHeading.kind,
     header: evidence(headerScore, headerReasons),
     section: evidence(sectionScore, sectionReasons),
     entry: evidence(entryScore, entryReasons),

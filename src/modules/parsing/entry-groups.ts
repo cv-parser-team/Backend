@@ -33,9 +33,14 @@ interface EntryResolutionInput {
 }
 
 const METADATA = /(?:\b(?:19|20)\d{2}\b|\b(?:present|now)\b|@|https?:\/\/|www\.|\+?\d[\d ().-]{6,}\d)/iu;
+const DATE = /(?:\b(?:19|20)\d{2}\b|\b(?:present|now)\b)/iu;
 
 function isMetadata(text: string): boolean {
   return METADATA.test(normalizeSemanticText(text));
+}
+
+function isDate(text: string): boolean {
+  return DATE.test(normalizeSemanticText(text));
 }
 
 function round(value: number): number {
@@ -48,10 +53,6 @@ function right(box: BoundingBox): number {
 
 function bottom(box: BoundingBox): number {
   return box.y + box.height;
-}
-
-function centerX(box: BoundingBox): number {
-  return box.x + box.width / 2;
 }
 
 function centerY(box: BoundingBox): number {
@@ -87,6 +88,29 @@ function styleKey(line: LayoutLine, bodyHeight: number): string {
     .join(':');
 }
 
+function hasAssociatedDate(
+  line: LayoutLine,
+  candidates: Array<{ line: LayoutLine }>,
+  metrics: PageMetrics
+): boolean {
+  const maximumDistance = Math.max(
+    metrics.usualBodyHeight * 6,
+    metrics.usualVerticalGap * 8,
+    80
+  );
+  return candidates.some(({ line: other }) => {
+    if (other === line || !isDate(other.text)) {
+      return false;
+    }
+    if (sharesRow(line, other)) {
+      return true;
+    }
+    return other.box.y > line.box.y &&
+      other.box.y - line.box.y <= maximumDistance &&
+      Math.abs(other.box.x - line.box.x) <= 3;
+  });
+}
+
 function anchorsInScope(
   scope: SectionScope,
   input: EntryResolutionInput
@@ -117,6 +141,14 @@ function anchorsInScope(
     const strongAnchor = anchorTypography &&
       candidate.entry.score >= 0.7 &&
       !isMetadata(line.text);
+    const semanticEntryFallback =
+      !anchorTypography &&
+      (scope.kind === 'experience' || scope.kind === 'education') &&
+      candidate.entry.score >= 0.65 &&
+      line.box.height >= input.metrics.usualBodyHeight * 1.15 &&
+      candidate.entry.reasons.includes('entry-sized whitespace above') &&
+      !isMetadata(line.text) &&
+      hasAssociatedDate(line, candidates, input.metrics);
     const precedingAnchorLine = candidates
       .filter(({ line: other }) =>
         other.box.y < line.box.y &&
@@ -125,12 +157,38 @@ function anchorsInScope(
         Math.abs(other.box.height - line.box.height) <= 2
       )
       .sort((a, b) => b.line.box.y - a.line.box.y)[0];
-    const continuesAnchor = precedingAnchorLine !== undefined &&
-      line.box.y - bottom(precedingAnchorLine.line.box) <=
-        Math.max(input.metrics.usualVerticalGap * 1.5, input.metrics.usualBodyHeight * 0.5);
+    const precedingAnchorHasMetadata = precedingAnchorLine !== undefined && candidates.some(
+      ({ line: other }) =>
+        other !== precedingAnchorLine.line &&
+        sharesRow(other, precedingAnchorLine.line) &&
+        isMetadata(other.text)
+    );
+    const lineHasMetadata = candidates.some(
+      ({ line: other }) => other !== line && sharesRow(other, line) && isMetadata(other.text)
+    );
+    const verticalGap = precedingAnchorLine === undefined
+      ? Number.POSITIVE_INFINITY
+      : line.box.y - bottom(precedingAnchorLine.line.box);
+    const continuesAnchor = precedingAnchorLine !== undefined && (
+      verticalGap <= Math.max(
+        input.metrics.usualVerticalGap * 1.5,
+        input.metrics.usualBodyHeight * 0.5
+      ) || (
+        precedingAnchorHasMetadata &&
+        !lineHasMetadata &&
+        verticalGap <= Math.max(
+          input.metrics.usualVerticalGap * 3,
+          input.metrics.usualBodyHeight * 1.25
+        )
+      )
+    );
     if (
       continuesAnchor ||
-      (!strongAnchor && !(anchorTypography && repeatedStyle && candidate.entry.score >= 0.15))
+      (
+        !strongAnchor &&
+        !semanticEntryFallback &&
+        !(anchorTypography && repeatedStyle && candidate.entry.score >= 0.15)
+      )
     ) {
       return [];
     }
@@ -143,6 +201,10 @@ function anchorsInScope(
     if (anchorTypography) {
       confidence += 0.05;
       reasons.push('compact anchor typography');
+    }
+    if (semanticEntryFallback) {
+      confidence += 0.2;
+      reasons.push(`associated date supports regular anchor in ${scope.kind} section`);
     }
     return [{
       lineIndex,
@@ -194,6 +256,9 @@ function linesForAnchor(
       ))
     : Number.POSITIVE_INFINITY;
   const rowHasCards = row.length > 1;
+  const rowByStart = [...row].sort((a, b) =>
+    lines[a.lineIndex]!.box.x - lines[b.lineIndex]!.box.x
+  );
   const owned = scope.lineIndexes.filter((lineIndex) => {
     if (lineIndex === scope.headingLineIndex) {
       return false;
@@ -205,11 +270,10 @@ function linesForAnchor(
     if (!rowHasCards) {
       return true;
     }
-    const nearest = [...row].sort((a, b) =>
-      Math.abs(centerX(lines[a.lineIndex]!.box) - centerX(line.box)) -
-      Math.abs(centerX(lines[b.lineIndex]!.box) - centerX(line.box))
-    )[0];
-    return nearest?.lineIndex === anchor.lineIndex;
+    const owner = rowByStart
+      .filter((candidate) => lines[candidate.lineIndex]!.box.x <= line.box.x)
+      .at(-1) ?? rowByStart[0];
+    return owner?.lineIndex === anchor.lineIndex;
   });
   return [...new Set([anchor.lineIndex, ...owned])].sort((a, b) => a - b);
 }

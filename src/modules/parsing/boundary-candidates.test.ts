@@ -45,10 +45,28 @@ describe('boundary candidate scoring', () => {
     ], [], 1);
 
     expect(result.lines[0]!.section.reasons).toContain('exact common section heading');
+    expect(result.lines[0]!.sectionKind).toBe('experience');
     expect(result.lines[2]!.section.reasons).toContain(
       'continues a split common section heading'
     );
+    expect(result.lines[2]!.sectionKind).toBe('other');
     expect(result.lines[3]!.section.reasons).toContain('date value reduces heading authority');
+  });
+
+  it('classifies only exact education and experience section labels', () => {
+    const result = generate([
+      line('WORK EXPERIENCE', 50, 100, 13, true),
+      line('ACADEMIC HISTORY', 50, 150, 13, true),
+      line('Bachelor of Education', 50, 200, 13, true),
+      line('SKILLS', 50, 250, 13, true)
+    ], [], 1);
+
+    expect(result.lines.map((candidate) => candidate.sectionKind)).toEqual([
+      'experience',
+      'education',
+      'other',
+      'other'
+    ]);
   });
 
   it('recognizes normalized common section names without matching substrings', () => {
@@ -60,6 +78,22 @@ describe('boundary candidate scoring', () => {
 
     expect(result.lines[0]!.section.reasons).toContain('exact common section heading');
     expect(result.lines[1]!.section.reasons).not.toContain('exact common section heading');
+  });
+
+  it.each([
+    'KEY SKILLS',
+    'PROFESSIONAL SKILLS',
+    'SKILLS SUMMARY',
+    'TECHNICAL EXPERTISE',
+    'TECHNICAL PROFICIENCIES'
+  ])('recognizes %s as a common skills section heading', (heading) => {
+    const result = generate([
+      line(heading, 50, 100, 13, true),
+      line('TypeScript, Node.js, PostgreSQL', 50, 140)
+    ], [], 1);
+
+    expect(result.lines[0]!.section.reasons).toContain('exact common section heading');
+    expect(result.lines[0]!.sectionKind).toBe('other');
   });
 
   it('uses only established section styles during the repeated-style pass', () => {

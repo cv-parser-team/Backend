@@ -27,6 +27,7 @@ describe('constrained final layout', () => {
     lines[2]!.bold = true;
     const scope: SectionScope = {
       headingLineIndex: 0,
+      kind: 'experience',
       lineIndexes: [0, 1, 2],
       box: { x: 50, y: 100, width: 270, height: 23 },
       status: 'confirmed',
@@ -53,6 +54,7 @@ describe('constrained final layout', () => {
     ];
     const provisional: SectionScope = {
       headingLineIndex: 0,
+      kind: 'other',
       lineIndexes: [0, 1],
       box: { x: 50, y: 100, width: 240, height: 10.5 },
       status: 'provisional',
@@ -88,6 +90,7 @@ describe('constrained final layout', () => {
     ];
     const scope: SectionScope = {
       headingLineIndex: 2,
+      kind: 'other',
       lineIndexes: [2, 3],
       box: { x: 40, y: 120, width: 300, height: 40 },
       status: 'confirmed',
@@ -122,6 +125,7 @@ describe('constrained final layout', () => {
     ];
     const scope: SectionScope = {
       headingLineIndex: 1,
+      kind: 'experience',
       lineIndexes: [1, 2, 3, 4],
       box: { x: 50, y: 100, width: 380, height: 70 },
       status: 'confirmed',
@@ -177,6 +181,7 @@ describe('constrained final layout', () => {
     ];
     const scope: SectionScope = {
       headingLineIndex: 0,
+      kind: 'other',
       lineIndexes: [0, 1, 2, 3, 4],
       box: { x: 50, y: 100, width: 320, height: 70 },
       status: 'confirmed',
@@ -234,6 +239,7 @@ describe('constrained final layout', () => {
     lines[6]!.bold = true;
     const scope: SectionScope = {
       headingLineIndex: 0,
+      kind: 'other',
       lineIndexes: lines.map((_, index) => index),
       box: { x: 34, y: 100, width: 463, height: 73 },
       status: 'confirmed',
@@ -290,6 +296,7 @@ describe('constrained final layout', () => {
     lines[0]!.bold = true;
     const scope: SectionScope = {
       headingLineIndex: 0,
+      kind: 'other',
       lineIndexes: lines.map((_, index) => index),
       box: { x: 40, y: 100, width: 455, height: 70 },
       status: 'confirmed',
@@ -332,6 +339,7 @@ describe('constrained final layout', () => {
     lines[1]!.bold = true;
     const scope: SectionScope = {
       headingLineIndex: 0,
+      kind: 'experience',
       lineIndexes: lines.map((_, index) => index),
       box: { x: 34, y: 100, width: 423, height: 66 },
       status: 'confirmed',
@@ -362,6 +370,7 @@ describe('constrained final layout', () => {
     ];
     const scope: SectionScope = {
       headingLineIndex: 0,
+      kind: 'other',
       lineIndexes: [0, 1, 2, 3],
       box: { x: 50, y: 100, width: 320, height: 70 },
       status: 'confirmed',

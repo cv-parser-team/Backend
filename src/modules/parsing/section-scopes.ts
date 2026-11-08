@@ -1,6 +1,7 @@
 import type {
   BoundaryCandidate,
-  NonTextBoundaryCandidate
+  NonTextBoundaryCandidate,
+  SectionKind
 } from './boundary-candidates.js';
 import type { LayoutLine, PageMetrics } from './layout.js';
 import type { LayoutZoneCandidate, LayoutZonePart } from './macro-layout.js';
@@ -11,6 +12,7 @@ export type SectionScopeMode = 'cross-lane' | 'lane-local' | 'provisional-cell';
 
 export interface SectionScope {
   headingLineIndex: number;
+  kind: SectionKind;
   lineIndexes: number[];
   box: BoundingBox;
   status: SectionScopeStatus;
@@ -335,11 +337,13 @@ function hasOppositeLaneContinuation(
   const recognizedHeadingIndexes = new Set(
     recognizedHeadings.map((other) => other.lineIndex)
   );
+  const overlapsOrFollowsHeadingTop = (line: LayoutLine) =>
+    line.box.y >= heading.box.y || bottom(line.box) > heading.box.y;
   const firstHeadingSideContentY = input.lines
     .filter(
       (line, lineIndex) =>
         !recognizedHeadingIndexes.has(lineIndex) &&
-        line.box.y >= heading.box.y &&
+        overlapsOrFollowsHeadingTop(line) &&
         line.box.y - heading.box.y <= maximumDistance &&
         laneSide(line, boundary) === headingSide
     )
@@ -348,7 +352,7 @@ function hasOppositeLaneContinuation(
   return input.lines.some(
     (line, lineIndex) =>
       !recognizedHeadingIndexes.has(lineIndex) &&
-      line.box.y >= heading.box.y &&
+      overlapsOrFollowsHeadingTop(line) &&
       line.box.y < nextOppositeHeadingY &&
       line.box.y < firstHeadingSideContentY &&
       line.box.y - heading.box.y <= maximumDistance &&
@@ -371,7 +375,7 @@ function hasDirectCrossLaneEvidence(
     return true;
   }
   const maximumDistance = Math.max(
-    input.metrics.usualBodyHeight * 8,
+    input.metrics.usualBodyHeight * 12,
     input.metrics.usualVerticalGap * 3,
     80
   );
@@ -453,11 +457,13 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
     const layoutBandEvidence =
       horizontalSupport || hasPageWideWhitespaceBefore(line, input.metrics);
     const directCrossLaneEvidence = hasDirectCrossLaneEvidence(candidate, input);
+    const persistentGutter = persistentLaneBoundary(candidate, input) !== undefined;
     const oppositeLaneContinuation = hasOppositeLaneContinuation(candidate, input);
     const startsLayoutBand = peers.length === 0 &&
       !nearbyParallelHeadingPeer &&
       layoutBandEvidence &&
       !oppositeLaneContinuation &&
+      (!persistentGutter || directCrossLaneEvidence) &&
       (!parallelHeadingPeer || directCrossLaneEvidence);
     // A visually prominent entry anchor often looks like a weak section
     // heading in isolation. Require a useful margin before confirming it as a
@@ -497,9 +503,12 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       reasons.push('non-section preamble before the first recognized section');
     } else if (commonSection) {
       status = 'confirmed';
-      mode = startsLayoutBand
+      mode = startsLayoutBand || (!persistentGutter && !parallelHeadingPeer)
         ? 'cross-lane'
-        : parallelHeadingPeer || peers.length > 0 || oppositeLaneContinuation
+        : parallelHeadingPeer ||
+            peers.length > 0 ||
+            oppositeLaneContinuation ||
+            !directCrossLaneEvidence
           ? 'lane-local'
           : 'cross-lane';
       confidence += 0.2;
@@ -543,6 +552,19 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       );
     }
 
+    if (
+      persistentGutter &&
+      mode === 'cross-lane' &&
+      (status !== 'confirmed' || !directCrossLaneEvidence)
+    ) {
+      mode = 'lane-local';
+      reasons.push(
+        status === 'confirmed'
+          ? 'persistent gutter blocks cross-lane ownership without local bridge evidence'
+          : 'provisional section cannot cross a persistent gutter'
+      );
+    }
+
     if (horizontalSupport) {
       confidence += 0.05;
       reasons.push('nearby strong horizontal boundary evidence');
@@ -569,6 +591,12 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
     );
     if (verticalZone && mode === 'cross-lane') {
       reasons.push('provisional vertical zones do not limit this scope');
+    } else if (
+      persistentGutter &&
+      mode === 'lane-local' &&
+      !reasons.some((reason) => reason.includes('persistent gutter'))
+    ) {
+      reasons.push('persistent gutter blocks cross-lane ownership without local bridge evidence');
     }
 
     return [{
@@ -632,6 +660,34 @@ interface HorizontalBounds {
   left: number;
   right: number;
   reasons: string[];
+}
+
+function persistentGutterBounds(
+  heading: ResolvedHeading,
+  input: SectionScopeInput
+): HorizontalBounds | null {
+  const activeBox = input.metrics.activeContentBox!;
+  const headingLine = input.lines[heading.candidate.lineIndex]!;
+  const boundary = persistentLaneBoundary(heading.candidate, input);
+  if (!boundary) {
+    return null;
+  }
+  const side = laneSide(headingLine, boundary);
+  if (side === 'left') {
+    return {
+      left: activeBox.x,
+      right: boundary.left,
+      reasons: ['persistent gutter contains this scope to its heading lane']
+    };
+  }
+  if (side === 'right') {
+    return {
+      left: boundary.right,
+      right: right(activeBox),
+      reasons: ['persistent gutter contains this scope to its heading lane']
+    };
+  }
+  return null;
 }
 
 function structuralLanePart(
@@ -759,6 +815,10 @@ function headingArea(
     if (lane) {
       return refineStructuralLane(heading, headings, lane, input);
     }
+    const gutterBounds = persistentGutterBounds(heading, input);
+    if (gutterBounds) {
+      return gutterBounds;
+    }
     return {
       ...laneBounds(heading, headings, input),
       reasons: ['neighboring section headings set fallback horizontal ownership']
@@ -865,6 +925,7 @@ export function establishSectionScopes(input: SectionScopeInput): SectionScope[]
     }
     return {
       headingLineIndex: heading.candidate.lineIndex,
+      kind: heading.candidate.sectionKind,
       lineIndexes,
       box: unionBox(input.lines, lineIndexes),
       status: heading.status,

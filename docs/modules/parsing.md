@@ -160,6 +160,10 @@ confirmed section heading starts a section. A lower heading may split entries
 inside that section only when the pattern repeats in the same lane, nearby body
 text follows, and the short bold anchor is either larger than that body or is
 aligned with a date. The date is optional when the size contrast is present.
+Because some PDFs lose font-weight metadata, confirmed education and experience
+sections also allow a regular-font anchor when it is title-sized, separated
+from preceding content, has strong entry evidence, and has an associated date.
+The section category comes only from an exact normalized heading label.
 
 The first entry stays with its section heading. Each later entry anchor starts
 a region containing its aligned date or metadata and its following body up to
@@ -311,14 +315,16 @@ A job description that wraps over several lines must stay together.
 
 - The best boundary has low confidence.
 
-When a boundary is uncertain, the region is left intact. Splitting a section
-into individual entries, such as separate jobs, is left to AI in Part 2.
+When a boundary is uncertain, the region is left intact. Strongly supported
+entry boundaries may split confirmed education and experience sections;
+ambiguous grouping remains available to AI in Part 2.
 
 ### Geometry, not meaning
 
-The parser finds where sections begin and which lines are headings. It does
-not decide what a section is. Recognizing that a region holds experience,
-education, or skills is meaning, and AI handles it in Part 2.
+The parser finds where sections begin and which lines are headings. It performs
+only narrow semantic routing from exact normalized education and experience
+labels so entry evidence can be interpreted safely. Broader section meaning
+and résumé interpretation remain AI responsibilities in Part 2.
 
 ## Phases
 
@@ -337,6 +343,10 @@ education, or skills is meaning, and AI handles it in Part 2.
 Run `npm run parsing:inspect -- path/to/resume.pdf` to generate an HTML report
 beside the document. For PDFs, the **Parsing levels** section shows the same
 page after each deterministic stage:
+
+Run `npm run parsing:inspect:all` to regenerate the reports beside every PDF
+and DOCX in `testResumes`. Pass a directory after `--` to inspect a different
+fixture directory.
 
 1. extracted PDF text pieces;
 2. pieces reconstructed into lines;

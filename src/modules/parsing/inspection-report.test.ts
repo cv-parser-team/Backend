@@ -85,6 +85,7 @@ describe('parsing inspection report', () => {
         },
         boundaryCandidates: [{
           lineIndex: 0,
+          sectionKind: 'other',
           header: { score: 0.7, reasons: ['title-area prominence'] },
           section: { score: 0.8, reasons: ['bold typography'] },
           entry: { score: 0.4, reasons: ['compact anchor text'] },
@@ -110,6 +111,7 @@ describe('parsing inspection report', () => {
         }],
         sectionScopes: [{
           headingLineIndex: 0,
+          kind: 'other',
           lineIndexes: [0],
           box: traceLine.box,
           status: 'confirmed',
