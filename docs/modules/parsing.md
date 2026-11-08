@@ -1,438 +1,323 @@
-# Document parsing module plan (Part 1)
+# Document parsing module
 
-## Goal
+## Purpose and scope
 
-Turn an uploaded CV (PDF or DOCX) into structured text grouped into layout
-regions, where every line knows its page and position, store the result, and
-keep successful pages when part of a file fails. The parser reconstructs the
-CV's layout from geometry; AI interprets the meaning of each region in Part 2.
+The parsing module turns an uploaded source CV into deterministic, referenced
+text for storage and later AI interpretation.
 
-## Scope
+- PDF output contains positioned pages, regions, and lines.
+- DOCX output contains ordered paragraphs and table blocks; Word documents do
+  not provide stable page geometry.
+- Successful PDF pages are retained when another page fails.
+- Compact AI input is derived from stored output and keeps stable references.
 
-- Extract text from PDF and DOCX source documents.
-- Keep page numbers and on-page coordinates for PDF.
-- Group PDF lines into layout regions (columns, full-width areas, sections) and
-  read them in the correct order.
-- Store one extraction result per document.
-- Keep successful pages and record failed ones.
-- Produce a compact, token-efficient text for AI from the stored result.
-- Leave AI extraction, claims, source occurrences, OCR for scanned CVs,
-  Arabic text, LinkedIn exports, certificate data from evidence documents,
-  and public endpoints to Part 2 or later modules.
+The module does not extract résumé claims or decide the semantic meaning of a
+section. OCR, Arabic reconstruction, evidence-document interpretation, and
+public upload endpoints are outside its scope.
 
-## Design decisions
+## Core design rules
 
-- Add a `parsing` module that receives file bytes and a media type. It does
-  not know where the file came from, so it works before the upload module is
-  finished and later reads files through `documentsService` without changes.
-- Parse `source` documents only; `evidence` documents are not parsed in Part 1.
-- Use the Strategy pattern: one `DocumentParser` contract with a PDF parser
-  and a DOCX parser, chosen by media type. A new format adds one parser without
-  changing the rest.
-- Use `pdfjs-dist` for PDF. It returns text with page numbers and coordinates.
-- Group PDF text into lines. A wide horizontal gap splits a line, so
-  side-by-side columns are not merged.
-- Read what the text extraction of `pdfjs-dist` leaves out from the page's
-  drawing instructions, which are already loaded for font names:
-  - **Bold and italic** come from font names, such as `Calibri-Bold` or
-    `Montserrat-MediumItalic`. Short forms, such as `CenturyGothic-Bd` or
-    `MyriadPro-It`, are read only in the style part after the last `-` or `,`,
-    so they never match inside a family name. Text drawn bold or slanted by
-    other means reads as regular.
-  - **Spaced-out letters**, such as a heading drawn as `A B O U T M E`, get
-    their real word breaks back from the drawn text: `ABOUT ME`.
-  - **List bullets drawn as shapes**, which many design tools and browsers use
-    instead of a `•` character, are found as small shapes just before a line.
-  - **Link targets** hidden behind text, such as "LinkedIn", come from the
-    page's link areas.
-- Text drawn twice at almost the same place, for a shadow or outline effect,
-  is kept once.
-- A line is a heading only when its font is larger than body text. Bold is
-  stored but never starts a section, because bold body-size lines are often
-  job titles or company names.
-- Group lines into layout regions with recursive region detection, described
-  below. Regions are read in order, so the lines of one column are no longer
-  interleaved with the lines of another.
-- Region detection lives in its own file, `layout.ts`. It works on text pieces
-  with bounding boxes, builds lines and regions from them, and knows nothing
-  about PDF. The PDF parser only reads the file and hands over the pieces. OCR
-  output for scanned CVs can later use the same step without changes.
-- The stored result keeps the lines exactly as they appear on the page. Any
-  interpretation, such as joining wrapped lines, happens only when building the
-  AI input, so a wrong guess never ends up stored.
-- Text pieces are used while building lines and are not stored; each stored
-  line keeps its text, page, and position.
-- The reading direction is a parameter, left to right by default, so
-  right-to-left layouts can be supported later without rewriting the
-  algorithm. This does not make Arabic supported: extracting Arabic text
-  itself is still deferred.
-- Store coordinates from the top-left corner, with each page's width and
-  height, so a client can highlight text on the page.
-- Use `mammoth` for DOCX. Word files have no fixed pages or coordinates, so
-  DOCX results contain ordered blocks with `pageCount = null`. A block is
-  either a paragraph or a table. Tables keep their rows and cells, because a
-  row often holds related facts, such as a job title, a company, and dates.
-- DOCX is read through mammoth's HTML output, which keeps headings and table
-  rows. Column headings are kept only when the author marked the row as a
-  table header in Word; the parser never guesses them.
-- Treat a PDF page without a text layer (scanned image) as a page failure
-  `NO_TEXT_LAYER`, and a page that cannot be read as `PAGE_UNREADABLE`; the
-  other pages are kept.
-- Fail the whole file when it cannot be opened (`UNREADABLE` or
-  `PASSWORD_PROTECTED`), when it has no text (`NO_TEXT_LAYER`), or when a PDF
-  has more than 4 pages (`TOO_MANY_PAGES`). Oversized PDFs are rejected before
-  any page is read, to protect the server.
-- Arabic text is not supported yet. PDFs store Arabic in drawing order with
-  special letter forms, so the extracted text comes out reversed. A file whose
-  letters are 5% Arabic or more fails with `UNSUPPORTED_LANGUAGE`; below that,
-  Arabic characters are removed and the rest is kept. The rule applies to PDF
-  and DOCX and lives in one place, `language.ts`.
-- Reject media types without a parser with `415 UNSUPPORTED_DOCUMENT_TYPE`;
-  nothing is saved.
-- Store the extracted content as JSONB. It is read as a whole and never
-  searched with SQL; search happens later on structured claims.
-- Link `document_extractions.document_id` to `documents.document_id`.
-  Deleting a document deletes its extraction.
-- Record the parser library and version with every result.
+- Preserve every extracted line exactly once.
+- Keep extraction facts separate from inferred layout relationships.
+- Treat typography, whitespace, gutters, alignment, and drawn rules as
+  evidence rather than automatic boundaries.
+- Establish likely section and entry relationships before validating
+  destructive splits.
+- Prefer an unsplit region to a split that separates related content.
+- Keep uncertainty and scoring reasons in inspection traces, not persisted
+  output.
+- Keep stored text unchanged; conservative joining belongs to AI formatting.
+- Use geometry and repeated visual structure for layout. AI remains responsible
+  for broader résumé interpretation.
 
-## Layout detection
-
-The parser divides each PDF page into rectangular regions using only text
-positions, alignment, and whitespace. It does not try to understand the CV.
-
-**Status:** region detection is planned and not built yet. The current tests
-prove text extraction and storage only; they do not prove that columns,
-regions, or reading order work.
-
-**Guiding principle:** the goal is a correct split that keeps related
-information together, not the largest number of regions. When in doubt, text
-stays in one region. This makes the parser safer than aggressive splitting.
-
-### Algorithm
-
-1. **Extract lines** with their text and bounding boxes (already done).
-2. **Find candidate boundaries.** Look for column gutters (vertical
-   whitespace) and full-width bands (horizontal whitespace, such as below a
-   header).
-3. **Score each candidate** by combining several signals, described below,
-   and split only along a boundary with high confidence.
-4. **Find section boundaries** inside each region using headings and
-   significant vertical gaps.
-5. **Collect contained text.** Every line inside a region's rectangle belongs
-   to that region, whatever its alignment.
-6. **Repeat recursively** on each new region while confident boundaries exist.
-7. **Order the result:** regions top to bottom; side-by-side regions in the
-   reading direction, each read completely before the next.
-
-### Boundary signals
-
-| Signal | Interpretation |
-| --- | --- |
-| Persistent vertical whitespace | Possible column boundary |
-| Large horizontal whitespace band | Possible section boundary |
-| Similar starting X across many lines | Possibly a column edge |
-| Width of the resulting regions | Very narrow strips are unlikely columns |
-| Line spacing on each side | A weak hint only; it can also come from font size |
-| Significant vertical gap | Possibly a new block |
-| Larger font than body text | Possible section heading |
-| Text inside a rectangle | Belongs to that region, regardless of alignment |
-
-### Combining signals and confidence
-
-Whitespace alone is not enough. A column of short skills next to a column of
-long sentences leaves empty space that is not a column boundary. Each
-candidate boundary therefore gets a confidence score from all signals
-together:
-
-| Situation | Confidence | Decision |
-| --- | --- | --- |
-| Whitespace runs through the whole region and lines align on both sides | High | Split |
-| Whitespace separates two groups, supported by another signal | Medium | Split only with a second signal |
-| Whitespace alone, or a small alignment difference | Low | Keep the region intact |
-
-The score adds up the signals, each measured from 0 to 1 and multiplied by its
-weight:
-
-| Signal | Weight | How it is measured |
-| --- | --- | --- |
-| Gutter continuity | 0.40 | How much of the region's height the empty gap runs through |
-| Alignment | 0.30 | How many lines on each side start at the same X |
-| Region width | 0.15 | Gradual: 0 when the narrower side is under 10% of the region, 1 above 25%, and in between it rises step by step |
-| Heading support | 0.10 | 1 when a heading starts each side, else 0 |
-| Line spacing difference | 0.05 | Spacing divided by line height on each side, so a bigger font does not count as a difference |
-
-- A score of 0.7 or more splits the region.
-- A score from 0.5 to 0.7 splits only when two signals are at least 0.7.
-- A score below 0.5 keeps the region intact.
-
-**This formula is a starting point, not a final decision.** The weights and
-thresholds live in one place and are adjusted after testing on real CVs. The
-confidence of each split is stored with its regions to help that tuning.
-
-### Right-aligned values
-
-A region's width comes from its containing region, not from its first line.
-Values aligned on the right of the same rows, such as dates next to job titles,
-stay in the same region. A narrow strip of short values whose rows line up with
-the rows beside it is not treated as a separate column.
-
-### Tables
-
-In a PDF, a table is usually just text placed at coordinates, not a real
-table. Rows are not assumed to have equal heights, and a cell can span several
-lines. Gaps between table cells look like column gutters. Two checks keep a
-table in one region:
-
-- Table rows sit at the same heights on both sides of the gap, which marks
-  shared rows rather than independent columns.
-- A real column gutter runs through the whole region, while table gaps stop
-  where the table ends.
-
-### Areas above columns
-
-A band of whitespace across the whole region can separate a full-width area,
-such as a header, from the columns below it. The area is read first only when
-it really is full width:
-
-- It crosses the gap between the columns, such as a centred name or a contact
-  line, or
-- it sits on one side of the gap only, such as a name above the main column
-  beside a photo.
-
-Text on both sides of the gap that does not cross it continues the columns,
-even when its lines share rows: a row of section headings, such as `CONTACT`
-above the sidebar and `ABOUT ME` above the main column, or two short sections
-side by side. Each part is read with the column below it.
-
-### Multi-line text
-
-A job description that wraps over several lines must stay together.
-
-- A vertical gap counts as a boundary only when it is clearly larger than the
-  normal line spacing, about twice the usual gap, so wrapped lines are never
-  split into separate regions.
-- Wrapped lines stay separate in the stored result. They are joined only in
-  the AI input, and only when every signal agrees. A missed join keeps two
-  lines apart; a wrong join would mix two facts, so joins are kept strict.
-- Two lines are always required to:
-  - be separated by normal line spacing;
-  - have the same size, bold, and italic style;
-  - not be headings;
-  - not end the first line with `.` or `:`;
-  - not start the second line with a bullet, a date, an email address, a
-    link, or a phone number.
-- On top of that, one of these must hold:
-  - **Wrapped text:** the lines line up, or the second is indented under a
-    bullet character; the next line's first word would not have fitted at the
-    end of the first line, measured by the width of its own column; and the
-    sentence visibly continues: the next line starts in lowercase or with an
-    opening bracket, or the first line ends with a comma or a joining word,
-    such as "and" or "with". Short items in a narrow sidebar, such as a phone
-    number above a city, never pass this check.
-  - **Rest of a list item:** the first line starts a list item, the second has
-    no bullet and lines up with the item's text, and another bullet sits
-    nearby in the same column. A lone dot, such as a timeline marker beside a
-    job title, is not a list, so the line under it is not joined.
-- A heading too long for one line, such as a name in large letters, is joined
-  with the next line when that line is a heading of the same size, right
-  below, and starts or is centred at the same place.
-- In a grid, such as a skills list in three columns, a wrapped cell continues
-  the cell above it in the same column, not the line before it in reading
-  order.
-
-### When recursion stops
-
-- No reliable whitespace, alignment, or heading boundary exists.
-- The region contains only one text block.
-- A further split risks separating closely related content.
-
-- The best boundary has low confidence.
-
-When a boundary is uncertain, the region is left intact. Splitting a section
-into individual entries, such as separate jobs, is left to AI in Part 2.
-
-### Geometry, not meaning
-
-The parser finds where sections begin and which lines are headings. It does
-not decide what a section is. Recognizing that a region holds experience,
-education, or skills is meaning, and AI handles it in Part 2.
-
-## Phases
-
-1. **Text extraction:** PDF and DOCX with page numbers and coordinates (done).
-2. **Region detection:** columns and full-width areas, with scored
-   boundaries (done).
-3. **Section boundaries:** headings and vertical gaps inside regions (done).
-4. **AI input:** compact grouped text with line references, joining wrapped
-   lines (done).
-5. **Real-world testing:** done on the CVs listed under
-   [Testing approach](#testing-approach); CVs from the team, especially
-   two-column CVs made outside Canva, are still to come.
-
-## Testing approach
-
-Fixtures and expected results are written before the algorithm, so "correct"
-is defined first. A correct split is not enough; every test checks that no
-information is lost or misplaced:
-
-| Check | Meaning |
-| --- | --- |
-| No line lost | The number of lines before and after region detection is equal |
-| No line duplicated | Every line belongs to exactly one region |
-| Correct region | Each line is in its expected region, for example a date stays with its job |
-
-Layouts to test:
-
-1. One column
-2. Two columns
-3. Three columns
-4. Sidebar
-5. Tables, including cells that span several lines
-6. Right-aligned dates
-7. Short skills beside long paragraphs
-8. Nested regions: a full-width heading, two columns below it, a section with
-   two paragraphs inside the right column, and a skills list in the left
-   column
-
-How each part is tested:
-
-- **Layout tests** describe each layout as pieces with coordinates written
-  directly in the test, for example a line at `x = 50, y = 100`. No PDF is
-  needed, so every layout is precise, fast, and easy to read, and the expected
-  regions are exact.
-- **PDF tests** use small generated PDFs to confirm that reading a file and
-  detecting regions work together: two columns, a sidebar, a header above
-  columns, a row of headings above a sidebar, hidden links, spaced-out
-  headings, bullets drawn as shapes, and font names with bold and italic
-  styles.
-- **Real CVs** are checked outside the repository and never committed. Each
-  change is compared before and after on all of them, and every changed
-  output is reviewed by eye.
-
-Real CVs used so far:
-
-| Set | What it covers |
-| --- | --- |
-| A team member's CV, PDF and DOCX | One column, hidden links, Arabic rejection |
-| Three Canva templates | Sidebars, rows of headings, spaced-out headings, drawn bullets, cards side by side |
-| 30 CVs from a public dataset, 3 from each of 10 fields | Real wording, tables, grids of skills, rendered from HTML to PDF |
-
-The dataset CVs come with their original HTML, which marks section titles and
-paragraphs. It serves as an answer key: every section title must be found as
-a heading, and every joined line must come from one HTML paragraph. Results
-on the 30 CVs: all 172 section titles found, all text kept, and every join
-correct after review. About 75 wrapped lines in total stay unjoined because
-nothing shows that the sentence continues.
-
-## AI input
-
-The stored result keeps every detail the system needs: text, page numbers, and
-positions. AI receives a compact text built from it on demand, which is not
-stored:
+The critical dependency is:
 
 ```text
-[P1 R0]
-## L1-2 LORNA ALVARADO
-## L3 Sales Representative
-[P1 R1]
-## L4 CONTACT
-L5 123-456-7890
-L6 Links: LinkedIn · GitHub (links: https://www.linkedin.com/in/sample)
+extraction evidence
+-> provisional layout hypotheses
+-> section and entry reasoning across those hypotheses
+-> associations and entry groups
+-> validated splits
+-> final ownership and reading order
+```
+
+A gutter may suggest geometry, but it must not by itself terminate a section,
+prevent a cross-gutter association, or decide ownership.
+
+## Format handling
+
+The parsing service selects a parser by exact media type.
+
+### PDF
+
+`pdfjs-dist` supplies text pieces, page dimensions, transforms, and font data.
+The parser also reads link annotations and drawing operations used for bullets
+and separators. Coordinates are stored in points from the top-left.
+
+- PDFs with more than four pages fail before page extraction.
+- A page without text fails with `NO_TEXT_LAYER`.
+- An unreadable page fails with `PAGE_UNREADABLE`.
+- Other readable pages are retained and the extraction becomes `partial`.
+- Open, password, and language failures apply to the whole file.
+
+### DOCX
+
+`mammoth` HTML output preserves ordered paragraphs, headings, links, and table
+rows. A table keeps its cells and an explicitly marked header row. DOCX output
+has `pageCount = null` and does not use the PDF layout pipeline.
+
+### Language policy
+
+Arabic layout reconstruction is not supported. A file at or above the shared
+Arabic-character threshold fails with `UNSUPPORTED_LANGUAGE`; smaller Arabic
+fragments are removed and the remainder is retained.
+
+Unsupported media types return `415 UNSUPPORTED_DOCUMENT_TYPE` and are not
+saved.
+
+## Component responsibilities
+
+```mermaid
+flowchart LR
+    Caller[Documents service] --> Service[Parsing service]
+    Service --> PDF[PDF parser]
+    Service --> DOCX[DOCX parser]
+    PDF --> Layout[PDF layout pipeline]
+    DOCX --> Blocks[DOCX HTML block builder]
+    Layout --> Result[Extraction result]
+    Blocks --> Result
+    Result --> Repository[Parsing repository]
+    Repository --> Database[(document_extractions)]
+    Result --> AI[AI input builder]
+    Layout -. diagnostic trace .-> Report[Inspection report]
+```
+
+| Component | Responsibility | Must not do |
+| --- | --- | --- |
+| Parsing service | Select a parser by exact media type and persist its result | Interpret CV meaning or contain format-specific parsing rules |
+| PDF parser | Open and validate PDFs; extract page primitives, links, styles, marks, and separators; record page failures | Decide final layout ownership |
+| DOCX parser and HTML builder | Convert DOCX to ordered paragraph/table blocks and preserve explicit Word structure | Invent page coordinates or run the PDF layout pipeline |
+| Language policy | Apply the shared Arabic threshold and remove permitted fragments | Perform OCR or reconstruct Arabic layout |
+| PDF layout pipeline | Reconstruct lines, measure geometry, score candidates, resolve scopes and groups, and produce compatibility plus shadow layouts | Normalize résumé claims or infer broad section meaning |
+| AI input builder | Format stored output into compact text with stable references and conservative joins | Modify stored text or repair incorrect ownership |
+| Parsing repository | Upsert and retrieve one versioned extraction per document | Recompute parsing results or query inside the JSON as domain data |
+| Inspection report | Render stage evidence, scores, associations, ownership, and AI previews for diagnostics | Define persisted behavior or become a production contract |
+
+The documents module owns file metadata, storage, lifecycle status, and the
+decision to invoke parsing. The parsing module owns extraction results from the
+point it receives bytes and a media type.
+
+## PDF layout pipeline
+
+The deterministic trace executes these stages in order.
+
+### 1. Extract page primitives
+
+Collect text pieces and boxes, page dimensions, font/style hints, hidden link
+targets, small drawn marks, and horizontal or vertical separators. Separators
+are distinct from bullet marks. A thin path or rectangle is boundary evidence,
+not an automatic split.
+
+### 2. Reconstruct visual lines
+
+Merge compatible pieces sharing a baseline and ordinary spacing while keeping
+large gaps and repeated lanes separate. This stage removes duplicate overlaid
+text, restores spaced-out heading words when possible, attaches links and
+nearby bullets, and retains geometry and style evidence. It does not classify
+sections, entries, or columns.
+
+### 3. Measure page statistics
+
+Derive page-local body height, ordinary vertical gap, common edges, repeated X
+lanes and row baselines, style clusters, candidate gutters, whitespace bands,
+and separator coverage. Sparse pages use safe fallbacks.
+
+### 4. Score boundary candidates
+
+Each line receives independent evidence for document header, section, entry,
+and ordinary content roles. Non-text candidates come from gutters, whitespace
+bands, separators, and repeated alignment changes. Scores retain their
+reasons, and local context later resolves competing roles.
+
+### 5. Propose macro layout hypotheses
+
+Generate non-destructive candidates for full-width headers or sections,
+sidebars, lane systems, and strong horizontal divisions. Lines may participate
+in multiple hypotheses. Metadata rails, right-aligned dates, tables, cards,
+and skills grids must not become page divisions merely because they leave
+whitespace.
+
+### 6. Establish section scopes
+
+Resolve section candidates using typography, normalized whole-line labels,
+spacing, separators, repeated heading style, lane continuity, same-row peers,
+and the next governing boundary.
+
+A section may span provisional lanes. Parallel scopes require positive
+evidence for independent headings and lane-local structure. A person name or
+job title does not become a section solely because it is short, bold, or
+larger than body text.
+
+### 7. Resolve entries and associations
+
+Entry anchors are resolved only inside confirmed sections. Evidence includes
+repeated anchor style, spacing, aligned metadata, nearby body text, and
+recurring entry geometry. Context may demote a preliminary section candidate
+to an entry anchor.
+
+Before splitting, create associations such as `same-entry`,
+`anchor-metadata`, `anchor-body`, `metadata-body`, `wrapped-line`,
+`same-row-cell`, and `section-content`. Discovery must cross provisional
+gutters when geometry supports a relationship. Connected associations form
+entry groups, including two-rail entries whose metadata and body occupy
+different lanes.
+
+### 8. Validate zones and constrained splits
+
+Validate macro and section-local columns only after scopes and groups exist. A
+split is rejected when it would cut a protected association or entry group,
+remove section ownership, divide wrapped text, or break a shared-row grid.
+
+Separate visual regions may retain the same section parent. A vertical split
+through a section is accepted only when shared ownership remains intact or
+strong evidence establishes independent parallel scopes. Ambiguous candidates
+remain unsplit.
+
+### 9. Resolve final ownership
+
+Produce stable regions with roles such as `independent`, `section`, `entry`,
+and `content`. Assign parent indexes only after region indexes stabilize.
+Every reconstructed line must have exactly one final owner.
+
+### 10. Assign reading order and AI input
+
+Assign order after ownership: page, macro area, section, entry, and then
+anchor/metadata/body when supported; geometry is the fallback. Every line gets
+one unique global order number.
+
+Compact input preserves page, region, role, parent, and line references. It
+may conservatively join wrapped lines or keep unresolved same-row cells
+together, but cannot repair an earlier ownership error.
+
+## Current rollout status
+
+All stages execute in PDF inspection traces. The revised associations, entry
+groups, constrained splits, final ownership, reading order, and AI input
+currently run as a shadow pipeline.
+
+Persisted `ParsedPage` regions and production `buildAiInput` still use the
+compatibility output. Activating revised regions is a separate, versioned
+contract change after fixture review. The shadow pipeline asserts unique
+ownership and makes the proposed replacement inspectable without silently
+changing stored extraction results.
+
+## Heading and role scoring
+
+Heading detection identifies document titles, confirmed section headings,
+uncertain candidates, and body lines without treating every bold line as a
+heading.
+
+### Normalization and vocabulary
+
+Normalize with NFKC, remove trailing `.`/`:`/`|`, collapse whitespace, trim,
+and lowercase. Match the complete normalized line, never a substring:
+`Bachelor of Education` is not the `education` section label.
+
+Common labels and variants live in one exported constant. They cover profile,
+contact, education, experience, skills, projects, certifications, training,
+languages, awards, publications, volunteering, interests, references, and
+additional-information sections. New aliases require focused scoring and
+scope tests.
+
+### Evidence and classification
+
+Positive evidence includes exact labels, larger-than-body typography, bold
+compact text, capitalization, spacing, separators, and repetition matching a
+trusted section style. Negative evidence includes bullets, dates, contact
+values, long sentences, number-dominant metadata, and title-area prominence.
+Negative lines cannot establish a repeated heading style.
+
+Repetition is resolved in two passes. The first finds weak repetition among
+intrinsically heading-shaped lines. Exact labels and strong intrinsic evidence
+then establish reliable anchors. The second pass uses only styles matching
+those anchors, preventing ordinary bold job titles from confirming each other.
+
+Document titles are separate and never open sections. Confirmed headings may
+establish scopes; uncertain candidates remain visible in traces and model
+input but do not split content alone.
+
+## Separator, table, and grid safeguards
+
+A separator contributes boundary evidence when it is thin relative to body
+text, spans a meaningful part of the relevant area, lies between text groups,
+and is supported by nearby spacing or headings.
+
+Never split solely because a rule exists. Underlines, decorative accents,
+timelines, box borders, and repeated table rules are common false positives.
+Repeated parallel rules are table/card evidence before section evidence.
+
+Aligned rows across a gap may represent a table, skills grid, reference cards,
+or title/date pairs. Shared-row structures stay unsplit unless stronger
+independent-section evidence exists.
+
+## Wrapped text and compact AI input
+
+Stored lines remain separate. Model input joins lines only when spacing,
+style, alignment, punctuation, available width, and continuation language
+agree. Dates, contacts, links, bullets, and competing cells veto unsafe joins.
+Wrapped grid cells continue in their own column.
+
+```text
 [P1 R5]
 ## L28 EXPERIENCE
 L29 *Product Designer*
 L30-31 _Arowwai Industries_ | 2016 - 2020
-L32-34 • Led the redesign of the booking flow with engineering and design, cutting drop-off by a third.
-L35 • Ran user interviews and usability tests.
-L39-41,44 • Client Acquisition | • Negotiation Skills | • Relationship Management
+L32-34 • Led the redesign of the booking flow with engineering and design.
 ```
 
-- `[P1 R5]` marks page 1, region 5. Regions are numbered from 0, as stored.
-- `##` marks a heading, `*text*` bold, `_text_` italic, and `•` the start of
-  a list item.
-- `L5` is the line's reading order: the stored line with `order = 5`. No
-  separate map is needed. AI returns line references with each extracted value,
-  and the system finds the line's original text, page, coordinates, and region
-  in the stored result, so AI never writes coordinates.
-- When lines are joined, the reference covers all of them: `L32-34` for lines
-  in a row, or `L39-41,44` when a wrapped cell of a grid continues further
-  down.
-- Cells on the same row are kept on one line, separated by `|`: a title and
-  its right-aligned date, table cells, a grid of skills, or two cards side by
-  side. The parser does not guess whether a grid is a table or separate
-  columns; AI reads the grid as it is drawn.
-- Link targets hidden behind text are listed after it; links already written
-  in the text are not repeated.
-- Coordinates and text pieces are left out. On a real CV, the AI text is about
-  a third of the stored JSON.
-- DOCX blocks use references starting with `B`: `B3` for block 3, and `B4.1`
-  for the first row of the table in block 4. DOCX has no pages, so there are
-  no page markers.
-- Each DOCX table row becomes one line with its cells separated by `|`, so the
-  facts in a row stay together. When the table has column headings, they are
-  listed first, so AI does not have to guess what each cell means:
+`P` identifies the page, `R` the zero-based region, and `L` the globally
+ordered stored line. Joined references cover every contributing line. Hidden
+links are annotated after visible text; coordinates and scores are excluded.
 
-```text
-Columns: Position | Company | Period
-B4.1 Developer | ABC Company | 2023 – 2025
-B4.2 Intern | XYZ Ltd | 2022 – 2023
-```
+DOCX references use `B`, such as `B3` for a paragraph and `B4.1` for the first
+row of table block 4. Same-row cells are separated with `|`.
 
-  A table without headings has no `Columns` line.
+## Output contract and persistence
 
-## Relation to the documents table
+One `document_extractions` row is upserted per document. Deleting the document
+deletes its extraction.
 
-The `documents` module merges the ERD's `SourceDocument` and
-`EvidenceDocument` into one `documents` table with `purpose = source | evidence`.
-Parsing fields from `SourceDocument` move as follows:
+- `status`: `succeeded`, `partial`, or `failed`;
+- `format`: `pdf` or `docx`;
+- `pageCount`: source PDF page count or `null` for DOCX;
+- `content.version`: stored content-shape version;
+- `pages`: positioned PDF pages, regions, and ordered lines;
+- `blocks`: ordered DOCX paragraphs and tables;
+- `failures`: failed PDF page numbers and codes;
+- `parserVersion`: parser library and version.
 
-| ERD field | New location |
-| --- | --- |
-| `parsed_content` | `document_extractions.content` |
-| `failed_portions` | `document_extractions.failures` |
-| `processing_status` | `documents.status` |
-| `error_details` | Short code in `documents.failure_code`; details in `document_extractions.failures` |
-| `attempt_count` | Part 2, with retries |
-| `unmapped_data` | Part 2, with AI extraction |
-
-File fields such as name, format, size, hash, and storage reference stay in
-`documents`. `EvidenceDocument` certificate fields belong to the later evidence
-and verification module.
-
-## Output contract
-
-- `status`: `succeeded`, `partial`, or `failed`
-- `format`: `pdf` or `docx`
-- `pageCount`: number of pages, or `null` for DOCX
-- `content.version`: the version of the content shape, now `3`, so code can
-  tell results of different shapes apart when the shape changes again
-- `pages`: for each page, its number, width, height, and ordered regions; each
-  region has its index, bounding box, split confidence, and lines; each line
-  has its text, bounding box, reading order, and whether it is a heading,
-  bold, italic, or the start of a list item, and its link targets
-- Reading order runs across the whole document, so each line's order is
-  unique and serves as its AI reference.
-- Split confidence is the score of the boundary that created the region. It is
-  `null` when the region was not created by a split, such as a page that stays
-  whole.
-- `blocks`: for DOCX, ordered blocks; a paragraph block has its text, whether
-  it is a heading, bold, or italic, and its link targets; a table block has
-  its column headings when present and its rows, each row a list of cell
-  texts
-- `failures`: failed page numbers with an error code
-- `parserVersion`: library name and version
+PDF lines store text, box, unique order, heading/style/list hints, and links.
+Regions store an index, box, and split confidence. Changing stored JSON shape
+requires incrementing `EXTRACTION_CONTENT_VERSION` and reviewing readers.
 
 ## Data model
 
+`document_extractions` is owned by this module and has a one-to-zero-or-one
+relationship with `documents`. `document_id` is unique, so reparsing replaces
+the existing extraction. The foreign key uses cascade deletion.
+
 ```mermaid
 erDiagram
-    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
+    DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "has extraction"
 
     DOCUMENTS {
         uuid document_id PK
+        uuid owner_user_id FK
         document_purpose purpose
+        text media_type
         document_status status
     }
+
     DOCUMENT_EXTRACTIONS {
         uuid extraction_id PK
         uuid document_id FK, UK
@@ -447,131 +332,85 @@ erDiagram
     }
 ```
 
-- `extraction_status`: `succeeded`, `partial`, `failed`
-- `document_format`: `pdf`, `docx`
-- Parsing a document again replaces its extraction and updates `updated_at`.
-- Region detection changes the shape of `content` only; the table and its
-  migration stay the same.
+| Column | Purpose |
+| --- | --- |
+| `extraction_id` | Generated primary key for the extraction record |
+| `document_id` | Unique parent document; cascades on document deletion |
+| `status` | `succeeded`, `partial`, or `failed` |
+| `format` | `pdf` or `docx` |
+| `page_count` | Positive source PDF page count; `null` for DOCX or an unopened file |
+| `content` | Versioned JSON object containing `pages` and `blocks` |
+| `failures` | Page- or file-level failure codes; defaults to an empty array |
+| `parser_version` | Library name and version that produced the extraction |
+| `created_at`, `updated_at` | Initial and latest extraction timestamps |
 
-## Parsing flow
+The current JSON shape is version `3`:
 
-```mermaid
-sequenceDiagram
-    participant Caller as Documents service
-    participant Parser as Parsing service
-    participant Database
-
-    Caller->>Parser: extract(documentId, content, mediaType)
-    alt Media type has no parser
-        Parser-->>Caller: 415, nothing saved
-    else File cannot be opened or has more than 4 pages
-        Parser->>Database: Save failed extraction
-    else File opens
-        loop Each page
-            Parser->>Parser: Extract lines, page number, coordinates
-            Parser->>Parser: Detect regions and reading order
-            Parser->>Parser: Record page failure if extraction fails
-        end
-        Parser->>Database: Save succeeded or partial extraction
-    end
-    Parser-->>Caller: Extraction result
+```text
+content
+├── version
+├── pages[]                 PDF; empty for DOCX
+│   ├── pageNumber, width, height
+│   └── regions[]
+│       ├── index, box, role, parentIndex, confidence
+│       └── lines[]
+│           └── order, text, box, heading, bold, italic, bullet, links
+└── blocks[]                DOCX; empty for PDF
+    ├── paragraph           index, text, styles, links
+    └── table               index, optional columns, rows
 ```
+
+`failures` is stored outside `content` because it describes extraction status,
+not successfully extracted document content. PDF `page_count` includes failed
+pages. Detailed document metadata and lifecycle status remain in `documents`.
+
+## Diagnostic trace
+
+The inspection report exposes:
+
+1. extracted primitives, marks, and separators;
+2. reconstructed lines;
+3. page metrics and whitespace candidates;
+4. scored text and non-text evidence;
+5. provisional macro hypotheses;
+6. resolved section scopes;
+7. entry candidates, associations, and groups;
+8. validated zones and constrained regions;
+9. final ownership and reading order;
+10. compact AI-input preview.
+
+The trace is not persisted and is not part of the public extraction contract.
+Contributor commands, stage-to-file ownership, debugging steps, and heuristic
+maintenance guidance live in
+[`src/modules/parsing/README.md`](../../src/modules/parsing/README.md).
+
+## Acceptance criteria
+
+Every PDF layout test must prove:
+
+- no line is lost or duplicated;
+- every line has exactly one final region and one stable global order;
+- all boxes remain inside the page;
+- provisional gutters do not limit association discovery or section scope;
+- no final split divides a resolved entry group or protected association;
+- content and entry regions retain section ownership;
+- separate visual regions may share one section parent;
+- independent parallel scopes require positive evidence;
+- ambiguous gutters remain unsplit.
+
+Focused coverage includes reversed metadata/body rails, independent parallel
+sections, education and experience entries across lanes, reference cards,
+skills grids, separators, decorative underlines, table borders, and contextual
+demotion of repeated entry labels.
 
 ## Known limitations
 
-- **Cards side by side**, such as two references, are kept as a grid: one
-  line per row, with the cells separated by `|`. AI pairs each column. The
-  parser does not split them, because geometry cannot tell them apart from a
-  table such as `Skill | Level`, whose rows must stay together.
-- **Rows that happen to line up:** text on both sides of a gap counts as one
-  row when the centres of the lines are within half a line height. A dense
-  column beside a sparse one can then look like a table and stay one region.
-  This did not happen on the real CVs tested; comparing baselines more
-  strictly is a possible next step.
-- **A lone dot**, such as a timeline marker, marks the line beside it as a
-  list item (`•`), although it does not join lines.
-- **Unjoined wrapped lines** remain when nothing shows that the sentence
-  continues, for example a line ending in "a Full" followed by "Stack". AI
-  still reads both lines.
-- **Word breaks of spaced-out letters** are lost when the file does not keep
-  them; `A B O U T M E` then becomes `ABOUTME`.
-- **Bold and italic** come from font names only. Fonts without a weight or
-  slant in their names, or text made bold by drawing it twice, read as
-  regular.
-- **Scanned CVs** fail with `NO_TEXT_LAYER` until OCR is added. `layout.ts`
-  works on positioned text pieces, so OCR output can use it unchanged.
-- **Arabic** is not supported yet.
+- Revised final regions are not yet the persisted production contract.
+- OCR and Arabic layout reconstruction are not implemented.
+- Ambiguous grids remain intentionally unsplit for AI to interpret.
+- Wrapped lines remain separate when continuation evidence is insufficient.
+- Font weight and slant depend on usable font-name metadata.
+- Geometry cannot guarantee ownership without repeated or relational evidence.
 
-## Open questions
-
-- More real CVs from the team are needed, especially two-column CVs made
-  outside Canva and multi-page CVs.
-- Is leaving job-entry splitting to AI acceptable?
-- The starting weights and thresholds for the confidence score were not
-  changed after testing on real CVs. They stay in `LAYOUT_SETTINGS`.
-
-## Implementation
-
-- [x] Review the first plan with the team.
-- [x] Add PDF and DOCX test fixtures.
-- [x] Define the input and output types.
-- [x] Add the PDF reader with pages, lines, and coordinates.
-- [x] Add the DOCX reader with ordered paragraphs.
-- [x] Add partial results and error codes.
-- [x] Add `document_extractions`, its migration, and the repository.
-- [x] Share `parsingService` with other modules.
-- [x] Update the data model documentation.
-- [x] Review the layout detection plan with the team.
-- [x] Move line building from `pdf-parser.ts` to `layout.ts` without changing
-  its behavior; existing tests must still pass.
-- [x] Add fixtures and expected regions for the eight test layouts.
-- [x] Add checks that no line is lost, duplicated, or placed in the wrong region.
-- [x] Add regions, reading order, split confidence, and `content.version` to
-  the output types, and stop storing text pieces.
-- [x] Add recursive region detection for columns and full-width areas, with
-  boundaries scored from combined signals.
-- [x] Make the reading direction a parameter.
-- [x] Add section boundaries from headings and vertical gaps.
-- [x] Keep DOCX headings, table rows, and cells by reading mammoth's HTML.
-- [x] Add the compact AI input with line references, joining wrapped lines.
-- [x] Read hidden link targets from PDF link areas.
-- [x] Keep rows of section headings and side-by-side sections with the columns
-  below them.
-- [x] Read bold and italic from font names, including short forms.
-- [x] Restore word breaks of spaced-out letters and keep one copy of text drawn
-  twice.
-- [x] Find list bullets drawn as shapes and join the rest of a list item.
-- [x] Keep cells of one row on one AI input line and continue wrapped cells in
-  their own column.
-- [ ] Before committing, regenerate the `document_extractions` migration on top
-  of the latest `Main`: another branch also adds a migration numbered `0004`.
-- [ ] Update the open pull request with this work.
-
-## Verification
-
-- [x] Test single-page and multi-page PDFs.
-- [x] Test that each line has the correct page number and a box inside the page.
-- [x] Test scanned, corrupt, password-protected, and oversized PDFs.
-- [x] Test DOCX paragraphs, tables, and empty documents.
-- [x] Test that mostly Arabic PDFs and DOCX files fail and small Arabic
-  fragments are removed.
-- [x] Test that partial results keep successful pages.
-- [x] Test saving, reading, and deleting an extraction with the documents API.
-- [x] Run focused tests, `npm test`, and `npm run build`.
-- [x] Test that two- and three-column CVs are read one column at a time.
-- [x] Test that a full-width header stays above the columns.
-- [x] Test that a row of headings and side-by-side sections stay with the
-  columns below them.
-- [x] Test that right-aligned dates stay with their entries.
-- [x] Test that a column of short skills beside long sentences is split
-  correctly, and that a low-confidence boundary keeps the region intact.
-- [x] Test that PDF tables stay in one region, including cells that span
-  several lines.
-- [x] Test that DOCX tables keep their column headings, rows, and cells.
-- [x] Test that nested splits keep earlier splits intact.
-- [x] Test that multi-line job descriptions stay together.
-- [x] Test that no line is lost or duplicated in every layout.
-- [x] Test the compact AI input and its line references.
-- [x] Test with real CVs of different layouts.
-- [ ] Test with more real CVs from the team.
-- [ ] Have another team member test and review the code.
+When evidence is ambiguous, preserve text and geometry, keep content together,
+and expose the uncertainty to later interpretation.

@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
+import { OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describe, expect, it } from 'vitest';
-import { createPdfParser, MAX_PDF_PAGES } from './pdf-parser.js';
+import {
+  createPdfParser,
+  extractDrawnPrimitives,
+  MAX_PDF_PAGES
+} from './pdf-parser.js';
 import { ExtractionResult, ParsedPage, TextLine } from './parsing.types.js';
 
 async function parseFixture(name: string): Promise<ExtractionResult> {
@@ -16,6 +21,108 @@ function lineTexts(result: ExtractionResult, pageNumber: number): string[] {
   const page = result.pages.find((candidate) => candidate.pageNumber === pageNumber);
   return page ? pageLines(page).map((line) => line.text) : [];
 }
+
+const IDENTITY = [1, 0, 0, 1, 0, 0];
+
+function pathArgs(
+  box: [number, number, number, number],
+  paintOperator?: number
+): unknown[] {
+  return [paintOperator ?? [], [], box];
+}
+
+describe('PDF drawn primitives', () => {
+  it('extracts horizontal and vertical stroked separators with transformed thickness', () => {
+    const horizontal = extractDrawnPrimitives(
+      {
+        fnArray: [OPS.setLineWidth, OPS.constructPath, OPS.stroke],
+        argsArray: [[2], pathArgs([10, 20, 110, 20]), null]
+      },
+      IDENTITY
+    );
+    const vertical = extractDrawnPrimitives(
+      {
+        fnArray: [
+          OPS.save,
+          OPS.transform,
+          OPS.setLineWidth,
+          OPS.constructPath,
+          OPS.stroke,
+          OPS.restore
+        ],
+        argsArray: [null, [2, 0, 0, 2, 5, 7], [1], pathArgs([10, 10, 10, 60]), null, null]
+      },
+      IDENTITY
+    );
+
+    expect(horizontal.separators).toEqual([{
+      orientation: 'horizontal',
+      box: { x: 10, y: 19, width: 100, height: 2 },
+      thickness: 2
+    }]);
+    expect(vertical.separators).toEqual([{
+      orientation: 'vertical',
+      box: { x: 24, y: 27, width: 2, height: 100 },
+      thickness: 2
+    }]);
+  });
+
+  it('keeps thin filled rectangles separate from small bullet marks', () => {
+    const primitives = extractDrawnPrimitives(
+      {
+        fnArray: [
+          OPS.constructPath,
+          OPS.constructPath,
+          OPS.fill
+        ],
+        argsArray: [pathArgs([10, 40, 110, 42], OPS.fill), pathArgs([5, 5, 9, 9]), null]
+      },
+      IDENTITY
+    );
+
+    expect(primitives.separators).toEqual([{
+      orientation: 'horizontal',
+      box: { x: 10, y: 40, width: 100, height: 2 },
+      thickness: 2
+    }]);
+    expect(primitives.marks).toEqual([{ x: 5, y: 5, width: 4, height: 4 }]);
+  });
+
+  it('ignores diagonal and background shapes and deduplicates overlapping rules', () => {
+    const primitives = extractDrawnPrimitives(
+      {
+        fnArray: [
+          OPS.constructPath,
+          OPS.stroke,
+          OPS.constructPath,
+          OPS.fill,
+          OPS.constructPath,
+          OPS.fill,
+          OPS.constructPath,
+          OPS.fill
+        ],
+        argsArray: [
+          pathArgs([10, 10, 100, 100]),
+          null,
+          pathArgs([0, 0, 600, 800]),
+          null,
+          pathArgs([10, 40, 110, 42]),
+          null,
+          pathArgs([10.5, 40, 110.5, 42]),
+          null
+        ]
+      },
+      IDENTITY
+    );
+
+    expect(primitives.separators).toEqual([{
+      orientation: 'horizontal',
+      box: { x: 10, y: 40, width: 100, height: 2 },
+      thickness: 2
+    }]);
+    expect(primitives.marks).toEqual([]);
+  });
+});
 
 describe('pdf parser', () => {
   it('extracts ordered lines from a single page', async () => {
@@ -69,11 +176,18 @@ describe('pdf parser', () => {
     expect(result.pages[1]!.regions[0]!.lines[0]!.order).toBe(pageLines(result.pages[0]!).length + 1);
   });
 
-  it('keeps each unsplit page as one region without a split confidence', async () => {
+  it('keeps the preamble independent while preserving a recognized section', async () => {
     const result = await parseFixture('single-page.pdf');
 
-    expect(result.pages[0]!.regions).toHaveLength(1);
-    expect(result.pages[0]!.regions[0]).toMatchObject({ index: 0, confidence: null });
+    expect(result.pages[0]!.regions).toHaveLength(2);
+    expect(result.pages[0]!.regions[0]).toMatchObject({
+      index: 0,
+      role: 'independent',
+      parentIndex: null,
+      confidence: 0.5
+    });
+    expect(result.pages[0]!.regions[1]).toMatchObject({ role: 'section' });
+    expect(result.pages[0]!.regions[1]!.lines[0]!.text).toBe('Experience');
   });
 
   it('does not merge text from side-by-side columns', async () => {
@@ -85,68 +199,45 @@ describe('pdf parser', () => {
     expect(texts.some((text) => text.includes('Skills') && text.includes('Experience'))).toBe(false);
   });
 
-  it('reads a sidebar and a main column as separate regions in reading order', async () => {
+  it('keeps recognized sidebar and main sections in their own lanes', async () => {
     const result = await parseFixture('sidebar-columns.pdf');
     const regions = result.pages[0]!.regions;
 
-    expect(regions.map((region) => region.lines.map((line) => line.text))).toEqual([
-      ['Contact', 'sample@example.com', '+1 555 0100', 'Springfield', 'Skills', 'Node.js', 'PostgreSQL', 'Docker', 'Git'],
-      [
-        'Sample Candidate',
-        'Backend Developer',
-        'Experience',
-        'Backend Developer at Example Corp',
-        '2021 - 2023',
-        'Built REST APIs for the payments team and',
-        'improved slow database queries.',
-        'Junior Developer at Sample Labs',
-        '2019 - 2021',
-        'Maintained internal tools and wrote tests.',
-        'Education',
-        'BSc Computer Science, Sample University'
-      ]
-    ]);
-    expect(regions.every((region) => region.confidence !== null)).toBe(true);
+    expect(regions.filter((region) => region.role === 'section').map(
+      (region) => region.lines[0]!.text
+    )).toEqual(['Contact', 'Experience', 'Skills', 'Education']);
     expect(pageLines(result.pages[0]!).map((line) => line.order)).toEqual(
       Array.from({ length: 21 }, (_, index) => index + 1)
     );
   });
 
-  it('reads a full-width header before the columns under it', async () => {
+  it('keeps a full-width header before independently scoped columns', async () => {
     const result = await parseFixture('header-columns.pdf');
 
-    expect(result.pages[0]!.regions.map((region) => region.lines.map((line) => line.text))).toEqual([
-      ['Sample Candidate', 'Backend Developer - sample@example.com - +1 555 0100 - Springfield'],
-      [
-        'Experience',
-        'Backend Developer, Example Corp',
-        '2021 - 2023',
-        'Built REST APIs and services.',
-        'Junior Developer, Sample Labs',
-        '2019 - 2021',
-        'Maintained internal tools.'
-      ],
-      ['Skills', 'Node.js, PostgreSQL, Docker', 'Languages', 'English - fluent', 'German - basic']
+    expect(result.pages[0]!.regions.map((region) => region.role)).toEqual([
+      'independent',
+      'section',
+      'section',
+      'section'
     ]);
+    expect(lineTexts(result, 1)).toEqual(expect.arrayContaining([
+      'Sample Candidate',
+      'Experience',
+      'Skills',
+      'Languages'
+    ]));
   });
 
-  it('keeps a row of section headings with the columns under it', async () => {
+  it('keeps parallel recognized headings in lane-local sections', async () => {
     const result = await parseFixture('sidebar-headings.pdf');
 
-    expect(result.pages[0]!.regions.map((region) => region.lines.map((line) => line.text))).toEqual([
-      ['Sample Candidate', 'Backend Developer'],
-      ['Contact', '+1 555 0100', 'sample@example.com', 'Springfield', 'Skills', 'Node.js', 'Docker'],
-      [
-        'About Me',
-        'Backend developer with five years of experience',
-        'building REST APIs and services for logistics',
-        'and retail companies.',
-        'Experience',
-        'Backend Developer at Example Corp',
-        '2021 - 2023',
-        'Built tracking and billing services.'
-      ]
-    ]);
+    expect(result.pages[0]!.regions.filter((region) => region.role === 'section')).toHaveLength(4);
+    expect(lineTexts(result, 1)).toEqual(expect.arrayContaining([
+      'Contact',
+      'About Me',
+      'Skills',
+      'Experience'
+    ]));
   });
 
   it('reads bold and italic from font names, including short forms', async () => {
@@ -166,10 +257,10 @@ describe('pdf parser', () => {
     expect(pageLines(result.pages[0]!).map((line) => [line.text, line.bullet])).toEqual([
       ['KEY SKILLS', false],
       ['Client Acquisition', true],
-      ['Relationship', true],
       ['B2B Sales', true],
-      ['Management', false],
       ['Negotiation', true],
+      ['Relationship', true],
+      ['Management', false],
       ['Market Analysis', true]
     ]);
   });

@@ -116,7 +116,7 @@ describe('ai input for pdf pages', () => {
     ]);
   });
 
-  it('keeps the cells of one row on one line', () => {
+  it('keeps same-row values as independent lines', () => {
     const input = pdfInput([
       page(1, [
         region(1, [
@@ -132,14 +132,17 @@ describe('ai input for pdf pages', () => {
     ]);
 
     expect(input.split('\n').slice(1)).toEqual([
-      'L1-2 *Backend Developer, Example Corp* | *Oct 2023 - Present*',
+      'L1 *Backend Developer, Example Corp*',
+      'L2 *Oct 2023 - Present*',
       'L3 Built tracking and billing services for the payments',
-      'L4-5 *Harumi Kobayashi* | *Bailey Dupont*',
-      'L6-7 Phone: 123-456-7890 | Phone: 123-456-7891'
+      'L4 *Harumi Kobayashi*',
+      'L5 *Bailey Dupont*',
+      'L6 Phone: 123-456-7890',
+      'L7 Phone: 123-456-7891'
     ]);
   });
 
-  it('continues a wrapped cell of a grid in its own column', () => {
+  it('does not infer grid cells from repeated line positions', () => {
     const input = pdfInput([
       page(1, [
         region(1, [
@@ -154,12 +157,16 @@ describe('ai input for pdf pages', () => {
     ]);
 
     expect(input.split('\n').slice(1)).toEqual([
-      'L1-4 Classically trained chef proficient in food production | Expertise with protocol and table service for many settings',
-      'L5-6 Fast learner | Team player'
+      'L1 Classically trained chef proficient in',
+      'L2 Expertise with protocol and table',
+      'L3 food production',
+      'L4 service for many settings',
+      'L5 Fast learner',
+      'L6 Team player'
     ]);
   });
 
-  it('joins the rest of a list item that has no bullet of its own', () => {
+  it('does not join list fragments across interleaved lines', () => {
     const input = pdfInput([
       page(1, [
         region(1, [
@@ -174,9 +181,12 @@ describe('ai input for pdf pages', () => {
     ]);
 
     expect(input.split('\n').slice(1)).toEqual([
-      'L1-2,4 • Client Acquisition | • Relationship Management',
+      'L1 • Client Acquisition',
+      'L2 • Relationship',
       'L3 • B2B Sales',
-      'L5-6 • Negotiation | • Market Analysis'
+      'L4 Management',
+      'L5 • Negotiation',
+      'L6 • Market Analysis'
     ]);
   });
 
@@ -241,7 +251,7 @@ describe('ai input for pdf pages', () => {
     ]);
   });
 
-  it('marks a row of headings as a heading', () => {
+  it('marks same-row headings independently', () => {
     const input = pdfInput([
       page(1, [
         region(1, [
@@ -251,7 +261,10 @@ describe('ai input for pdf pages', () => {
       ])
     ]);
 
-    expect(input.split('\n').slice(1)).toEqual(['## L1-2 Harumi Kobayashi | Bailey Dupont']);
+    expect(input.split('\n').slice(1)).toEqual([
+      '## L1 Harumi Kobayashi',
+      '## L2 Bailey Dupont'
+    ]);
   });
 
   it('joins a description that wraps over several lines', () => {
