@@ -2,10 +2,9 @@
 
 This file is the fast path for changing `src/modules/parsing`. It describes the
 implemented pipeline and the precedence rules that are easiest to miss when
-working on layout bugs. The longer rationale lives in
-[`docs/modules/parsing.md`](../../../docs/modules/parsing.md), and heading
-scoring is described in
-[`docs/modules/parsing-heading-detection.md`](../../../docs/modules/parsing-heading-detection.md).
+working on layout bugs. The longer rationale, heading-scoring rules, rollout
+status, and acceptance criteria live in
+[`docs/modules/parsing.md`](../../../docs/modules/parsing.md).
 
 ## What this module owns
 
@@ -30,7 +29,7 @@ Use these sources in this order when investigating existing behavior:
    remain stable.
 3. The current stage implementation and its exported settings/constants.
 4. This README as a navigation and decision guide.
-5. `docs/modules/parsing*.md` for design rationale and planned behavior.
+5. `docs/modules/parsing.md` for design rationale and planned behavior.
 
 If these disagree, do not silently choose one. Determine whether the code has
 drifted from the intended design, then update the implementation, focused
@@ -51,7 +50,7 @@ parsing service
      -> propose macro layout zones
      -> establish section scopes
      -> resolve entries inside sections
-     -> resolve final ownership and reading order
+     -> resolve shadow final ownership and reading order
   -> save/upsert extraction
   -> optionally build compact AI input
 ```
@@ -95,9 +94,10 @@ These rules matter more than an individual score or rectangle:
 5. **Common section labels have the strongest semantic authority.** Exact,
    normalized whole-line matches may establish a section. Never use substring
    matching: `Bachelor of Education` is not the `Education` label.
-6. **Persistent gutters constrain ownership.** A section stays lane-local
-   unless there is sufficient evidence that it governs content across the
-   gutter. Same-row section peers normally own independent lanes.
+6. **Persistent gutters remain provisional.** They may suggest lanes, but do
+   not limit section or association discovery. A section becomes lane-local
+   only with positive independent-scope evidence; same-row section peers are
+   one such signal, not an automatic decision.
 7. **Page-wide bands close earlier lanes.** A supported standalone heading can
    end parallel scopes above it. A same-row heading pair continues independent
    lane-local structure instead.
@@ -109,9 +109,11 @@ These rules matter more than an individual score or rectangle:
 9. **Entry groups are indivisible downstream.** Column validation must reject
    boundaries that cut an established entry group. Section-local column
    detection excludes entry-owned lines.
-10. **Final ownership is authoritative.** `resolveFinalLayout` assigns every
-    reconstructed line to exactly one region and lists it exactly once in that
-    region's reading order. The runtime assertion is intentional.
+10. **Shadow final ownership is internally authoritative.**
+    `resolveFinalLayout` assigns every reconstructed line to exactly one shadow
+    region and lists it exactly once in that region's reading order. The
+    runtime assertion is intentional; persisted regions still use the
+    compatibility pipeline until the versioned rollout.
 11. **Stored text precedes model convenience.** Line joining, style markers,
     hidden-link annotation, and line references belong in `ai-input.ts`, not in
     stored line reconstruction.
