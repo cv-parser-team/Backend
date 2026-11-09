@@ -40,9 +40,12 @@ export interface DocumentsRepository {
     ownerUserId: string,
     documentId: string
   ): Promise<DocumentRecord | null>;
+  findDocumentById(documentId: string): Promise<DocumentRecord | null>;
   findDocumentByChecksum(
     input: FindDocumentByChecksumInput
   ): Promise<DocumentRecord | null>;
+  markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
   updateDocumentStatus(
     input: UpdateDocumentStatusInput
   ): Promise<DocumentRecord | null>;
@@ -126,6 +129,18 @@ export function createDocumentsRepository(
       });
     },
 
+    async findDocumentById(documentId) {
+      return withDbErrors('Document', async () => {
+        const [document] = await database.db
+          .select()
+          .from(documents)
+          .where(eq(documents.documentId, documentId))
+          .limit(1);
+
+        return document ?? null;
+      });
+    },
+
     async findDocumentByChecksum(input) {
       return withDbErrors('Document', async () => {
         const [document] = await database.db
@@ -141,6 +156,40 @@ export function createDocumentsRepository(
           .limit(1);
 
         return document ?? null;
+      });
+    },
+
+    async markDocumentProcessing(documentId) {
+      return withDbErrors('Document', async () => {
+        const [processingDocument] = await database.db
+          .update(documents)
+          .set({ status: 'processing', failureCode: null })
+          .where(
+            and(
+              eq(documents.documentId, documentId),
+              eq(documents.status, 'stored')
+            )
+          )
+          .returning();
+
+        return processingDocument ?? null;
+      });
+    },
+
+    async markDocumentReady(documentId) {
+      return withDbErrors('Document', async () => {
+        const [readyDocument] = await database.db
+          .update(documents)
+          .set({ status: 'ready', failureCode: null })
+          .where(
+            and(
+              eq(documents.documentId, documentId),
+              eq(documents.status, 'processing')
+            )
+          )
+          .returning();
+
+        return readyDocument ?? null;
       });
     },
 

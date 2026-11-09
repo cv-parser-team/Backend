@@ -50,6 +50,13 @@
       "when": 1794209936547,
       "tag": "0006_wise_magdalene",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794217592840,
+      "tag": "0007_clear_beast",
+      "breakpoints": true
     }
   ]
 }

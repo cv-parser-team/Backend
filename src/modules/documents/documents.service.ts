@@ -46,7 +46,13 @@ export interface OrphanCleanupResult {
   failures: OrphanCleanupFailure[];
 }
 
-export interface DocumentsService {
+export interface ProcessingDocumentsService {
+  markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  openDocumentForProcessing(documentId: string): Promise<DocumentContent>;
+}
+
+export interface DocumentsService extends ProcessingDocumentsService {
   cleanupDeletingDocuments(): Promise<DocumentCleanupResult>;
   cleanupOrphanedObjects(olderThan: Date): Promise<OrphanCleanupResult>;
   listDocuments(
@@ -235,6 +241,23 @@ export function createDocumentsService({
     },
     async openDocument(ownerUserId, documentId) {
       const document = await repository.findDocument(ownerUserId, documentId);
+
+      if (!document) {
+        throw new RecordNotFoundError('Document', documentId);
+      }
+
+      const stream = await storage.open(document.storageKey);
+
+      return { document, stream };
+    },
+    markDocumentProcessing(documentId) {
+      return repository.markDocumentProcessing(documentId);
+    },
+    markDocumentReady(documentId) {
+      return repository.markDocumentReady(documentId);
+    },
+    async openDocumentForProcessing(documentId) {
+      const document = await repository.findDocumentById(documentId);
 
       if (!document) {
         throw new RecordNotFoundError('Document', documentId);

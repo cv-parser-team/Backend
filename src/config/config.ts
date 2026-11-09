@@ -63,6 +63,11 @@ export const config = {
   db: {
     url: extractOrThrow('DATABASE_URL')
   },
+  messaging: {
+    rabbitMqUrl:
+      process.env.RABBITMQ_URL ||
+      'amqp://luminacv:luminacvpassword@localhost:5672'
+  },
   auth: {
     jwtSecret,
     issuer: extractOrThrow('JWT_ISSUER'),

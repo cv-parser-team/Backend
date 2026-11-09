@@ -47,3 +47,9 @@ describe('document storage configuration', () => {
     ).toThrow('TEST_PRIVATE_DIRECTORY must not be a filesystem root');
   });
 });
+
+describe('messaging configuration', () => {
+  it('exposes a RabbitMQ connection URL', () => {
+    expect(config.messaging.rabbitMqUrl).toMatch(/^amqps?:\/\//);
+  });
+});

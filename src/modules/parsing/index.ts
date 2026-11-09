@@ -25,3 +25,5 @@ export const parsingModule = fastifyPlugin(registerParsing, {
   name: 'parsing',
   dependencies: ['database']
 });
+
+export type { ParsingService } from './parsing.service.js';
