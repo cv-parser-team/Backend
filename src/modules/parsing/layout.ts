@@ -1,4 +1,35 @@
-import { BoundingBox, ParsedPage, Region, TextLine, TextPiece } from './parsing.types.js';
+import {
+  BoundingBox,
+  DrawnSeparator,
+  ParsedPage,
+  Region,
+  TextLine,
+  TextPiece
+} from './parsing.types.js';
+import {
+  generateBoundaryCandidates,
+  type BoundaryCandidate,
+  type NonTextBoundaryCandidate
+} from './boundary-candidates.js';
+import {
+  generateLayoutZoneCandidates,
+  type LayoutZoneCandidate
+} from './macro-layout.js';
+import {
+  establishSectionScopes,
+  type SectionScope
+} from './section-scopes.js';
+import {
+  resolveEntries,
+  type EntryGroup,
+  type ResolvedEntryAnchor
+} from './entry-groups.js';
+import {
+  resolveFinalLayout,
+  type FinalRegionDraft,
+  type SectionColumn,
+  type ValidatedLayoutZone
+} from './final-layout.js';
 
 // Layout works on text pieces with page coordinates and knows nothing about
 // the file format, so any source of positioned text can use it.
@@ -10,9 +41,82 @@ export interface PositionedPage {
   pieces: TextPiece[];
   // Small drawn shapes, such as list bullets drawn as dots.
   marks: BoundingBox[];
+  // Thin drawn rules. Stage 1 preserves them for inspection but does not use
+  // them to change layout decisions.
+  separators: DrawnSeparator[];
 }
 
-type LineDraft = Omit<TextLine, 'order'>;
+// Stage 2 output: visual text reconstructed from PDF pieces, before any
+// heading, section, entry, or column inference.
+export type LayoutLine = Omit<TextLine, 'order' | 'heading'>;
+
+export interface MetricCluster {
+  value: number;
+  count: number;
+  share: number;
+}
+
+export interface StyleCluster {
+  height: number;
+  bold: boolean;
+  italic: boolean;
+  count: number;
+  share: number;
+}
+
+export interface WhitespaceCandidate {
+  box: BoundingBox;
+  size: number;
+  coverage: number;
+}
+
+export interface SeparatorCoverage {
+  separatorIndex: number;
+  coverage: number;
+}
+
+// Stage 3 output: page-local observations only. Candidates in this structure
+// do not split lines, establish ownership, or classify document roles.
+export interface PageMetrics {
+  usualBodyHeight: number;
+  usualVerticalGap: number;
+  activeContentBox: BoundingBox | null;
+  leftEdges: MetricCluster[];
+  rightEdges: MetricCluster[];
+  rowBaselines: MetricCluster[];
+  heightClusters: MetricCluster[];
+  styleClusters: StyleCluster[];
+  verticalGutters: WhitespaceCandidate[];
+  horizontalBands: WhitespaceCandidate[];
+  separatorCoverage: SeparatorCoverage[];
+}
+
+export interface LayoutTracePage {
+  pageNumber: number;
+  width: number;
+  height: number;
+  pieces: TextPiece[];
+  marks: BoundingBox[];
+  separators: DrawnSeparator[];
+  reconstructedLines: LayoutLine[];
+  metrics: PageMetrics;
+  boundaryCandidates: BoundaryCandidate[];
+  nonTextBoundaryCandidates: NonTextBoundaryCandidate[];
+  layoutZoneCandidates: LayoutZoneCandidate[];
+  sectionScopes: SectionScope[];
+  entryAnchors: ResolvedEntryAnchor[];
+  entryGroups: EntryGroup[];
+  validatedZones: ValidatedLayoutZone[];
+  sectionColumns: SectionColumn[];
+  finalRegions: FinalRegionDraft[];
+  revisedAiInputLines: string[];
+}
+
+export interface LayoutTrace {
+  usualHeight: number;
+  usualGap: number;
+  pages: LayoutTracePage[];
+}
 
 // A bullet character or a list number at the start of a line.
 export const BULLET = /^([•●▪◦‣∙·*\-–—]|\d+[.)])\s/;
@@ -34,7 +138,7 @@ function unionBox(boxes: BoundingBox[]): BoundingBox {
   return { x: round(left), y: round(top), width: round(right - left), height: round(bottom - top) };
 }
 
-function toLine(pieces: TextPiece[]): LineDraft {
+function toLine(pieces: TextPiece[]): LayoutLine {
   let text = '';
   pieces.forEach((piece, index) => {
     const previous = pieces[index - 1];
@@ -51,7 +155,6 @@ function toLine(pieces: TextPiece[]): LineDraft {
   return {
     text: text.trim(),
     box: unionBox(pieces.map((piece) => piece.box)),
-    heading: false,
     bold: styledLength('bold') * 2 > text.length,
     italic: styledLength('italic') * 2 > text.length,
     bullet: BULLET.test(text.trim()),
@@ -61,7 +164,7 @@ function toLine(pieces: TextPiece[]): LineDraft {
 
 // A mark no taller than the line, just before its start and level with it,
 // is a list bullet drawn as a shape.
-function markBullets(lines: LineDraft[], marks: BoundingBox[]): LineDraft[] {
+function markBullets(lines: LayoutLine[], marks: BoundingBox[]): LayoutLine[] {
   return lines.map((line) => {
     const { x, y, height } = line.box;
     const drawnBullet = marks.some((mark) => {
@@ -100,8 +203,8 @@ function withoutOverlaidCopies(pieces: TextPiece[]): TextPiece[] {
 }
 
 // Pieces at the same height form a row. A wide horizontal gap splits a row
-// into separate lines, so columns side by side are not merged.
-function groupLines(pieces: TextPiece[]): LineDraft[] {
+// into separate lines.
+function groupLines(pieces: TextPiece[]): LayoutLine[] {
   const sorted = withoutOverlaidCopies(pieces).sort(
     (a, b) => a.box.y - b.box.y || a.box.x - b.box.x
   );
@@ -138,53 +241,25 @@ function groupLines(pieces: TextPiece[]): LineDraft[] {
   });
 }
 
+// Reconstruct visual lines without assigning semantic or layout authority.
+// Separators deliberately do not participate in this stage.
+export function reconstructLines(
+  pieces: TextPiece[],
+  marks: BoundingBox[]
+): LayoutLine[] {
+  return markBullets(groupLines(pieces), marks);
+}
+
 // Starting values for region detection, kept in one place so they can be
 // tuned on real CVs.
 export const LAYOUT_SETTINGS = {
-  weights: {
-    gutterContinuity: 0.4,
-    alignment: 0.3,
-    regionWidth: 0.15,
-    headingSupport: 0.1,
-    lineSpacing: 0.05
-  },
-  splitScore: 0.7,
-  supportedSplitScore: 0.5,
-  strongSignal: 0.7,
-  // Shares of the region width between which the narrower side's width
-  // signal rises from 0 to 1.
-  narrowWidthShare: 0.1,
-  wideWidthShare: 0.25,
   // A gutter must be at least this many line heights wide.
   minGutterLineHeights: 1.5,
   // Lines starting within this many points share a left edge.
   alignmentTolerance: 3,
-  // When this share of one side's lines sits on the same rows as the other
-  // side, the gap separates cells of shared rows (a table or right-aligned
-  // dates), not columns.
-  sharedRowShare: 0.8,
-  // A vertical gap this many times the usual gap may start a new section.
-  sectionGapRatio: 2,
-  // Lines this many times taller than the usual line are headings.
+  // Used only when compact AI input decides whether adjacent heading lines wrap.
   headingHeightRatio: 1.15,
-  readingDirection: 'ltr' as 'ltr' | 'rtl'
 };
-
-interface RegionDraft {
-  lines: LineDraft[];
-  confidence: number | null;
-}
-
-interface Split {
-  parts: [LineDraft[], LineDraft[]];
-  confidence: number;
-}
-
-interface ColumnSplit extends Split {
-  // The empty band between the columns, from the right edge of the left
-  // column to the left edge of the right column.
-  gutter: { left: number; right: number };
-}
 
 function median(values: number[]): number {
   if (values.length === 0) {
@@ -199,10 +274,6 @@ function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function byReadingPosition(a: LineDraft, b: LineDraft): number {
-  return a.box.y - b.box.y || a.box.x - b.box.x;
-}
-
 function right(box: BoundingBox): number {
   return box.x + box.width;
 }
@@ -211,23 +282,9 @@ function centerY(box: BoundingBox): number {
   return box.y + box.height / 2;
 }
 
-// Gaps between consecutive lines from top to bottom; overlapping lines count
-// as no gap.
-function verticalGaps(lines: LineDraft[]): { gap: number; below: number }[] {
-  const sorted = [...lines].sort(byReadingPosition);
-  const gaps: { gap: number; below: number }[] = [];
-  let bottom = sorted[0] ? sorted[0].box.y + sorted[0].box.height : 0;
-  for (let index = 1; index < sorted.length; index++) {
-    const line = sorted[index]!;
-    gaps.push({ gap: Math.max(0, line.box.y - bottom), below: index });
-    bottom = Math.max(bottom, line.box.y + line.box.height);
-  }
-  return gaps;
-}
-
 // The spaces between each line and the line above it in the same column, so
 // lines of side-by-side columns do not shrink them.
-function lineGaps(lines: LineDraft[]): number[] {
+function lineGaps(lines: LayoutLine[]): number[] {
   return lines.flatMap((line) => {
     const above = lines.filter(
       (other) =>
@@ -244,219 +301,365 @@ function lineGaps(lines: LineDraft[]): number[] {
   });
 }
 
-function shareWithCommonLeftEdge(lines: LineDraft[]): number {
-  const best = Math.max(
-    ...lines.map(
-      (candidate) =>
-        lines.filter(
-          (line) => Math.abs(line.box.x - candidate.box.x) <= LAYOUT_SETTINGS.alignmentTolerance
-        ).length
-    )
-  );
-  return best / lines.length;
+function clusterValues(values: number[], tolerance: number): MetricCluster[] {
+  if (values.length === 0) {
+    return [];
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const groups: number[][] = [];
+  for (const value of sorted) {
+    const group = groups[groups.length - 1];
+    if (group && Math.abs(value - median(group)) <= tolerance) {
+      group.push(value);
+    } else {
+      groups.push([value]);
+    }
+  }
+  return groups
+    .map((group) => ({
+      value: round(median(group)),
+      count: group.length,
+      share: round(group.length / values.length)
+    }))
+    .sort((a, b) => b.count - a.count || a.value - b.value);
 }
 
-function shareOnSharedRows(lines: LineDraft[], others: LineDraft[]): number {
-  const shared = lines.filter((line) =>
-    others.some(
-      (other) =>
-        Math.abs(centerY(line.box) - centerY(other.box)) <=
-        Math.min(line.box.height, other.box.height) / 2
-    )
-  ).length;
-  return shared / lines.length;
-}
-
-function normalizedSpacing(lines: LineDraft[]): number {
-  const height = median(lines.map((line) => line.box.height));
-  return height === 0 ? 0 : median(verticalGaps(lines).map(({ gap }) => gap)) / height;
-}
-
-// Scores a gap between left and right groups of lines from several signals.
-// The gap runs through the whole region, because no line crosses it.
-function scoreColumnSplit(left: LineDraft[], rightLines: LineDraft[], regionWidth: number): number {
-  const settings = LAYOUT_SETTINGS;
-  if (
-    Math.max(shareOnSharedRows(left, rightLines), shareOnSharedRows(rightLines, left)) >=
-    settings.sharedRowShare
-  ) {
+function usualClusterValue(values: number[], tolerance: number): number {
+  if (values.length === 0) {
     return 0;
   }
+  const clusters = clusterValues(values, tolerance);
+  const repeated = clusters.filter((cluster) => cluster.count > 1);
+  return repeated.length > 0 ? repeated[0]!.value : round(median(values));
+}
 
-  const width = (lines: LineDraft[]) =>
-    Math.max(...lines.map((line) => right(line.box))) - Math.min(...lines.map((line) => line.box.x));
-  const narrowerShare = Math.min(width(left), width(rightLines)) / regionWidth;
-  const top = (lines: LineDraft[]) => [...lines].sort(byReadingPosition)[0]!;
-  const signals = {
-    gutterContinuity: 1,
-    alignment: (shareWithCommonLeftEdge(left) + shareWithCommonLeftEdge(rightLines)) / 2,
-    regionWidth: clamp(
-      (narrowerShare - settings.narrowWidthShare) /
-        (settings.wideWidthShare - settings.narrowWidthShare)
+function coveredLength(ranges: { start: number; end: number }[]): number {
+  if (ranges.length === 0) {
+    return 0;
+  }
+  const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
+  let total = 0;
+  let start = sorted[0]!.start;
+  let end = sorted[0]!.end;
+  for (const range of sorted.slice(1)) {
+    if (range.start <= end) {
+      end = Math.max(end, range.end);
+    } else {
+      total += end - start;
+      start = range.start;
+      end = range.end;
+    }
+  }
+  return total + end - start;
+}
+
+function styleClusters(lines: LayoutLine[], heightTolerance: number): StyleCluster[] {
+  const groups: { lines: LayoutLine[]; bold: boolean; italic: boolean }[] = [];
+  for (const line of [...lines].sort((a, b) => a.box.height - b.box.height)) {
+    const group = groups.find(
+      (candidate) =>
+        candidate.bold === line.bold &&
+        candidate.italic === line.italic &&
+        Math.abs(median(candidate.lines.map((item) => item.box.height)) - line.box.height) <=
+          heightTolerance
+    );
+    if (group) {
+      group.lines.push(line);
+    } else {
+      groups.push({ lines: [line], bold: line.bold, italic: line.italic });
+    }
+  }
+  return groups
+    .map((group) => ({
+      height: round(median(group.lines.map((line) => line.box.height))),
+      bold: group.bold,
+      italic: group.italic,
+      count: group.lines.length,
+      share: round(group.lines.length / lines.length)
+    }))
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.height - b.height ||
+        Number(a.bold) - Number(b.bold) ||
+        Number(a.italic) - Number(b.italic)
+    );
+}
+
+function verticalGutterCandidates(
+  lines: LayoutLine[],
+  activeBox: BoundingBox,
+  usualBodyHeight: number
+): WhitespaceCandidate[] {
+  const minimumWidth = Math.max(3, usualBodyHeight * LAYOUT_SETTINGS.minGutterLineHeights);
+  const repeatedRightEdges = clusterValues(
+    lines.map((line) => right(line.box)),
+    LAYOUT_SETTINGS.alignmentTolerance
+  ).filter((cluster) => cluster.count >= 2);
+  const repeatedLeftEdges = clusterValues(
+    lines.map((line) => line.box.x),
+    LAYOUT_SETTINGS.alignmentTolerance
+  ).filter((cluster) => cluster.count >= 2);
+  const candidates: WhitespaceCandidate[] = [];
+  for (const leftEdge of repeatedRightEdges) {
+    const rightEdge = repeatedLeftEdges
+      .filter((cluster) => cluster.value - leftEdge.value >= minimumWidth)
+      .sort((a, b) => a.value - b.value)[0];
+    if (!rightEdge) {
+      continue;
+    }
+    const crossingRanges = lines
+      .filter(
+        (line) => line.box.x < rightEdge.value && right(line.box) > leftEdge.value
+      )
+      .map((line) => ({ start: line.box.y, end: line.box.y + line.box.height }));
+    const coverage = activeBox.height === 0
+      ? 0
+      : clamp(1 - coveredLength(crossingRanges) / activeBox.height);
+    if (coverage < 0.6) {
+      continue;
+    }
+    candidates.push({
+      box: {
+        x: leftEdge.value,
+        y: activeBox.y,
+        width: round(rightEdge.value - leftEdge.value),
+        height: activeBox.height
+      },
+      size: round(rightEdge.value - leftEdge.value),
+      coverage: round(coverage)
+    });
+  }
+  return candidates
+    .sort((a, b) => b.coverage - a.coverage || b.size - a.size || a.box.x - b.box.x)
+    .filter(
+      (candidate, index, sorted) =>
+        sorted.findIndex(
+          (other) =>
+            Math.abs(other.box.x - candidate.box.x) <= LAYOUT_SETTINGS.alignmentTolerance &&
+            Math.abs(right(other.box) - right(candidate.box)) <= LAYOUT_SETTINGS.alignmentTolerance
+        ) === index
+    );
+}
+
+function horizontalBandCandidates(
+  lines: LayoutLine[],
+  activeBox: BoundingBox,
+  usualBodyHeight: number
+): WhitespaceCandidate[] {
+  const occupied = [...lines]
+    .map((line) => ({ start: line.box.y, end: line.box.y + line.box.height }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (occupied.length < 2) {
+    return [];
+  }
+  // Preserve plausible whitespace observations even on sparse pages, where
+  // the only measured line gap may itself be a section-sized band. Later
+  // boundary scoring decides how much authority the band receives.
+  const minimumHeight = Math.max(2, usualBodyHeight * 0.5);
+  const bands: WhitespaceCandidate[] = [];
+  let bottom = occupied[0]!.end;
+  for (const range of occupied.slice(1)) {
+    const gap = range.start - bottom;
+    if (gap >= minimumHeight) {
+      bands.push({
+        box: {
+          x: activeBox.x,
+          y: round(bottom),
+          width: activeBox.width,
+          height: round(gap)
+        },
+        size: round(gap),
+        coverage: 1
+      });
+    }
+    bottom = Math.max(bottom, range.end);
+  }
+  return bands.sort((a, b) => a.box.y - b.box.y);
+}
+
+export function measurePageMetrics(
+  lines: LayoutLine[],
+  separators: DrawnSeparator[]
+): PageMetrics {
+  if (lines.length === 0) {
+    return {
+      usualBodyHeight: 0,
+      usualVerticalGap: 0,
+      activeContentBox: null,
+      leftEdges: [],
+      rightEdges: [],
+      rowBaselines: [],
+      heightClusters: [],
+      styleClusters: [],
+      verticalGutters: [],
+      horizontalBands: [],
+      separatorCoverage: separators.map((_, separatorIndex) => ({ separatorIndex, coverage: 0 }))
+    };
+  }
+
+  const activeContentBox = unionBox(lines.map((line) => line.box));
+  const heights = lines.map((line) => line.box.height);
+  const heightTolerance = Math.max(0.5, median(heights) * 0.08);
+  const usualBodyHeight = usualClusterValue(heights, heightTolerance);
+  const positiveGaps = lineGaps(lines).filter((gap) => gap > 0);
+  const gapTolerance = Math.max(1, usualBodyHeight * 0.2);
+  const usualVerticalGap = usualClusterValue(positiveGaps, gapTolerance) || round(usualBodyHeight * 0.3);
+  const edgeTolerance = LAYOUT_SETTINGS.alignmentTolerance;
+
+  return {
+    usualBodyHeight,
+    usualVerticalGap,
+    activeContentBox,
+    leftEdges: clusterValues(lines.map((line) => line.box.x), edgeTolerance),
+    rightEdges: clusterValues(lines.map((line) => right(line.box)), edgeTolerance),
+    rowBaselines: clusterValues(lines.map((line) => centerY(line.box)), edgeTolerance),
+    heightClusters: clusterValues(heights, heightTolerance),
+    styleClusters: styleClusters(lines, heightTolerance),
+    verticalGutters: verticalGutterCandidates(lines, activeContentBox, usualBodyHeight),
+    horizontalBands: horizontalBandCandidates(
+      lines,
+      activeContentBox,
+      usualBodyHeight
     ),
-    headingSupport: top(left).heading && top(rightLines).heading ? 1 : 0,
-    lineSpacing: clamp(Math.abs(normalizedSpacing(left) - normalizedSpacing(rightLines)))
+    separatorCoverage: separators.map((separator, separatorIndex) => ({
+      separatorIndex,
+      coverage: round(
+        separator.orientation === 'horizontal'
+          ? clamp(separator.box.width / activeContentBox.width)
+          : clamp(separator.box.height / activeContentBox.height)
+      )
+    }))
   };
-
-  const score = (Object.keys(signals) as (keyof typeof signals)[]).reduce(
-    (total, name) => total + signals[name] * settings.weights[name],
-    0
-  );
-  const strongSignals = Object.values(signals).filter(
-    (value) => value >= settings.strongSignal
-  ).length;
-  return score >= settings.splitScore || (score >= settings.supportedSplitScore && strongSignals >= 2)
-    ? score
-    : 0;
 }
 
-// Finds the best vertical gutter: an empty band that no line crosses.
-function findColumnSplit(lines: LineDraft[]): ColumnSplit | null {
-  if (lines.length < 2) {
-    return null;
-  }
-  const lineHeight = median(lines.map((line) => line.box.height));
-  const regionLeft = Math.min(...lines.map((line) => line.box.x));
-  const regionWidth = Math.max(...lines.map((line) => right(line.box))) - regionLeft;
-  const byLeft = [...lines].sort((a, b) => a.box.x - b.box.x);
-
-  let best: ColumnSplit | null = null;
-  let coveredRight = right(byLeft[0]!.box);
-  for (const line of byLeft.slice(1)) {
-    const gutter = line.box.x - coveredRight;
-    if (gutter >= lineHeight * LAYOUT_SETTINGS.minGutterLineHeights) {
-      const left = lines.filter((candidate) => right(candidate.box) <= coveredRight);
-      const rightLines = lines.filter((candidate) => candidate.box.x >= line.box.x);
-      const confidence = scoreColumnSplit(left, rightLines, regionWidth);
-      if (confidence > 0 && (!best || confidence > best.confidence)) {
-        best = {
-          parts: [left, rightLines],
-          confidence,
-          gutter: { left: coveredRight, right: line.box.x }
-        };
-      }
-    }
-    coveredRight = Math.max(coveredRight, right(line.box));
-  }
-  return best;
-}
-
-// Finds the widest empty horizontal band across the whole region that the
-// given rule accepts. Because no line occupies the band, it spans the full
-// width of the region.
-function findBandSplit(
-  lines: LineDraft[],
-  usualGap: number,
-  accept: (parts: [LineDraft[], LineDraft[]], firstBelow: LineDraft) => boolean
-): Split | null {
-  const sorted = [...lines].sort(byReadingPosition);
-  const gaps = verticalGaps(sorted);
-  const candidates = gaps
-    .filter(({ gap }) => gap >= usualGap * LAYOUT_SETTINGS.sectionGapRatio)
-    .sort((a, b) => b.gap - a.gap);
-
-  for (const { gap, below } of candidates) {
-    const parts: [LineDraft[], LineDraft[]] = [sorted.slice(0, below), sorted.slice(below)];
-    if (accept(parts, sorted[below]!)) {
-      return { parts, confidence: clamp(gap / (usualGap * LAYOUT_SETTINGS.sectionGapRatio * 2)) };
-    }
-  }
-  return null;
-}
-
-// Lines that sit on both sides of a column gap without crossing it continue
-// those columns, such as a row of section headings above them or sections
-// whose lines happen to share rows.
-function continuesColumns(lines: LineDraft[], gutter: ColumnSplit['gutter']): boolean {
-  const middle = (gutter.left + gutter.right) / 2;
-  const crossesGap = lines.some((line) => line.box.x < middle && right(line.box) > middle);
-  return (
-    !crossesGap &&
-    lines.some((line) => right(line.box) <= middle) &&
-    lines.some((line) => line.box.x >= middle)
-  );
-}
-
-// A band that separates a full-width area, such as a header, from columns:
-// one side has columns and the other does not. The other side is full width
-// only when it crosses the column gap or sits on one side of it, such as a
-// name above the main column. When both sides have columns, the columns are
-// read whole instead.
-function findFullWidthSplit(lines: LineDraft[], usualGap: number): Split | null {
-  return findBandSplit(lines, usualGap, (parts) => {
-    const [above, below] = parts.map(findColumnSplit);
-    if ((above === null) === (below === null)) {
-      return false;
-    }
-    const columns = (above ?? below)!;
-    const other = above ? parts[1] : parts[0];
-    return !continuesColumns(other, columns.gutter);
-  });
-}
-
-// A band followed by a heading starts a new section. Bold body-size lines do
-// not, because they can be job titles or company names inside a section.
-function findSectionSplit(lines: LineDraft[], usualGap: number): Split | null {
-  return findBandSplit(lines, usualGap, (_parts, firstBelow) => firstBelow.heading);
-}
-
-// Splits a region recursively: full-width areas first, then columns, then
-// sections. A region with no confident boundary is kept intact.
-function splitRegion(
-  lines: LineDraft[],
-  confidence: number | null,
-  usualGap: number
-): RegionDraft[] {
-  const fullWidth = findFullWidthSplit(lines, usualGap);
-  if (fullWidth) {
-    return fullWidth.parts.flatMap((part) => splitRegion(part, fullWidth.confidence, usualGap));
-  }
-
-  const columns = findColumnSplit(lines);
-  if (columns) {
-    const [left, rightLines] = columns.parts;
-    const ordered = LAYOUT_SETTINGS.readingDirection === 'ltr' ? [left, rightLines] : [rightLines, left];
-    return ordered.flatMap((part) => splitRegion(part, columns.confidence, usualGap));
-  }
-
-  const sections = findSectionSplit(lines, usualGap);
-  if (sections) {
-    return sections.parts.flatMap((part) => splitRegion(part, sections.confidence, usualGap));
-  }
-
-  return [{ lines: [...lines].sort(byReadingPosition), confidence }];
-}
-
-// A heading is not a list item, even when a small part of an icon sits
-// before it.
-function markHeadings(lines: LineDraft[], usualHeight: number): LineDraft[] {
-  return lines.map((line) => {
-    const heading = line.box.height >= usualHeight * LAYOUT_SETTINGS.headingHeightRatio;
-    return { ...line, heading, bullet: line.bullet && !heading };
-  });
-}
-
-// Builds the pages of a document: lines grouped into ordered regions, with
-// reading order numbered across the whole document. The usual line height and
-// line gap are measured over the whole document, so every page is split by the
-// same rules.
+// Builds pages from the resolved section scopes, entry groups, and constrained
+// final ownership. Reading order is unique across the document.
 export function buildPages(pages: PositionedPage[]): ParsedPage[] {
-  const pageLines = pages.map(({ pieces, marks }) => markBullets(groupLines(pieces), marks));
+  return buildPagesInternal(pages, false).pages;
+}
+
+export function buildPagesWithTrace(
+  pages: PositionedPage[]
+): { pages: ParsedPage[]; trace: LayoutTrace } {
+  const built = buildPagesInternal(pages, true);
+  if (!built.trace) {
+    throw new Error('Layout trace was not collected');
+  }
+  return { pages: built.pages, trace: built.trace };
+}
+
+function buildPagesInternal(
+  pages: PositionedPage[],
+  collectTrace: boolean
+): { pages: ParsedPage[]; trace: LayoutTrace | null } {
+  const pageLines = pages.map(({ pieces, marks }) => reconstructLines(pieces, marks));
+  const pageMetrics = pages.map((page, pageIndex) =>
+    measurePageMetrics(pageLines[pageIndex]!, page.separators)
+  );
   const allLines = pageLines.flat();
   const usualHeight = median(allLines.map((line) => line.box.height));
   const usualGap = median(pageLines.flatMap(lineGaps)) || usualHeight * 0.3;
   let order = 0;
 
-  return pages.map(({ pieces: _pieces, marks: _marks, ...page }, pageIndex) => {
-    const lines = markHeadings(pageLines[pageIndex]!, usualHeight);
-    const regions: Region[] = splitRegion(lines, null, usualGap).map(
-      (draft, index) => ({
-        index,
-        box: unionBox(draft.lines.map((line) => line.box)),
-        confidence: draft.confidence === null ? null : round(draft.confidence),
-        lines: draft.lines.map((line) => ({ order: ++order, ...line }))
-      })
+  const tracePages: LayoutTracePage[] = [];
+
+  const parsedPages = pages.map(({ pieces, marks, separators, ...page }, pageIndex) => {
+    const candidates = generateBoundaryCandidates({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      separators,
+      pageIndex,
+      pageHeight: page.height
+    });
+    const layoutZoneCandidates = generateLayoutZoneCandidates({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      boundaryCandidates: candidates.lines,
+      nonTextBoundaryCandidates: candidates.nonText
+    });
+    const sectionScopes = establishSectionScopes({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      boundaryCandidates: candidates.lines,
+      nonTextBoundaryCandidates: candidates.nonText,
+      layoutZoneCandidates
+    });
+    const entryResolution = resolveEntries({
+      lines: pageLines[pageIndex]!,
+      metrics: pageMetrics[pageIndex]!,
+      boundaryCandidates: candidates.lines,
+      sectionScopes
+    });
+    const finalLayout = resolveFinalLayout({
+      pageNumber: page.pageNumber,
+      lines: pageLines[pageIndex]!,
+      layoutZoneCandidates,
+      sectionScopes,
+      entryGroups: entryResolution.groups
+    });
+    if (collectTrace) {
+      tracePages.push({
+        ...page,
+        pieces,
+        marks,
+        separators,
+        reconstructedLines: pageLines[pageIndex]!,
+        metrics: pageMetrics[pageIndex]!,
+        boundaryCandidates: candidates.lines,
+        nonTextBoundaryCandidates: candidates.nonText,
+        layoutZoneCandidates,
+        sectionScopes,
+        entryAnchors: entryResolution.anchors,
+        entryGroups: entryResolution.groups,
+        validatedZones: finalLayout.validatedZones,
+        sectionColumns: finalLayout.sectionColumns,
+        finalRegions: finalLayout.regions,
+        revisedAiInputLines: finalLayout.aiInputLines
+      });
+    }
+    const headingLineIndexes = new Set(
+      sectionScopes
+        .filter((scope) => scope.status === 'confirmed')
+        .map((scope) => scope.headingLineIndex)
     );
+    candidates.lines.forEach((candidate) => {
+      if (candidate.header.score >= 0.8 && candidate.header.score > candidate.section.score) {
+        headingLineIndexes.add(candidate.lineIndex);
+      }
+      if (
+        candidate.section.reasons.includes('continues a split common section heading') &&
+        sectionScopes.some(
+          (scope) => scope.status === 'confirmed' && scope.lineIndexes.includes(candidate.lineIndex)
+        )
+      ) {
+        headingLineIndexes.add(candidate.lineIndex);
+      }
+    });
+    const regions: Region[] = finalLayout.regions.map((region) => ({
+      index: region.index,
+      role: region.role,
+      parentIndex: region.parentIndex,
+      box: region.box,
+      confidence: region.confidence,
+      lines: region.readingOrderLineIndexes.map((lineIndex) => {
+        const line = pageLines[pageIndex]![lineIndex]!;
+        const heading = headingLineIndexes.has(lineIndex);
+        return {
+          order: ++order,
+          ...line,
+          heading,
+          bullet: line.bullet && !heading
+        };
+      })
+    }));
     return { ...page, regions };
   });
+
+  return {
+    pages: parsedPages,
+    trace: collectTrace
+      ? { usualHeight: round(usualHeight), usualGap: round(usualGap), pages: tracePages }
+      : null
+  };
 }

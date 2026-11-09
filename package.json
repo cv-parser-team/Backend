@@ -6,6 +6,8 @@
   "description": "LuminaCV - modern talent matching and candidate intelligence backend API",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "parsing:inspect": "tsx src/tools/inspect-parsing.ts",
+    "parsing:inspect:all": "tsx src/tools/inspect-all-parsing.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",

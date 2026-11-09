@@ -24,6 +24,15 @@ export interface BoundingBox {
   height: number;
 }
 
+// A thin axis-aligned shape drawn on a PDF page. Separators are extraction
+// evidence only until a later layout stage decides whether they support a
+// boundary.
+export interface DrawnSeparator {
+  orientation: 'horizontal' | 'vertical';
+  box: BoundingBox;
+  thickness: number;
+}
+
 // A piece of text as the file stores it; used to build lines, not stored.
 export interface TextPiece {
   text: string;
@@ -57,7 +66,11 @@ export interface TextLine {
 export interface Region {
   index: number;
   box: BoundingBox;
-  // Score of the boundary that created the region; null when not split.
+  // Resolved visual role. DOCX content does not use PDF regions.
+  role?: 'independent' | 'section' | 'entry' | 'content';
+  // Entry/content regions may retain their owning section.
+  parentIndex?: number | null;
+  // Confidence of the resolved ownership and role.
   confidence: number | null;
   lines: TextLine[];
 }
