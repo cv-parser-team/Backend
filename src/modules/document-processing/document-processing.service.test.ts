@@ -35,6 +35,7 @@ function createRepositoryDouble(
     createQueuedJob: vi.fn().mockResolvedValue(record),
     claimJob: vi.fn().mockResolvedValue(null),
     completeJob: vi.fn().mockResolvedValue(null),
+    failJob: vi.fn().mockResolvedValue(null),
     listPublishableJobs: vi.fn().mockResolvedValue([]),
     ...overrides
   };
@@ -207,6 +208,56 @@ describe('document processing service', () => {
     await expect(
       service.complete({ version: 1, jobId, documentId })
     ).resolves.toBeNull();
+  });
+
+  it('fails a processing job and clears its lease', async () => {
+    const failedJob = createJobRecord({
+      status: 'failed',
+      attemptCount: 1,
+      failureCode: 'PARSING_FAILED',
+      lockedUntil: null
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      failJob: vi.fn().mockResolvedValue(failedJob)
+    });
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(
+      service.fail({ version: 1, jobId, documentId }, ' PARSING_FAILED ')
+    ).resolves.toBe(failedJob);
+    expect(repository.failJob).toHaveBeenCalledWith({
+      jobId,
+      documentId,
+      failureCode: 'PARSING_FAILED'
+    });
+  });
+
+  it('returns null when a processing job cannot be failed', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(
+      service.fail({ version: 1, jobId, documentId }, 'PARSING_FAILED')
+    ).resolves.toBeNull();
+  });
+
+  it('rejects an empty processing job failure code', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(
+      service.fail({ version: 1, jobId, documentId }, '  ')
+    ).rejects.toThrow('Processing job failure code is required');
+    expect(repository.failJob).not.toHaveBeenCalled();
   });
 
   it('republishes one bounded batch using existing job IDs', async () => {

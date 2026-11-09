@@ -83,6 +83,11 @@ function createService(): DocumentsService {
       status: 'processing'
     }),
     markDocumentReady: vi.fn().mockResolvedValue(documentRecord),
+    markDocumentFailed: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    }),
     openDocumentForProcessing: vi.fn().mockResolvedValue({
       document: documentRecord,
       stream: Readable.from('stored document')
@@ -106,6 +111,11 @@ function createRepository(
       status: 'processing'
     }),
     markDocumentReady: vi.fn().mockResolvedValue(documentRecord),
+    markDocumentFailed: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    }),
     updateDocumentStatus: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(true),
     ...overrides
@@ -433,6 +443,59 @@ describe('documents service', () => {
     });
 
     await expect(service.markDocumentReady(documentId)).resolves.toBeNull();
+  });
+
+  it('marks a processing document as failed with its failure code', async () => {
+    const failedDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    };
+    const repository = createRepository({
+      markDocumentFailed: vi.fn().mockResolvedValue(failedDocument)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentFailed(documentId, ' PARSING_FAILED ')
+    ).resolves.toBe(failedDocument);
+    expect(repository.markDocumentFailed).toHaveBeenCalledWith({
+      documentId,
+      failureCode: 'PARSING_FAILED'
+    });
+  });
+
+  it('returns null when a document cannot be marked as failed', async () => {
+    const repository = createRepository({
+      markDocumentFailed: vi.fn().mockResolvedValue(null)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentFailed(documentId, 'PARSING_FAILED')
+    ).resolves.toBeNull();
+  });
+
+  it('rejects an empty document failure code', async () => {
+    const repository = createRepository();
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(service.markDocumentFailed(documentId, '  ')).rejects.toThrow(
+      'Document failure code is required'
+    );
+    expect(repository.markDocumentFailed).not.toHaveBeenCalled();
   });
 
   it('rejects processing access when document metadata is absent', async () => {

@@ -12,6 +12,9 @@ const message = {
 
 function createRabbitMqDouble() {
   const operations: string[] = [];
+  let consumer:
+    | ((message: { content: Buffer } | null) => void)
+    | undefined;
   const channel = {
     assertQueue: vi.fn(async () => {
       operations.push('assert');
@@ -34,6 +37,32 @@ function createRabbitMqDouble() {
     waitForConfirms: vi.fn(async () => {
       operations.push('confirm');
     }),
+    consume: vi.fn(
+      async (
+        _queue: string,
+        handler: (message: { content: Buffer } | null) => void,
+        _options: { noAck: false }
+      ) => {
+        operations.push('consume');
+        consumer = handler;
+        return { consumerTag: 'consumer-1' };
+      }
+    ),
+    ack: vi.fn(() => {
+      operations.push('ack');
+    }),
+    nack: vi.fn(
+      (
+        _message: { content: Buffer },
+        _allUpTo: false,
+        requeue: boolean
+      ) => {
+        operations.push(requeue ? 'retry' : 'reject');
+      }
+    ),
+    cancel: vi.fn(async () => {
+      operations.push('cancel');
+    }),
     close: vi.fn(async () => {
       operations.push('close-channel');
     })
@@ -48,7 +77,15 @@ function createRabbitMqDouble() {
     .fn()
     .mockResolvedValue(connection);
 
-  return { channel, connect, connection, operations };
+  const deliver = (value: string) => {
+    if (!consumer) {
+      throw new Error('Consumer has not been registered');
+    }
+
+    consumer({ content: Buffer.from(value, 'utf8') });
+  };
+
+  return { channel, connect, connection, deliver, operations };
 }
 
 describe('RabbitMQ message broker', () => {
@@ -130,6 +167,87 @@ describe('RabbitMQ message broker', () => {
       'RabbitMQ messages must be JSON serializable'
     );
     expect(channel.assertQueue).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges JSON messages accepted by the handler', async () => {
+    const handler = vi.fn().mockResolvedValue('ack');
+    const { channel, connect, deliver } = createRabbitMqDouble();
+    const broker = await createRabbitMqBroker({ url, connect });
+
+    await broker.consume(queue, handler);
+    deliver(JSON.stringify(message));
+    await vi.waitFor(() => expect(channel.ack).toHaveBeenCalledOnce());
+
+    expect(channel.assertQueue).toHaveBeenCalledWith(queue, { durable: true });
+    expect(channel.consume).toHaveBeenCalledWith(
+      queue,
+      expect.any(Function),
+      { noAck: false }
+    );
+    expect(handler).toHaveBeenCalledWith(message);
+    expect(channel.nack).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['retry', true],
+    ['reject', false]
+  ] as const)('negative-acknowledges %s outcomes', async (outcome, requeue) => {
+    const handler = vi.fn().mockResolvedValue(outcome);
+    const { channel, connect, deliver } = createRabbitMqDouble();
+    const broker = await createRabbitMqBroker({ url, connect });
+
+    await broker.consume(queue, handler);
+    deliver(JSON.stringify(message));
+    await vi.waitFor(() => expect(channel.nack).toHaveBeenCalledOnce());
+
+    expect(channel.nack).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.any(Buffer) }),
+      false,
+      requeue
+    );
+    expect(channel.ack).not.toHaveBeenCalled();
+  });
+
+  it('requeues messages when the handler throws', async () => {
+    const handler = vi.fn().mockRejectedValue(new Error('temporarily down'));
+    const { channel, connect, deliver } = createRabbitMqDouble();
+    const broker = await createRabbitMqBroker({ url, connect });
+
+    await broker.consume(queue, handler);
+    deliver(JSON.stringify(message));
+    await vi.waitFor(() => expect(channel.nack).toHaveBeenCalledOnce());
+
+    expect(channel.nack).toHaveBeenCalledWith(expect.any(Object), false, true);
+  });
+
+  it('rejects malformed JSON without calling the handler', async () => {
+    const handler = vi.fn().mockResolvedValue('ack');
+    const { channel, connect, deliver } = createRabbitMqDouble();
+    const broker = await createRabbitMqBroker({ url, connect });
+
+    await broker.consume(queue, handler);
+    deliver('{invalid json');
+    await vi.waitFor(() => expect(channel.nack).toHaveBeenCalledOnce());
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(channel.nack).toHaveBeenCalledWith(expect.any(Object), false, false);
+  });
+
+  it('cancels active consumers before closing the channel', async () => {
+    const { channel, connect, operations } = createRabbitMqDouble();
+    const broker = await createRabbitMqBroker({ url, connect });
+
+    await broker.consume(queue, async () => 'ack');
+    await broker.close();
+
+    expect(channel.cancel).toHaveBeenCalledWith('consumer-1');
+    expect(operations).toEqual([
+      'assert',
+      'consume',
+      'cancel',
+      'close-channel',
+      'close-connection'
+    ]);
   });
 
   it('closes the channel before the connection and only closes once', async () => {

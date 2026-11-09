@@ -28,6 +28,11 @@ export interface FindDocumentByChecksumInput {
   sha256: string;
 }
 
+export interface MarkDocumentFailedInput {
+  documentId: string;
+  failureCode: string;
+}
+
 export interface DocumentsRepository {
   createDocument(input: CreateDocumentInput): Promise<DocumentRecord | null>;
   listDeletingDocuments(): Promise<DocumentRecord[]>;
@@ -46,6 +51,9 @@ export interface DocumentsRepository {
   ): Promise<DocumentRecord | null>;
   markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
   markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentFailed(
+    input: MarkDocumentFailedInput
+  ): Promise<DocumentRecord | null>;
   updateDocumentStatus(
     input: UpdateDocumentStatusInput
   ): Promise<DocumentRecord | null>;
@@ -190,6 +198,23 @@ export function createDocumentsRepository(
           .returning();
 
         return readyDocument ?? null;
+      });
+    },
+
+    async markDocumentFailed({ documentId, failureCode }) {
+      return withDbErrors('Document', async () => {
+        const [failedDocument] = await database.db
+          .update(documents)
+          .set({ status: 'failed', failureCode })
+          .where(
+            and(
+              eq(documents.documentId, documentId),
+              eq(documents.status, 'processing')
+            )
+          )
+          .returning();
+
+        return failedDocument ?? null;
       });
     },
 

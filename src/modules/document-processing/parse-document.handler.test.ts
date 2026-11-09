@@ -24,7 +24,7 @@ function createProcessingJob(
     documentId: job.documentId,
     status,
     attemptCount: 1,
-    failureCode: null,
+    failureCode: status === 'failed' ? 'PARSING_FAILED' : null,
     availableAt: timestamp,
     lockedUntil:
       status === 'processing' ? new Date('2026-01-01T00:05:00Z') : null,
@@ -44,7 +44,7 @@ function createDocument(status: DocumentRecord['status']): DocumentRecord {
     sha256: 'a'.repeat(64),
     storageKey: 'documents/resume',
     status,
-    failureCode: null,
+    failureCode: status === 'failed' ? 'PARSING_FAILED' : null,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -69,10 +69,11 @@ function createExtraction(): ExtractionRecord {
 function createProcessingService(
   claimResult: ProcessingJobRecord | null = createProcessingJob(),
   completeResult: ProcessingJobRecord | null = createProcessingJob('completed')
-): Pick<DocumentProcessingService, 'claim' | 'complete'> {
+): Pick<DocumentProcessingService, 'claim' | 'complete' | 'fail'> {
   return {
     claim: vi.fn().mockResolvedValue(claimResult),
-    complete: vi.fn().mockResolvedValue(completeResult)
+    complete: vi.fn().mockResolvedValue(completeResult),
+    fail: vi.fn().mockResolvedValue(createProcessingJob('failed'))
   };
 }
 
@@ -88,6 +89,7 @@ function createDocumentsService(
       stream: Readable.from('document bytes')
     }),
     markDocumentReady: vi.fn().mockResolvedValue(createDocument('ready')),
+    markDocumentFailed: vi.fn().mockResolvedValue(createDocument('failed')),
     ...overrides
   };
 }
@@ -105,7 +107,7 @@ describe('parse document handler', () => {
     const processingDocument = createDocument('processing');
     const processingService: Pick<
       DocumentProcessingService,
-      'claim' | 'complete'
+      'claim' | 'complete' | 'fail'
     > = {
       claim: vi.fn(async () => {
         operations.push('claim');
@@ -114,7 +116,8 @@ describe('parse document handler', () => {
       complete: vi.fn(async () => {
         operations.push('complete-job');
         return completedJob;
-      })
+      }),
+      fail: vi.fn().mockResolvedValue(createProcessingJob('failed'))
     };
     const documentsService = createDocumentsService({
       markDocumentProcessing: vi.fn(async () => {
@@ -180,6 +183,7 @@ describe('parse document handler', () => {
     expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
     expect(parsingService.extract).not.toHaveBeenCalled();
     expect(processingService.complete).not.toHaveBeenCalled();
+    expect(processingService.fail).not.toHaveBeenCalled();
   });
 
   it('stops when the document cannot transition to processing', async () => {
@@ -233,5 +237,85 @@ describe('parse document handler', () => {
     await expect(handler.handle(job)).rejects.toThrow(
       `Processing job ${job.jobId} could not be completed`
     );
+  });
+
+  it('records a parser failure on the document and job', async () => {
+    const parsingError = new Error('parser failed');
+    const processingService = createProcessingService();
+    const documentsService = createDocumentsService();
+    const parsingService: Pick<ParsingService, 'extract'> = {
+      extract: vi.fn().mockRejectedValue(parsingError)
+    };
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      processingService
+    });
+
+    await expect(handler.handle(job)).rejects.toBe(parsingError);
+    expect(documentsService.markDocumentFailed).toHaveBeenCalledWith(
+      job.documentId,
+      'PARSING_FAILED'
+    );
+    expect(processingService.fail).toHaveBeenCalledWith(job, 'PARSING_FAILED');
+    expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
+    expect(processingService.complete).not.toHaveBeenCalled();
+  });
+
+  it('records a storage-open failure without invoking the parser', async () => {
+    const storageError = new Error('storage unavailable');
+    const processingService = createProcessingService();
+    const documentsService = createDocumentsService({
+      openDocumentForProcessing: vi.fn().mockRejectedValue(storageError)
+    });
+    const parsingService = createParsingService();
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      processingService
+    });
+
+    await expect(handler.handle(job)).rejects.toBe(storageError);
+    expect(parsingService.extract).not.toHaveBeenCalled();
+    expect(documentsService.markDocumentFailed).toHaveBeenCalledWith(
+      job.documentId,
+      'PARSING_FAILED'
+    );
+    expect(processingService.fail).toHaveBeenCalledWith(job, 'PARSING_FAILED');
+  });
+
+  it('aggregates parsing and failure-recording errors', async () => {
+    const parsingError = new Error('parser failed');
+    const jobFailureError = new Error('job failure update failed');
+    const processingService = createProcessingService();
+    processingService.fail = vi.fn().mockRejectedValue(jobFailureError);
+    const documentsService = createDocumentsService({
+      markDocumentFailed: vi.fn().mockResolvedValue(null)
+    });
+    const parsingService: Pick<ParsingService, 'extract'> = {
+      extract: vi.fn().mockRejectedValue(parsingError)
+    };
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      processingService
+    });
+
+    try {
+      await handler.handle(job);
+      expect.unreachable('handler should reject');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      const aggregateError = error as AggregateError;
+      expect(aggregateError.errors).toHaveLength(3);
+      expect(aggregateError.errors[0]).toBe(parsingError);
+      expect(aggregateError.errors[1]).toEqual(
+        new Error(`Document ${job.documentId} could not transition to failed`)
+      );
+      expect(aggregateError.errors[2]).toBe(jobFailureError);
+    }
+
+    expect(documentsService.markDocumentFailed).toHaveBeenCalledOnce();
+    expect(processingService.fail).toHaveBeenCalledOnce();
   });
 });

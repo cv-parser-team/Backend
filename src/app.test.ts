@@ -90,6 +90,10 @@ describe('application', () => {
 
     expect(app.messageBroker).toBe(messageBroker);
     expect(typeof app.documentProcessingService.schedule).toBe('function');
+    expect(typeof app.processingDocumentsService.openDocumentForProcessing).toBe(
+      'function'
+    );
+    expect(typeof app.parseDocumentHandler.handle).toBe('function');
 
     await app.close();
     app = undefined;

@@ -49,6 +49,10 @@ export interface OrphanCleanupResult {
 export interface ProcessingDocumentsService {
   markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
   markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentFailed(
+    documentId: string,
+    failureCode: string
+  ): Promise<DocumentRecord | null>;
   openDocumentForProcessing(documentId: string): Promise<DocumentContent>;
 }
 
@@ -255,6 +259,18 @@ export function createDocumentsService({
     },
     markDocumentReady(documentId) {
       return repository.markDocumentReady(documentId);
+    },
+    async markDocumentFailed(documentId, failureCode) {
+      const normalizedFailureCode = failureCode.trim();
+
+      if (!normalizedFailureCode) {
+        throw new Error('Document failure code is required');
+      }
+
+      return repository.markDocumentFailed({
+        documentId,
+        failureCode: normalizedFailureCode
+      });
     },
     async openDocumentForProcessing(documentId) {
       const document = await repository.findDocumentById(documentId);

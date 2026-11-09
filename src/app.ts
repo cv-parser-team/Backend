@@ -61,9 +61,6 @@ export async function createApp(
     broker: options.messageBroker
   });
 
-  // Document processing
-  await app.register(documentProcessingModule);
-
   // Error handling
   await app.register(errorHandlerPlugin);
 
@@ -76,6 +73,7 @@ export async function createApp(
     prefix: '/api/candidates'
   });
   await app.register(parsingModule);
+  await app.register(documentProcessingModule);
 
   return app;
 }

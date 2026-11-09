@@ -16,6 +16,12 @@ export interface CompleteProcessingJobInput {
   documentId: string;
 }
 
+export interface FailProcessingJobInput {
+  jobId: string;
+  documentId: string;
+  failureCode: string;
+}
+
 export interface DocumentProcessingRepository {
   createQueuedJob(documentId: string): Promise<ProcessingJobRecord>;
   claimJob(
@@ -24,6 +30,7 @@ export interface DocumentProcessingRepository {
   completeJob(
     input: CompleteProcessingJobInput
   ): Promise<ProcessingJobRecord | null>;
+  failJob(input: FailProcessingJobInput): Promise<ProcessingJobRecord | null>;
   listPublishableJobs(
     availableAt: Date,
     limit: number
@@ -93,6 +100,28 @@ export function createDocumentProcessingRepository(
           .returning();
 
         return completedJob ?? null;
+      });
+    },
+
+    async failJob({ jobId, documentId, failureCode }) {
+      return withDbErrors('Document processing job', async () => {
+        const [failedJob] = await database.db
+          .update(documentProcessingJobs)
+          .set({
+            status: 'failed',
+            failureCode,
+            lockedUntil: null
+          })
+          .where(
+            and(
+              eq(documentProcessingJobs.jobId, jobId),
+              eq(documentProcessingJobs.documentId, documentId),
+              eq(documentProcessingJobs.status, 'processing')
+            )
+          )
+          .returning();
+
+        return failedJob ?? null;
       });
     },
 

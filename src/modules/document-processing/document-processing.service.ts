@@ -26,6 +26,10 @@ export interface DocumentProcessingService {
   schedule(documentId: string): Promise<ParseDocumentJob>;
   claim(job: ParseDocumentJob): Promise<ProcessingJobRecord | null>;
   complete(job: ParseDocumentJob): Promise<ProcessingJobRecord | null>;
+  fail(
+    job: ParseDocumentJob,
+    failureCode: string
+  ): Promise<ProcessingJobRecord | null>;
   republishQueuedJobs(): Promise<RepublishResult>;
 }
 
@@ -68,6 +72,20 @@ export function createDocumentProcessingService({
       return repository.completeJob({
         jobId: job.jobId,
         documentId: job.documentId
+      });
+    },
+
+    async fail(job, failureCode) {
+      const normalizedFailureCode = failureCode.trim();
+
+      if (!normalizedFailureCode) {
+        throw new Error('Processing job failure code is required');
+      }
+
+      return repository.failJob({
+        jobId: job.jobId,
+        documentId: job.documentId,
+        failureCode: normalizedFailureCode
       });
     },
 
