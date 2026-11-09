@@ -33,10 +33,12 @@ const sourcesSchema = {
 
 // One extracted value with its evidence. `raw` keeps the text as the CV wrote
 // it, such as "Oct 2023". An end date written as "Present" has no value and
-// `current: true`.
+// `current: true`. Confidence is given per field, so a doubtful value can be
+// reviewed on its own without doubting the rest of the claim.
 export const extractedFieldSchema = {
   type: 'object',
   properties: {
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
     value: {
       anyOf: [
         { type: 'string', minLength: 1, maxLength: 5000 },
@@ -51,7 +53,7 @@ export const extractedFieldSchema = {
     current: { type: 'boolean' },
     sources: sourcesSchema
   },
-  required: ['sources'],
+  required: ['confidence', 'sources'],
   additionalProperties: false
 } as const;
 
@@ -61,14 +63,13 @@ export const extractedClaimSchema = {
   type: 'object',
   properties: {
     type: { type: 'string', enum: CLAIM_TYPES },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
     fields: {
       type: 'object',
       maxProperties: 20,
       additionalProperties: extractedFieldSchema
     }
   },
-  required: ['type', 'confidence', 'fields'],
+  required: ['type', 'fields'],
   additionalProperties: false
 } as const;
 

@@ -32,7 +32,10 @@ export interface ClaimDraft {
   type: ClaimType;
   origin: 'extracted';
   status: 'pending';
+  // The lowest confidence among the kept fields: a claim is only as reliable
+  // as its weakest value, and an average would hide one doubtful field.
   confidence: number;
+  fieldConfidence: Record<string, number>;
   // Set when the end date is written as "Present".
   current: boolean;
   values: DraftValues;
@@ -57,6 +60,8 @@ export interface ProfileValues {
 export interface ProfileDraft {
   values: ProfileValues;
   rawValues: Partial<Record<keyof ProfileValues, string>>;
+  // For links, the lowest confidence among the kept links.
+  confidence: Partial<Record<keyof ProfileValues, number>>;
   sources: Partial<Record<keyof ProfileValues, string[]>>;
 }
 
@@ -201,65 +206,129 @@ function trimmed(value: string | string[]): string | string[] {
   return typeof value === 'string' ? value.trim() : value.map((item) => item.trim());
 }
 
-function mapClaim(claim: ExtractedClaim): ClaimDraft | UnmappedItem {
+interface ClaimMapping {
+  draft: ClaimDraft | null;
+  unmapped: UnmappedItem[];
+}
+
+function unmappedField(
+  claim: ExtractedClaim,
+  fieldName: string,
+  field: ExtractedField,
+  reason: string
+): UnmappedItem {
+  return {
+    label: `${claim.type}.${fieldName}`,
+    text: describeField(field),
+    sources: field.sources,
+    reason
+  };
+}
+
+// An invalid optional field is set aside on its own and the claim keeps its
+// other fields. An invalid or missing required field rejects the whole claim,
+// because a claim cannot exist without it.
+function mapClaim(claim: ExtractedClaim): ClaimMapping {
   const rules = CLAIM_RULES[claim.type];
+  const kept = new Map<string, ExtractedField>();
   const values: DraftValues = {};
-  const rawValues: Record<string, string> = {};
-  const fieldSources: Record<string, string[]> = {};
+  const setAside: UnmappedItem[] = [];
   let current = false;
 
-  for (const [fieldName, field] of Object.entries(claim.fields)) {
-    fieldSources[fieldName] = field.sources;
-    if (field.raw !== undefined) {
-      rawValues[fieldName] = field.raw;
+  const rejectClaim = (reason: string): ClaimMapping => ({
+    draft: null,
+    unmapped: [unmappedClaim(claim, reason)]
+  });
+  // Returns false when the field is required, so the whole claim is rejected.
+  const setFieldAside = (fieldName: string, reason: string): boolean => {
+    const field = claim.fields[fieldName];
+    if (rules.required.includes(fieldName) || !field) {
+      return false;
     }
-    const isEndDate = rules.dates?.[1] === fieldName;
-    if (isEndDate && field.current) {
+    setAside.push(unmappedField(claim, fieldName, field, reason));
+    kept.delete(fieldName);
+    delete values[fieldName];
+    return true;
+  };
+
+  for (const [fieldName, field] of Object.entries(claim.fields)) {
+    if (rules.dates?.[1] === fieldName && field.current) {
       current = true;
+      kept.set(fieldName, field);
       continue;
     }
     if (field.value === undefined) {
+      if (field.raw !== undefined && !rules.required.includes(fieldName)) {
+        setFieldAside(fieldName, 'missing_value');
+      }
       continue;
     }
     const isMonth = typeof field.value === 'string' && MONTH.test(field.value);
     if (rules.dates?.includes(fieldName) && !isMonth) {
-      return unmappedClaim(claim, 'invalid_date');
+      if (!setFieldAside(fieldName, 'invalid_date')) {
+        return rejectClaim('invalid_date');
+      }
+      continue;
     }
     values[fieldName] = trimmed(field.value);
+    kept.set(fieldName, field);
   }
 
   const missing = rules.required.find((fieldName) => values[fieldName] === undefined);
   if (missing) {
-    return unmappedClaim(claim, `missing_${toSnakeCase(missing)}`);
+    return rejectClaim(`missing_${toSnakeCase(missing)}`);
   }
 
-  // YYYY-MM strings sort chronologically.
+  // YYYY-MM strings sort chronologically. The end date is always optional.
   const [start, end] = rules.dates ?? [];
   const startDate = start ? values[start] : undefined;
   const endDate = end ? values[end] : undefined;
-  if (typeof startDate === 'string' && typeof endDate === 'string' && endDate < startDate) {
-    return unmappedClaim(claim, 'invalid_date_order');
+  if (end && typeof startDate === 'string' && typeof endDate === 'string' && endDate < startDate) {
+    setFieldAside(end, 'invalid_date_order');
   }
 
-  if (!rules.validateValues(values).valid) {
-    return unmappedClaim(claim, 'invalid_value');
+  const check = rules.validateValues(values);
+  if (!check.valid) {
+    if (!check.fields.every((fieldName) => setFieldAside(fieldName, 'invalid_value'))) {
+      return rejectClaim('invalid_value');
+    }
+    if (!rules.validateValues(values).valid) {
+      return rejectClaim('invalid_value');
+    }
+  }
+
+  const keptFields = [...kept];
+  const fieldConfidence = Object.fromEntries(
+    keptFields.map(([fieldName, field]) => [fieldName, field.confidence])
+  );
+  const rawValues: Record<string, string> = {};
+  for (const [fieldName, field] of keptFields) {
+    if (field.raw !== undefined) {
+      rawValues[fieldName] = field.raw;
+    }
   }
 
   return {
-    type: claim.type,
-    origin: 'extracted',
-    status: 'pending',
-    confidence: claim.confidence,
-    current,
-    values,
-    rawValues,
-    sources: unique(Object.values(claim.fields).flatMap((field) => field.sources)),
-    fieldSources
+    draft: {
+      type: claim.type,
+      origin: 'extracted',
+      status: 'pending',
+      confidence: Math.min(...Object.values(fieldConfidence)),
+      fieldConfidence,
+      current,
+      values,
+      rawValues,
+      sources: unique(keptFields.flatMap(([, field]) => field.sources)),
+      fieldSources: Object.fromEntries(
+        keptFields.map(([fieldName, field]) => [fieldName, field.sources])
+      )
+    },
+    unmapped: setAside
   };
 }
 
 function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): ProfileDraft {
-  const draft: ProfileDraft = { values: {}, rawValues: {}, sources: {} };
+  const draft: ProfileDraft = { values: {}, rawValues: {}, confidence: {}, sources: {} };
 
   for (const fieldName of PROFILE_TEXT_FIELDS) {
     const field = profile[fieldName];
@@ -278,6 +347,7 @@ function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): Profil
     }
     draft.values[fieldName] = value;
     draft.sources[fieldName] = field.sources;
+    draft.confidence[fieldName] = field.confidence;
     if (field.raw !== undefined) {
       draft.rawValues[fieldName] = field.raw;
     }
@@ -297,13 +367,13 @@ function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): Profil
     }
     draft.values.profileLinks = [...(draft.values.profileLinks ?? []), { label, url }];
     draft.sources.profileLinks = unique([...(draft.sources.profileLinks ?? []), ...link.sources]);
+    draft.confidence.profileLinks = Math.min(
+      draft.confidence.profileLinks ?? link.confidence,
+      link.confidence
+    );
   }
 
   return draft;
-}
-
-function isClaimDraft(result: ClaimDraft | UnmappedItem): result is ClaimDraft {
-  return 'origin' in result;
 }
 
 // Turns an AI output into pending claim drafts, a profile draft, and unmapped
@@ -321,7 +391,7 @@ export function mapAiOutput(output: unknown): MappingResult {
   const unmapped: UnmappedItem[] = [];
   const claims: ClaimDraft[] = [];
 
-  let profile: ProfileDraft = { values: {}, rawValues: {}, sources: {} };
+  let profile: ProfileDraft = { values: {}, rawValues: {}, confidence: {}, sources: {} };
   if (output.profile !== undefined) {
     if (validateProfile(output.profile).valid) {
       profile = mapProfile(output.profile as ExtractedProfile, unmapped);
@@ -336,12 +406,11 @@ export function mapAiOutput(output: unknown): MappingResult {
       unmapped.push(describeInvalid(label, item, 'invalid_item'));
       continue;
     }
-    const result = mapClaim(item as ExtractedClaim);
-    if (isClaimDraft(result)) {
-      claims.push(result);
-    } else {
-      unmapped.push(result);
+    const { draft, unmapped: setAside } = mapClaim(item as ExtractedClaim);
+    if (draft) {
+      claims.push(draft);
     }
+    unmapped.push(...setAside);
   }
 
   for (const item of (output.unmapped ?? []) as unknown[]) {

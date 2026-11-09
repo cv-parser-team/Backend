@@ -12,13 +12,12 @@ import {
 
 const employment = {
   type: 'employment',
-  confidence: 0.9,
   fields: {
-    jobTitle: { value: 'Backend Developer', sources: ['L10'] },
-    employer: { value: 'Example Corp', sources: ['L10'] },
-    startDate: { value: '2023-10', raw: 'Oct 2023', sources: ['L11'] },
-    endDate: { current: true, raw: 'Present', sources: ['L11'] },
-    skills: { value: ['Node.js', 'PostgreSQL'], sources: ['L12-13'] }
+    jobTitle: { value: 'Backend Developer', confidence: 0.95, sources: ['L10'] },
+    employer: { value: 'Example Corp', confidence: 0.9, sources: ['L10'] },
+    startDate: { value: '2023-10', raw: 'Oct 2023', confidence: 0.9, sources: ['L11'] },
+    endDate: { current: true, raw: 'Present', confidence: 0.85, sources: ['L11'] },
+    skills: { value: ['Node.js', 'PostgreSQL'], confidence: 0.8, sources: ['L12-13'] }
   }
 };
 
@@ -26,7 +25,8 @@ describe('AI output contract', () => {
   it('accepts a version 1 output with claims', () => {
     expect(validateEnvelope({ version: 1, claims: [], unmapped: [] })).toEqual({
       valid: true,
-      errors: []
+      errors: [],
+      fields: []
     });
   });
 
@@ -49,19 +49,24 @@ describe('AI output contract', () => {
     for (const reference of ['L5', 'L5-7', 'L39-41,44', 'B3', 'B4.1']) {
       const claim = {
         type: 'skill',
-        confidence: 1,
-        fields: { name: { value: 'Python', sources: [reference] } }
+        fields: { name: { value: 'Python', confidence: 1, sources: [reference] } }
       };
       expect(validateClaim(claim).valid, reference).toBe(true);
     }
   });
 
-  it('rejects a field without sources, a bad reference, or a confidence above 1', () => {
+  it('rejects fields without sources or confidence, or with bad values', () => {
+    const name = (overrides: Record<string, unknown>) => ({
+      ...employment,
+      fields: { name: { value: 'Python', confidence: 0.9, sources: ['L1'], ...overrides } }
+    });
     const invalidClaims = [
-      { ...employment, fields: { name: { value: 'Python', sources: [] } } },
-      { ...employment, fields: { name: { value: 'Python', sources: ['line 5'] } } },
-      { ...employment, confidence: 1.2 },
-      { ...employment, fields: { name: { value: 'Python', page: 1, sources: ['L1'] } } }
+      name({ sources: [] }),
+      name({ sources: ['line 5'] }),
+      name({ confidence: 1.2 }),
+      name({ confidence: undefined }),
+      name({ page: 1 }),
+      { ...employment, confidence: 0.9 }
     ];
 
     for (const claim of invalidClaims) {
@@ -79,11 +84,20 @@ describe('AI output contract', () => {
   it('checks the profile and unmapped items on their own', () => {
     expect(
       validateProfile({
-        fullName: { value: 'Emma Carter', sources: ['L1'] },
-        links: [{ value: 'https://github.com/emma', raw: 'GitHub', sources: ['L4'] }]
+        fullName: { value: 'Emma Carter', confidence: 0.99, sources: ['L1'] },
+        links: [
+          {
+            value: 'https://github.com/emma',
+            raw: 'GitHub',
+            confidence: 0.9,
+            sources: ['L4']
+          }
+        ]
       }).valid
     ).toBe(true);
-    expect(validateProfile({ age: { value: '30', sources: ['L2'] } }).valid).toBe(false);
+    expect(
+      validateProfile({ age: { value: '30', confidence: 0.9, sources: ['L2'] } }).valid
+    ).toBe(false);
     expect(
       validateUnmapped({ label: 'Courses', text: 'Advanced Laravel', sources: ['L45'] }).valid
     ).toBe(true);
@@ -98,8 +112,8 @@ describe('AI output contract', () => {
   });
 });
 
-function field(value: string | string[], sources: string[], raw?: string) {
-  return raw === undefined ? { value, sources } : { value, raw, sources };
+function field(value: string | string[], sources: string[], raw?: string, confidence = 0.9) {
+  return raw === undefined ? { value, confidence, sources } : { value, raw, confidence, sources };
 }
 
 function output(claims: unknown[], extra: Record<string, unknown> = {}) {
@@ -116,7 +130,14 @@ describe('AI output mapping', () => {
         type: 'employment',
         origin: 'extracted',
         status: 'pending',
-        confidence: 0.9,
+        confidence: 0.8,
+        fieldConfidence: {
+          jobTitle: 0.95,
+          employer: 0.9,
+          startDate: 0.9,
+          endDate: 0.85,
+          skills: 0.8
+        },
         current: true,
         values: {
           jobTitle: 'Backend Developer',
@@ -168,7 +189,7 @@ describe('AI output mapping', () => {
           url: field('https://github.com/emma/shop', ['L25'])
         }
       }
-    ].map((claim) => ({ ...claim, confidence: 0.8 }));
+    ];
 
     const result = mapAiOutput(output(claims));
 
@@ -182,21 +203,69 @@ describe('AI output mapping', () => {
     ]);
   });
 
+  it('keeps a doubtful value and gives the claim its lowest field confidence', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'language',
+          fields: {
+            name: field('Spanish', ['L34'], undefined, 0.95),
+            proficiency: field('B2', ['L34'], undefined, 0.4)
+          }
+        }
+      ])
+    );
+
+    expect(result.unmapped).toEqual([]);
+    expect(result.claims[0]).toMatchObject({
+      values: { name: 'Spanish', proficiency: 'B2' },
+      fieldConfidence: { name: 0.95, proficiency: 0.4 },
+      confidence: 0.4
+    });
+  });
+
   it.each([
     [
       'a required field is missing',
       'employment',
-      { name: field('Shop API', ['L1']) },
+      { jobTitle: field('Developer', ['L1']), startDate: field('2021-03', ['L2']) },
       'missing_employer'
     ],
     [
-      'the start date has only a year',
+      'the required start date has only a year',
       'education',
       {
         institution: field('Sample University', ['L1']),
         degree: field('BSc', ['L1']),
         startDate: field('2021', ['L2'])
       },
+      'invalid_date'
+    ],
+    [
+      'a required value is too long',
+      'language',
+      { name: field('x'.repeat(101), ['L1']) },
+      'invalid_value'
+    ]
+  ])('rejects the whole claim when %s', (_case, type, fields, reason) => {
+    const result = mapAiOutput(output([{ type, fields }]));
+
+    expect(result.claims).toEqual([]);
+    expect(result.unmapped).toEqual([expect.objectContaining({ label: type, reason })]);
+    expect(result.unmapped[0]!.sources.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    [
+      'the end date has only a year',
+      'education',
+      {
+        institution: field('Sample University', ['L1']),
+        degree: field('BSc', ['L1']),
+        startDate: field('2019-09', ['L2']),
+        endDate: field('2023', ['L2'])
+      },
+      'endDate',
       'invalid_date'
     ],
     [
@@ -207,27 +276,69 @@ describe('AI output mapping', () => {
         startDate: field('2024-06', ['L2']),
         endDate: field('2024-03', ['L2'])
       },
+      'endDate',
       'invalid_date_order'
     ],
     [
       'a field does not belong to the type',
       'skill',
       { name: field('Python', ['L1']), level: field('Expert', ['L1']) },
+      'level',
       'invalid_value'
     ],
-    ['a value is too long', 'language', { name: field('x'.repeat(101), ['L1']) }, 'invalid_value']
-  ])('keeps the claim as unmapped when %s', (_case, type, fields, reason) => {
-    const result = mapAiOutput(output([{ type, confidence: 0.7, fields }]));
+    [
+      'an optional value is too long',
+      'employment',
+      {
+        jobTitle: field('Developer', ['L1']),
+        employer: field('Example Corp', ['L1']),
+        startDate: field('2021-03', ['L2']),
+        location: field('x'.repeat(201), ['L3'])
+      },
+      'location',
+      'invalid_value'
+    ],
+    [
+      'an optional field has text but no value',
+      'project',
+      {
+        name: field('Shop API', ['L1']),
+        startDate: { raw: 'Spring 2024', confidence: 0.5, sources: ['L2'] }
+      },
+      'startDate',
+      'missing_value'
+    ]
+  ])('sets only the field aside when %s', (_case, type, fields, fieldName, reason) => {
+    const result = mapAiOutput(output([{ type, fields }]));
 
-    expect(result.claims).toEqual([]);
-    expect(result.unmapped).toEqual([expect.objectContaining({ label: type, reason })]);
-    expect(result.unmapped[0]!.sources.length).toBeGreaterThan(0);
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0]!.values).not.toHaveProperty(fieldName);
+    expect(result.claims[0]!.fieldConfidence).not.toHaveProperty(fieldName);
+    expect(result.unmapped).toEqual([
+      expect.objectContaining({ label: `${type}.${fieldName}`, reason })
+    ]);
+  });
+
+  it('leaves set-aside fields out of the claim confidence', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'project',
+          fields: {
+            name: field('Shop API', ['L1'], undefined, 0.9),
+            endDate: field('2024', ['L2'], undefined, 0.2)
+          }
+        }
+      ])
+    );
+
+    expect(result.claims[0]!.confidence).toBe(0.9);
   });
 
   it('keeps valid claims when other items in the same output are invalid', () => {
     const result = mapAiOutput(
       output([
-        { type: 'award', confidence: 0.9, fields: { name: field('Best Graduate', ['L30']) } },
+        { type: 'award', fields: { name: field('Best Graduate', ['L30']) } },
         employment,
         'not a claim'
       ])
@@ -240,12 +351,11 @@ describe('AI output mapping', () => {
     ]);
   });
 
-  it('keeps the text as written when an item is unmapped', () => {
+  it('keeps the text as written when a claim is unmapped', () => {
     const result = mapAiOutput(
       output([
         {
           type: 'education',
-          confidence: 0.6,
           fields: {
             institution: field('Sample University', ['L1']),
             degree: field('BSc', ['L1']),
@@ -267,10 +377,10 @@ describe('AI output mapping', () => {
     const result = mapAiOutput(
       output([], {
         profile: {
-          fullName: field(' Emma Carter ', ['L1']),
+          fullName: field(' Emma Carter ', ['L1'], undefined, 0.99),
           contactEmail: field('emma at example', ['L3']),
           links: [
-            field('https://github.com/emma', ['L4'], 'GitHub'),
+            field('https://github.com/emma', ['L4'], 'GitHub', 0.8),
             field('https://linkedin.com/in/emma', ['L4'])
           ]
         }
@@ -283,6 +393,7 @@ describe('AI output mapping', () => {
         profileLinks: [{ label: 'GitHub', url: 'https://github.com/emma' }]
       },
       rawValues: {},
+      confidence: { fullName: 0.99, profileLinks: 0.8 },
       sources: { fullName: ['L1'], profileLinks: ['L4'] }
     });
     expect(result.unmapped).toEqual([
@@ -357,7 +468,7 @@ describe('AI output mapping', () => {
       certification: 1,
       skill: 3,
       language: 2,
-      project: 1
+      project: 2
     });
     expect(
       result.claims.every(
@@ -365,10 +476,10 @@ describe('AI output mapping', () => {
           claim.origin === 'extracted' && claim.status === 'pending' && claim.sources.length > 0
       )
     ).toBe(true);
-    expect(result.claims[0]).toMatchObject({ current: true, confidence: 0.95 });
+    expect(result.claims[0]).toMatchObject({ current: true, confidence: 0.75 });
     expect(result.unmapped.map(({ label, reason }) => [label, reason])).toEqual([
       ['education', 'invalid_date'],
-      ['project', 'invalid_date_order'],
+      ['project.endDate', 'invalid_date_order'],
       ['award', 'invalid_item'],
       ['Courses', 'unsupported_section'],
       ['Interests', 'unsupported_section']

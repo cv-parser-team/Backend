@@ -17,12 +17,23 @@ export interface ValidationResult {
   valid: boolean;
   // Short messages such as "/fields/startDate/sources must NOT have fewer than 1 items".
   errors: string[];
+  // Top-level properties that failed, such as "description" for a value that is
+  // too long, so a single invalid field can be set aside.
+  fields: string[];
 }
 
-function describeErrors(errors: ErrorObject[] | null | undefined): string[] {
-  return (errors ?? []).map(
-    (error) => `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`
-  );
+function describeErrors(errors: ErrorObject[]): string[] {
+  return errors.map((error) => `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`);
+}
+
+function failedFields(errors: ErrorObject[]): string[] {
+  const fields = errors.map((error) => {
+    const [, field] = error.instancePath.split('/');
+    const params: Record<string, unknown> = error.params;
+    const named = params.additionalProperty ?? params.missingProperty;
+    return field || (typeof named === 'string' ? named : '');
+  });
+  return [...new Set(fields.filter(Boolean))];
 }
 
 // Compiles a schema once and returns a function that checks values against it.
@@ -30,7 +41,8 @@ export function validatorFor(schema: object): (value: unknown) => ValidationResu
   const validate = ajv.compile(schema);
   return (value) => {
     const valid = validate(value);
-    return { valid, errors: valid ? [] : describeErrors(validate.errors) };
+    const errors = valid ? [] : (validate.errors ?? []);
+    return { valid, errors: describeErrors(errors), fields: failedFields(errors) };
   };
 }
 
