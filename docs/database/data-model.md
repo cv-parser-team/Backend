@@ -39,6 +39,7 @@ erDiagram
         text summary "nullable"
         text phone "nullable"
         text location "nullable"
+        text contact_email "nullable"
         jsonb profile_links
         timestamptz created_at
         timestamptz updated_at
@@ -82,6 +83,21 @@ erDiagram
         date expiry_date "nullable"
         text credential_id "nullable"
     }
+    LANGUAGE_DETAILS {
+        uuid claim_id PK, FK
+        text name
+        text proficiency "nullable"
+    }
+    PROJECT_DETAILS {
+        uuid claim_id PK, FK
+        text name
+        text description "nullable"
+        text role "nullable"
+        text url "nullable"
+        date start_date "nullable"
+        date end_date "nullable"
+        text[] skills
+    }
     CLAIM_REVISIONS {
         uuid revision_id PK
         uuid claim_id FK
@@ -110,6 +126,7 @@ erDiagram
         integer page_count "nullable"
         jsonb content
         jsonb failures
+        jsonb unmapped_data
         text parser_version
         timestamptz created_at
         timestamptz updated_at
@@ -124,6 +141,8 @@ erDiagram
     CLAIMS ||--o| EMPLOYMENT_DETAILS : "type employment"
     CLAIMS ||--o| EDUCATION_DETAILS : "type education"
     CLAIMS ||--o| CERTIFICATION_DETAILS : "type certification"
+    CLAIMS ||--o| LANGUAGE_DETAILS : "type language"
+    CLAIMS ||--o| PROJECT_DETAILS : "type project"
     CLAIMS ||--o{ CLAIM_REVISIONS : archives
 ```
 
@@ -185,6 +204,7 @@ through the users service. The row cascades on user deletion.
 | `summary` | Text | Nullable | Professional summary |
 | `phone` | Text | Nullable | Contact phone number |
 | `location` | Text | Nullable | Candidate location |
+| `contact_email` | Text | Nullable, valid email | Email shown on the CV and profile; can differ from the account email |
 | `profile_links` | JSONB | Required, defaults to `[]` | `{ label, url }` links such as LinkedIn or GitHub |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last update time |
@@ -194,10 +214,10 @@ through the users service. The row cascades on user deletion.
 Owned by the `candidates` module.
 
 A claim is one piece of profile information: a skill, an employment record,
-an education record, or a certification. Claims entered by the candidate are
-stored as `manual` and `accepted`. Only accepted claims appear in the exported
-profile; pending and rejected claims are excluded. Claims cascade on profile
-deletion.
+an education record, a certification, a language, or a project. Claims entered
+by the candidate are stored as `manual` and `accepted`. Only accepted claims
+appear in the exported profile; pending and rejected claims are excluded.
+Claims cascade on profile deletion.
 
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |
@@ -265,6 +285,29 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `expiry_date` | Date | Nullable, not before `issue_date` | Expiry month |
 | `credential_id` | Text | Nullable | Issuer credential identifier |
 
+### `language_details`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
+| `name` | Text | Required | Language, such as "English" |
+| `proficiency` | Text | Nullable | Level as written, such as "Native" or "C1"; one scale is left to normalization |
+
+### `project_details`
+
+Many CVs list projects without dates, so both dates are optional.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
+| `name` | Text | Required | Project name |
+| `description` | Text | Nullable | What the project does |
+| `role` | Text | Nullable | The candidate's role, such as "Backend developer" |
+| `url` | Text | Nullable, valid URL | Project or repository link |
+| `start_date` | Date | Nullable | First month of the project |
+| `end_date` | Date | Nullable, not before `start_date` when both are set | Last month |
+| `skills` | Text array | Required, defaults to empty, GIN indexed | Skills used in the project |
+
 ## Claim revisions
 
 Owned by the `candidates` module.
@@ -284,7 +327,8 @@ Revisions are not searched and cascade on claim deletion.
 
 ### Enumerations
 
-- `claim_type`: `skill`, `employment`, `education`, `certification`
+- `claim_type`: `skill`, `employment`, `education`, `certification`,
+  `language`, `project`
 - `claim_origin`: `manual`, `extracted`
 - `claim_status`: `pending`, `accepted`, `rejected`
 
@@ -352,6 +396,7 @@ erDiagram
         integer page_count "nullable"
         jsonb content
         jsonb failures
+        jsonb unmapped_data
         text parser_version
         timestamptz created_at
         timestamptz updated_at
@@ -367,6 +412,7 @@ erDiagram
 | `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
 | `content` | JSONB | Required | `{ version, pages, blocks }`, described below |
 | `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code, such as `NO_TEXT_LAYER` or `UNSUPPORTED_LANGUAGE` |
+| `unmapped_data` | JSONB | Required, defaults to `[]` | Information outside the profile schema, such as courses or awards, or items that could not become claims; filled by the AI-output mapping |
 | `parser_version` | Text | Required | Library and version that produced the result |
 | `created_at` | Timestamp with time zone | Required, generated | First extraction time |
 | `updated_at` | Timestamp with time zone | Required, generated | Latest extraction time |
@@ -393,6 +439,15 @@ results saved in an older shape can be told apart.
   - A paragraph has `text`, `heading`, `bold`, `italic`, and `links`.
   - A table has `columns` (the header row when Word marks one, else `null`)
     and `rows`, each a list of cell texts.
+
+### Unmapped data shape
+
+Each item in `unmapped_data` has a `label` (the CV section or field, such as
+"Courses & Certifications"), the `text`, its `sources` as AI-input line
+references (such as `L12` or `B3`), and a `reason`, such as
+`unsupported_section` or `missing_start_date`. The parser does not fill it, and
+parsing a document again does not clear it yet; that is decided with the
+AI-output mapping.
 
 ## Maintenance rules
 

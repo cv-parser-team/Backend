@@ -44,6 +44,7 @@ erDiagram
         text summary
         text phone
         text location
+        text contact_email
         jsonb profile_links
         timestamptz created_at
         timestamptz updated_at
@@ -72,7 +73,7 @@ erDiagram
         jsonb failures
         text parser_version
         integer attempt_count "Part 2"
-        jsonb unmapped_data "Part 2"
+        jsonb unmapped_data
         timestamptz created_at
         timestamptz updated_at
     }
@@ -135,6 +136,21 @@ erDiagram
         date issue_date
         date expiry_date
         text credential_id
+    }
+    LanguageDetails {
+        uuid claim_id PK, FK
+        text name
+        text proficiency
+    }
+    ProjectDetails {
+        uuid claim_id PK, FK
+        text name
+        text description
+        text role
+        text url
+        date start_date
+        date end_date
+        text[] skills
     }
     ClaimRevision {
         uuid revision_id PK
@@ -235,6 +251,8 @@ erDiagram
     Claim ||--o| EmploymentDetails : "employment details"
     Claim ||--o| EducationDetails : "education details"
     Claim ||--o| CertificationDetails : "certification details"
+    Claim ||--o| LanguageDetails : "language details"
+    Claim ||--o| ProjectDetails : "project details"
     Claim ||--o{ ClaimRevision : "archives"
     Claim ||--o{ NormalizationDecision : "has"
     Claim ||--o{ Conflict : "has"
