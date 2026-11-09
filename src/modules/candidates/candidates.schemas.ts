@@ -16,6 +16,8 @@ const longTextSchema = {
 
 const phoneSchema = { type: 'string', minLength: 1, maxLength: 30 } as const;
 
+const contactEmailSchema = { type: 'string', format: 'email', maxLength: 320 } as const;
+
 // Year and month only (YYYY-MM), matching how CVs usually present dates.
 const monthSchema = {
   type: 'string',
@@ -46,6 +48,7 @@ export const createCandidateBodySchema = {
     summary: longTextSchema,
     phone: phoneSchema,
     location: shortTextSchema,
+    contactEmail: contactEmailSchema,
     profileLinks: profileLinksSchema
   },
   required: ['fullName'],
@@ -62,6 +65,7 @@ export const updateCandidateBodySchema = {
     summary: { anyOf: [longTextSchema, { type: 'null' }] },
     phone: { anyOf: [phoneSchema, { type: 'null' }] },
     location: { anyOf: [shortTextSchema, { type: 'null' }] },
+    contactEmail: { anyOf: [contactEmailSchema, { type: 'null' }] },
     profileLinks: profileLinksSchema
   },
   minProperties: 1,
@@ -124,14 +128,45 @@ export const certificationValuesSchema = {
   additionalProperties: false
 } as const;
 
+export const languageValuesSchema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', minLength: 1, maxLength: 100, pattern: '\\S' },
+    proficiency: { type: 'string', minLength: 1, maxLength: 100, pattern: '\\S' }
+  },
+  required: ['name'],
+  additionalProperties: false
+} as const;
+
+export const projectValuesSchema = {
+  type: 'object',
+  properties: {
+    name: shortTextSchema,
+    description: longTextSchema,
+    role: shortTextSchema,
+    url: { type: 'string', format: 'uri', maxLength: 2048 },
+    startDate: monthSchema,
+    endDate: monthSchema,
+    skills: {
+      type: 'array',
+      maxItems: 50,
+      items: { type: 'string', minLength: 1, maxLength: 100, pattern: '\\S' }
+    }
+  },
+  required: ['name'],
+  additionalProperties: false
+} as const;
+
 export type SkillValues = FromSchema<typeof skillValuesSchema>;
 export type EmploymentValues = FromSchema<typeof employmentValuesSchema>;
 export type EducationValues = FromSchema<typeof educationValuesSchema>;
 export type CertificationValues = FromSchema<typeof certificationValuesSchema>;
+export type LanguageValues = FromSchema<typeof languageValuesSchema>;
+export type ProjectValues = FromSchema<typeof projectValuesSchema>;
 
 const claimTypeSchema = {
   type: 'string',
-  enum: ['skill', 'employment', 'education', 'certification']
+  enum: ['skill', 'employment', 'education', 'certification', 'language', 'project']
 } as const;
 
 const claimStatusSchema = {
@@ -166,6 +201,14 @@ export const claimBodySchema = {
     {
       if: { properties: { type: { const: 'certification' } } },
       then: { properties: { values: certificationValuesSchema } }
+    },
+    {
+      if: { properties: { type: { const: 'language' } } },
+      then: { properties: { values: languageValuesSchema } }
+    },
+    {
+      if: { properties: { type: { const: 'project' } } },
+      then: { properties: { values: projectValuesSchema } }
     }
   ]
 } as const;
@@ -174,7 +217,9 @@ export type ClaimBody =
   | { type: 'skill'; values: SkillValues }
   | { type: 'employment'; values: EmploymentValues }
   | { type: 'education'; values: EducationValues }
-  | { type: 'certification'; values: CertificationValues };
+  | { type: 'certification'; values: CertificationValues }
+  | { type: 'language'; values: LanguageValues }
+  | { type: 'project'; values: ProjectValues };
 
 export const claimParamsSchema = {
   type: 'object',

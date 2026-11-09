@@ -43,6 +43,13 @@
       "when": 1793782229814,
       "tag": "0005_mighty_solo",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794209936547,
+      "tag": "0006_wise_magdalene",
+      "breakpoints": true
     }
   ]
 }

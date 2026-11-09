@@ -28,6 +28,7 @@ export interface CandidateProfile {
   summary: string | null;
   phone: string | null;
   location: string | null;
+  contactEmail: string | null;
   profileLinks: ProfileLink[];
   createdAt: Date;
   updatedAt: Date;
@@ -52,6 +53,8 @@ export interface ExportedProfile {
   employment: ExportedClaim[];
   education: ExportedClaim[];
   certifications: ExportedClaim[];
+  languages: ExportedClaim[];
+  projects: ExportedClaim[];
 }
 
 export interface CandidatesService {
@@ -90,6 +93,7 @@ function toCandidateProfile(
     summary: candidate.summary,
     phone: candidate.phone,
     location: candidate.location,
+    contactEmail: candidate.contactEmail,
     profileLinks: candidate.profileLinks,
     createdAt: candidate.createdAt,
     updatedAt: candidate.updatedAt
@@ -127,7 +131,17 @@ function assertValidClaimDates(input: ClaimBody): void {
         throw new InvalidClaimDatesError('Expiry date cannot be before issue date');
       }
       break;
+    case 'project':
+      if (
+        input.values.startDate &&
+        input.values.endDate &&
+        input.values.endDate < input.values.startDate
+      ) {
+        throw new InvalidClaimDatesError('End date cannot be before start date');
+      }
+      break;
     case 'skill':
+    case 'language':
       break;
   }
 }
@@ -188,6 +202,7 @@ export function createCandidatesService({
         summary: trimOptional(input.summary),
         phone: trimOptional(input.phone),
         location: trimOptional(input.location),
+        contactEmail: trimOptional(input.contactEmail),
         profileLinks: normalizeProfileLinks(input.profileLinks ?? [])
       });
 
@@ -217,6 +232,9 @@ export function createCandidatesService({
       }
       if (input.location !== undefined) {
         changes.location = trimOptional(input.location);
+      }
+      if (input.contactEmail !== undefined) {
+        changes.contactEmail = trimOptional(input.contactEmail);
       }
       if (input.profileLinks !== undefined) {
         changes.profileLinks = normalizeProfileLinks(input.profileLinks);
@@ -292,6 +310,7 @@ export function createCandidatesService({
         personalInfo: {
           fullName: candidate.fullName,
           email,
+          contactEmail: candidate.contactEmail,
           headline: candidate.headline,
           summary: candidate.summary,
           phone: candidate.phone,
@@ -301,7 +320,9 @@ export function createCandidatesService({
         skills: [],
         employment: [],
         education: [],
-        certifications: []
+        certifications: [],
+        languages: [],
+        projects: []
       };
 
       for (const claim of acceptedClaims) {
@@ -318,6 +339,12 @@ export function createCandidatesService({
             break;
           case 'certification':
             exported.certifications.push(exportedClaim);
+            break;
+          case 'language':
+            exported.languages.push(exportedClaim);
+            break;
+          case 'project':
+            exported.projects.push(exportedClaim);
             break;
         }
       }

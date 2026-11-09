@@ -43,6 +43,7 @@ function createRepositoryDouble(): ParsingRepository {
           blocks: result.blocks
         },
         failures: result.failures,
+        unmappedData: [],
         parserVersion: result.parserVersion,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         updatedAt: new Date('2026-01-01T00:00:00.000Z')
@@ -81,6 +82,16 @@ describe('document extractions table', () => {
     expect(config.foreignKeys).toHaveLength(1);
     expect(getTableConfig(foreignKey!.reference().foreignTable).name).toBe('documents');
     expect(foreignKey!.onDelete).toBe('cascade');
+  });
+
+  it('keeps unmapped information in a list that starts empty', () => {
+    const column = getTableConfig(documentExtractions).columns.find(
+      (candidate) => candidate.name === 'unmapped_data'
+    );
+
+    expect(column?.columnType).toBe('PgJsonb');
+    expect(column?.notNull).toBe(true);
+    expect(column?.default).toEqual([]);
   });
 });
 

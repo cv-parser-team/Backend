@@ -25,7 +25,9 @@ export const claimType = pgEnum('claim_type', [
   'skill',
   'employment',
   'education',
-  'certification'
+  'certification',
+  'language',
+  'project'
 ]);
 
 export const claimOrigin = pgEnum('claim_origin', ['manual', 'extracted']);
@@ -48,6 +50,8 @@ export const candidates = pgTable(
     summary: text('summary'),
     phone: text('phone'),
     location: text('location'),
+    // The email shown on the CV, which can differ from the account email.
+    contactEmail: text('contact_email'),
     profileLinks: jsonb('profile_links')
       .$type<ProfileLink[]>()
       .default([])
@@ -173,6 +177,37 @@ export const certificationDetails = pgTable(
     check(
       'certification_details_dates_ordered',
       sql`${table.expiryDate} is null or ${table.expiryDate} >= ${table.issueDate}`
+    )
+  ]
+);
+
+// Proficiency is kept as the candidate or CV writes it, such as "Native" or
+// "C1"; mapping it to one scale belongs to normalization.
+export const languageDetails = pgTable('language_details', {
+  claimId: detailsClaimId(),
+  name: text('name').notNull(),
+  proficiency: text('proficiency')
+});
+
+// Many CVs list projects without dates, so both dates are optional.
+export const projectDetails = pgTable(
+  'project_details',
+  {
+    claimId: detailsClaimId(),
+    name: text('name').notNull(),
+    description: text('description'),
+    role: text('role'),
+    url: text('url'),
+    startDate: date('start_date', { mode: 'string' }),
+    endDate: date('end_date', { mode: 'string' }),
+    skills: text('skills').array().default(sql`'{}'::text[]`).notNull()
+  },
+  (table) => [
+    index('project_details_skills_idx').using('gin', table.skills),
+    check(
+      'project_details_dates_ordered',
+      sql`${table.startDate} is null or ${table.endDate} is null
+        or ${table.endDate} >= ${table.startDate}`
     )
   ]
 );
