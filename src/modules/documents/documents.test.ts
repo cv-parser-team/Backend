@@ -77,6 +77,15 @@ function createService(): DocumentsService {
     openDocument: vi.fn().mockResolvedValue({
       document: documentRecord,
       stream: Readable.from('stored document')
+    }),
+    markDocumentProcessing: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'processing'
+    }),
+    markDocumentReady: vi.fn().mockResolvedValue(documentRecord),
+    openDocumentForProcessing: vi.fn().mockResolvedValue({
+      document: documentRecord,
+      stream: Readable.from('stored document')
     })
   };
 }
@@ -91,6 +100,12 @@ function createRepository(
     listStorageKeys: vi.fn().mockResolvedValue([documentRecord.storageKey]),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
+    findDocumentById: vi.fn().mockResolvedValue(documentRecord),
+    markDocumentProcessing: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'processing'
+    }),
+    markDocumentReady: vi.fn().mockResolvedValue(documentRecord),
     updateDocumentStatus: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(true),
     ...overrides
@@ -333,6 +348,108 @@ describe('documents service', () => {
     expect(storage.open).toHaveBeenCalledWith(documentRecord.storageKey);
     expect(result.document).toEqual(documentRecord);
     await expect(buffer(result.stream)).resolves.toEqual(contents);
+  });
+
+  it('opens a document for processing without requiring an owner ID', async () => {
+    const contents = Buffer.from('document processing bytes');
+    const repository = createRepository();
+    const storage = createStorage({
+      open: vi.fn().mockResolvedValue(Readable.from(contents))
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    const result = await service.openDocumentForProcessing(documentId);
+
+    expect(repository.findDocumentById).toHaveBeenCalledWith(documentId);
+    expect(repository.findDocument).not.toHaveBeenCalled();
+    expect(storage.open).toHaveBeenCalledWith(documentRecord.storageKey);
+    expect(result.document.mediaType).toBe('application/pdf');
+    await expect(buffer(result.stream)).resolves.toEqual(contents);
+  });
+
+  it('marks a stored document as processing', async () => {
+    const processingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'processing'
+    };
+    const repository = createRepository({
+      markDocumentProcessing: vi.fn().mockResolvedValue(processingDocument)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentProcessing(documentId)
+    ).resolves.toBe(processingDocument);
+    expect(repository.markDocumentProcessing).toHaveBeenCalledWith(documentId);
+  });
+
+  it('returns null when a document cannot be marked as processing', async () => {
+    const repository = createRepository({
+      markDocumentProcessing: vi.fn().mockResolvedValue(null)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentProcessing(documentId)
+    ).resolves.toBeNull();
+  });
+
+  it('marks a processing document as ready', async () => {
+    const repository = createRepository({
+      markDocumentReady: vi.fn().mockResolvedValue(documentRecord)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(service.markDocumentReady(documentId)).resolves.toBe(
+      documentRecord
+    );
+    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId);
+  });
+
+  it('returns null when a document cannot be marked as ready', async () => {
+    const repository = createRepository({
+      markDocumentReady: vi.fn().mockResolvedValue(null)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(service.markDocumentReady(documentId)).resolves.toBeNull();
+  });
+
+  it('rejects processing access when document metadata is absent', async () => {
+    const repository = createRepository({
+      findDocumentById: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.openDocumentForProcessing(documentId)
+    ).rejects.toBeInstanceOf(RecordNotFoundError);
+    expect(storage.open).not.toHaveBeenCalled();
   });
 
   it('deletes the owned storage object and its metadata', async () => {

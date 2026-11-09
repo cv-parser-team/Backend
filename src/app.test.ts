@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import type { FastifyInstance } from 'fastify';
+import { createTestApp } from './testing/create-test-app.js';
+import { createFakeMessageBroker } from './testing/fake-message-broker.js';
 
 describe('application', () => {
   let app: FastifyInstance | undefined;
@@ -11,7 +13,7 @@ describe('application', () => {
   });
 
   it('does not register the removed health route', async () => {
-    app = await createApp();
+    app = await createTestApp();
     const response = await app.inject({
       method: 'GET',
       url: '/api/health'
@@ -25,7 +27,7 @@ describe('application', () => {
   });
 
   it('POST /api/auth/register validates missing fields via Ajv JSON Schema', async () => {
-    app = await createApp();
+    app = await createTestApp();
     const response = await app.inject({
       method: 'POST',
       url: '/api/auth/register',
@@ -42,7 +44,7 @@ describe('application', () => {
   });
 
   it('does not expose the former public user-creation endpoint', async () => {
-    app = await createApp();
+    app = await createTestApp();
     const response = await app.inject({
       method: 'POST',
       url: '/api/users',
@@ -56,7 +58,7 @@ describe('application', () => {
   });
 
   it('requires authentication to list users', async () => {
-    app = await createApp();
+    app = await createTestApp();
     const response = await app.inject({
       method: 'GET',
       url: '/api/users'
@@ -70,7 +72,7 @@ describe('application', () => {
   });
 
   it('GET /api/users/:id validates UUID parameter format via Ajv JSON Schema', async () => {
-    app = await createApp();
+    app = await createTestApp();
     const response = await app.inject({
       method: 'GET',
       url: '/api/users/not-a-valid-uuid'
@@ -80,5 +82,18 @@ describe('application', () => {
     const body = response.json();
     expect(body.success).toBe(false);
     expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('composes messaging and document processing with managed shutdown', async () => {
+    const messageBroker = createFakeMessageBroker();
+    app = await createApp({ messageBroker });
+
+    expect(app.messageBroker).toBe(messageBroker);
+    expect(typeof app.documentProcessingService.schedule).toBe('function');
+
+    await app.close();
+    app = undefined;
+
+    expect(messageBroker.closeCallCount).toBe(1);
   });
 });

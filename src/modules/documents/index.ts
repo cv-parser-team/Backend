@@ -107,3 +107,8 @@ export const documentsModule = fastifyPlugin(registerDocuments, {
   name: 'documents',
   dependencies: ['database', 'auth']
 });
+
+export type {
+  DocumentContent,
+  ProcessingDocumentsService
+} from './documents.service.js';

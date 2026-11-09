@@ -7,7 +7,7 @@ modular monolith built with Fastify, PostgreSQL, Drizzle ORM, Ajv, and Vitest.
 
 - Node.js 24 (see `.nvmrc`)
 - npm
-- Docker Compose for the local PostgreSQL instance
+- Docker Compose for the local PostgreSQL and RabbitMQ instances
 
 ## Local development
 
@@ -16,7 +16,7 @@ nvm use
 npm install
 cp .env.example .env
 set -a && source .env && set +a
-npm run db:up
+npm run infra:up
 npm run db:push
 npm run dev
 ```
@@ -35,6 +35,12 @@ does not load `.env` files itself.
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |
 | `npm run test:watch` | Run tests in watch mode |
+| `npm run infra:up` | Start PostgreSQL and RabbitMQ |
+| `npm run infra:down` | Stop local infrastructure containers |
+| `npm run infra:logs` | Follow PostgreSQL and RabbitMQ logs |
+| `npm run messaging:up` | Start RabbitMQ |
+| `npm run messaging:down` | Stop RabbitMQ |
+| `npm run messaging:logs` | Follow RabbitMQ logs |
 | `npm run db:up` | Start PostgreSQL |
 | `npm run db:down` | Stop local containers |
 | `npm run db:generate` | Generate a Drizzle migration |
@@ -110,3 +116,13 @@ postgresql://postgres:postgrespassword@localhost:5432/luminacv
 ```
 
 Override it with `DATABASE_URL` outside local development.
+
+The default local RabbitMQ connection is:
+
+```text
+amqp://luminacv:luminacvpassword@localhost:5672
+```
+
+The RabbitMQ management UI is available at `http://localhost:15672` using the
+local username `luminacv` and password `luminacvpassword`. Override the broker
+connection with `RABBITMQ_URL` outside local development.

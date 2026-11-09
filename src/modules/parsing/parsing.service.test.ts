@@ -1,7 +1,7 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from '../../app.js';
+import { createTestApp } from '../../testing/create-test-app.js';
 import { createDocxParser } from './docx-parser.js';
 import { UnsupportedDocumentTypeError } from './parsing.errors.js';
 import { ExtractionRecord, ParsingRepository } from './parsing.repository.js';
@@ -58,7 +58,7 @@ async function readFixture(name: string): Promise<Uint8Array> {
 
 describe('parsing module', () => {
   it('shares the parsing service with other modules', async () => {
-    const app = await createApp();
+    const app = await createTestApp();
     try {
       await app.ready();
       expect(app.hasDecorator('parsingService')).toBe(true);
