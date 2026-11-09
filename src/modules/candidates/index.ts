@@ -7,7 +7,9 @@ export const candidatesModule: FastifyPluginAsync = async (fastify) => {
   const repository = createCandidatesRepository(fastify.database);
   const service = createCandidatesService({
     repository,
-    usersService: fastify.usersService
+    usersService: fastify.usersService,
+    normalizer: fastify.normalizationService,
+    logger: fastify.log
   });
 
   await fastify.register(candidatesRoutes, {

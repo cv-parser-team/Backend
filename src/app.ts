@@ -10,6 +10,7 @@ import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.j
 import { authModule } from './modules/auth/index.js';
 import { candidatesModule } from './modules/candidates/index.js';
 import { documentsModule } from './modules/documents/index.js';
+import { normalizationModule } from './modules/normalization/index.js';
 import { parsingModule } from './modules/parsing/index.js';
 import { usersModule } from './modules/users/index.js';
 
@@ -58,6 +59,7 @@ export async function createApp(
   await app.register(authModule);
   await app.register(usersModule);
   await app.register(documentsModule);
+  await app.register(normalizationModule);
   await app.register(candidatesModule, {
     prefix: '/api/candidates'
   });
