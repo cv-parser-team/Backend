@@ -1,0 +1,440 @@
+{
+  "version": 1,
+  "profile": {
+    "fullName": {
+      "value": "Emma Carter",
+      "confidence": 0.95,
+      "sources": [
+        "L1"
+      ]
+    },
+    "headline": {
+      "value": "Backend Developer",
+      "confidence": 0.95,
+      "sources": [
+        "L2"
+      ]
+    },
+    "summary": {
+      "value": "Backend developer with four years of experience building REST APIs and payment services.",
+      "confidence": 0.95,
+      "sources": [
+        "L6-7"
+      ]
+    },
+    "phone": {
+      "value": "+1 555 0100",
+      "confidence": 0.95,
+      "sources": [
+        "L3"
+      ]
+    },
+    "location": {
+      "value": "Springfield",
+      "confidence": 0.95,
+      "sources": [
+        "L3"
+      ]
+    },
+    "contactEmail": {
+      "value": "emma.carter@example.com",
+      "confidence": 0.95,
+      "sources": [
+        "L3"
+      ]
+    },
+    "links": [
+      {
+        "value": "https://www.linkedin.com/in/emma-carter",
+        "raw": "LinkedIn",
+        "confidence": 0.9,
+        "sources": [
+          "L4"
+        ]
+      },
+      {
+        "value": "https://github.com/emma-carter",
+        "raw": "GitHub",
+        "confidence": 0.9,
+        "sources": [
+          "L4"
+        ]
+      }
+    ]
+  },
+  "claims": [
+    {
+      "type": "employment",
+      "fields": {
+        "jobTitle": {
+          "value": "Backend Developer",
+          "confidence": 0.95,
+          "sources": [
+            "L10"
+          ]
+        },
+        "employer": {
+          "value": "Example Corp",
+          "confidence": 0.95,
+          "sources": [
+            "L10"
+          ]
+        },
+        "location": {
+          "value": "Remote",
+          "confidence": 0.95,
+          "sources": [
+            "L10"
+          ]
+        },
+        "startDate": {
+          "value": "2023-10",
+          "raw": "Oct 2023",
+          "confidence": 0.95,
+          "sources": [
+            "L11"
+          ]
+        },
+        "endDate": {
+          "raw": "Present",
+          "current": true,
+          "confidence": 0.95,
+          "sources": [
+            "L11"
+          ]
+        },
+        "description": {
+          "value": "Built REST APIs for the payments team and reduced response times by 40%.",
+          "confidence": 0.75,
+          "sources": [
+            "L12-13",
+            "L14"
+          ]
+        },
+        "skills": {
+          "value": [
+            "Node.js",
+            "PostgreSQL",
+            "Docker"
+          ],
+          "confidence": 0.95,
+          "sources": [
+            "L12-13"
+          ]
+        }
+      }
+    },
+    {
+      "type": "employment",
+      "fields": {
+        "jobTitle": {
+          "value": "Software Intern",
+          "confidence": 0.9,
+          "sources": [
+            "L16"
+          ]
+        },
+        "employer": {
+          "value": "Sample Labs",
+          "confidence": 0.9,
+          "sources": [
+            "L16"
+          ]
+        },
+        "startDate": {
+          "value": "2022-06",
+          "raw": "Jun 2022",
+          "confidence": 0.9,
+          "sources": [
+            "L17"
+          ]
+        },
+        "endDate": {
+          "value": "2022-09",
+          "raw": "Sep 2022",
+          "confidence": 0.9,
+          "sources": [
+            "L17"
+          ]
+        },
+        "description": {
+          "value": "Wrote integration tests for the booking API.",
+          "confidence": 0.9,
+          "sources": [
+            "L18"
+          ]
+        }
+      }
+    },
+    {
+      "type": "education",
+      "fields": {
+        "institution": {
+          "value": "Sample University",
+          "confidence": 0.93,
+          "sources": [
+            "L21"
+          ]
+        },
+        "degree": {
+          "value": "BSc",
+          "confidence": 0.93,
+          "sources": [
+            "L22"
+          ]
+        },
+        "fieldOfStudy": {
+          "value": "Computer Science",
+          "confidence": 0.93,
+          "sources": [
+            "L22"
+          ]
+        },
+        "startDate": {
+          "value": "2018-09",
+          "raw": "09/2018",
+          "confidence": 0.93,
+          "sources": [
+            "L23"
+          ]
+        },
+        "endDate": {
+          "value": "2022-06",
+          "raw": "06/2022",
+          "confidence": 0.93,
+          "sources": [
+            "L23"
+          ]
+        }
+      }
+    },
+    {
+      "type": "education",
+      "fields": {
+        "institution": {
+          "value": "Springfield High School",
+          "confidence": 0.7,
+          "sources": [
+            "L24"
+          ]
+        },
+        "degree": {
+          "value": "High School Diploma",
+          "confidence": 0.7,
+          "sources": [
+            "L24"
+          ]
+        },
+        "startDate": {
+          "value": "2018",
+          "raw": "Class of 2018",
+          "confidence": 0.7,
+          "sources": [
+            "L25"
+          ]
+        }
+      }
+    },
+    {
+      "type": "certification",
+      "fields": {
+        "title": {
+          "value": "AWS Certified Developer",
+          "confidence": 0.88,
+          "sources": [
+            "L27"
+          ]
+        },
+        "issuer": {
+          "value": "Amazon Web Services",
+          "confidence": 0.88,
+          "sources": [
+            "L27"
+          ]
+        },
+        "issueDate": {
+          "value": "2024-02",
+          "raw": "Feb 2024",
+          "confidence": 0.88,
+          "sources": [
+            "L27"
+          ]
+        },
+        "expiryDate": {
+          "value": "2027-02",
+          "raw": "Feb 2027",
+          "confidence": 0.88,
+          "sources": [
+            "L27"
+          ]
+        }
+      }
+    },
+    {
+      "type": "skill",
+      "fields": {
+        "name": {
+          "value": "Node.js",
+          "confidence": 0.97,
+          "sources": [
+            "L30"
+          ]
+        }
+      }
+    },
+    {
+      "type": "skill",
+      "fields": {
+        "name": {
+          "value": "PostgreSQL",
+          "confidence": 0.97,
+          "sources": [
+            "L30"
+          ]
+        }
+      }
+    },
+    {
+      "type": "skill",
+      "fields": {
+        "name": {
+          "value": "Docker",
+          "confidence": 0.96,
+          "sources": [
+            "L30"
+          ]
+        }
+      }
+    },
+    {
+      "type": "language",
+      "fields": {
+        "name": {
+          "value": "English",
+          "confidence": 0.98,
+          "sources": [
+            "L33"
+          ]
+        },
+        "proficiency": {
+          "value": "Native",
+          "confidence": 0.98,
+          "sources": [
+            "L33"
+          ]
+        }
+      }
+    },
+    {
+      "type": "language",
+      "fields": {
+        "name": {
+          "value": "Spanish",
+          "confidence": 0.9,
+          "sources": [
+            "L34"
+          ]
+        },
+        "proficiency": {
+          "value": "B2",
+          "confidence": 0.9,
+          "sources": [
+            "L34"
+          ]
+        }
+      }
+    },
+    {
+      "type": "project",
+      "fields": {
+        "name": {
+          "value": "Shop API",
+          "confidence": 0.85,
+          "sources": [
+            "L36"
+          ]
+        },
+        "description": {
+          "value": "REST API for an online shop with 50+ endpoints.",
+          "confidence": 0.85,
+          "sources": [
+            "L37"
+          ]
+        },
+        "url": {
+          "value": "https://github.com/emma-carter/shop-api",
+          "confidence": 0.85,
+          "sources": [
+            "L36"
+          ]
+        },
+        "skills": {
+          "value": [
+            "Laravel",
+            "MySQL"
+          ],
+          "confidence": 0.85,
+          "sources": [
+            "L37"
+          ]
+        }
+      }
+    },
+    {
+      "type": "project",
+      "fields": {
+        "name": {
+          "value": "Booking Dashboard",
+          "confidence": 0.6,
+          "sources": [
+            "L38"
+          ]
+        },
+        "startDate": {
+          "value": "2024-05",
+          "raw": "May 2024",
+          "confidence": 0.6,
+          "sources": [
+            "L38"
+          ]
+        },
+        "endDate": {
+          "value": "2024-01",
+          "raw": "Jan 2024",
+          "confidence": 0.6,
+          "sources": [
+            "L38"
+          ]
+        }
+      }
+    },
+    {
+      "type": "award",
+      "fields": {
+        "name": {
+          "value": "Best Graduation Project 2022",
+          "confidence": 0.8,
+          "sources": [
+            "L40"
+          ]
+        }
+      }
+    }
+  ],
+  "unmapped": [
+    {
+      "label": "Courses",
+      "text": "Advanced Laravel (09/2022)",
+      "sources": [
+        "L42"
+      ]
+    },
+    {
+      "label": "Interests",
+      "text": "Chess, hiking",
+      "sources": [
+        "L44"
+      ]
+    }
+  ]
+}

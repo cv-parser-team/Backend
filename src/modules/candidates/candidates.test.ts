@@ -32,6 +32,8 @@ import {
   claimType,
   educationDetails,
   employmentDetails,
+  languageDetails,
+  projectDetails,
   skillDetails
 } from './candidates.table.js';
 
@@ -48,6 +50,7 @@ const candidateRecord: CandidateRecord = {
   summary: null,
   phone: null,
   location: 'Amman',
+  contactEmail: null,
   profileLinks: [],
   createdAt: timestamp,
   updatedAt: timestamp
@@ -109,7 +112,9 @@ describe('candidates tables', () => {
       'skill',
       'employment',
       'education',
-      'certification'
+      'certification',
+      'language',
+      'project'
     ]);
     expect(claimOrigin.enumValues).toEqual(['manual', 'extracted']);
     expect(claimStatus.enumValues).toEqual(['pending', 'accepted', 'rejected']);
@@ -126,7 +131,9 @@ describe('candidates tables', () => {
       skillDetails,
       employmentDetails,
       educationDetails,
-      certificationDetails
+      certificationDetails,
+      languageDetails,
+      projectDetails
     ]) {
       const config = getTableConfig(table);
       const claimIdColumn = config.columns.find((column) => column.name === 'claim_id');
@@ -140,14 +147,20 @@ describe('candidates tables', () => {
     expect(getTableConfig(employmentDetails).checks).toHaveLength(1);
     expect(getTableConfig(educationDetails).checks).toHaveLength(1);
     expect(getTableConfig(certificationDetails).checks).toHaveLength(1);
+    expect(getTableConfig(projectDetails).checks).toHaveLength(1);
   });
 
-  it('indexes employment skills for search', () => {
-    const skillsIndex = getTableConfig(employmentDetails).indexes.find(
-      (index) => index.config.name === 'employment_details_skills_idx'
-    );
+  it('indexes employment and project skills for search', () => {
+    for (const [table, name] of [
+      [employmentDetails, 'employment_details_skills_idx'],
+      [projectDetails, 'project_details_skills_idx']
+    ] as const) {
+      const skillsIndex = getTableConfig(table).indexes.find(
+        (index) => index.config.name === name
+      );
 
-    expect(skillsIndex?.config.method).toBe('gin');
+      expect(skillsIndex?.config.method).toBe('gin');
+    }
   });
 });
 
@@ -159,6 +172,7 @@ describe('candidates service', () => {
     const result = await service.createProfile(userId, {
       fullName: '  Example Candidate  ',
       location: ' Amman ',
+      contactEmail: ' hello@example.com ',
       profileLinks: [{ label: ' GitHub ', url: 'https://github.com/example' }]
     });
 
@@ -169,6 +183,7 @@ describe('candidates service', () => {
       summary: null,
       phone: null,
       location: 'Amman',
+      contactEmail: 'hello@example.com',
       profileLinks: [{ label: 'GitHub', url: 'https://github.com/example' }]
     });
     expect(result.email).toBe('candidate@example.com');
@@ -199,11 +214,16 @@ describe('candidates service', () => {
     const repository = createRepositoryDouble();
     const service = createService(repository);
 
-    await service.updateProfile(userId, { headline: null, summary: ' APIs ' });
+    await service.updateProfile(userId, {
+      headline: null,
+      summary: ' APIs ',
+      contactEmail: null
+    });
 
     expect(repository.updateCandidate).toHaveBeenCalledWith(candidateId, {
       headline: null,
-      summary: 'APIs'
+      summary: 'APIs',
+      contactEmail: null
     });
   });
 
@@ -235,6 +255,50 @@ describe('candidates service', () => {
     });
   });
 
+  it('stores languages with their proficiency as written', async () => {
+    const repository = createRepositoryDouble();
+    const service = createService(repository);
+
+    await service.createClaim(userId, {
+      type: 'language',
+      values: { name: ' English ', proficiency: ' Very good ' }
+    });
+
+    expect(repository.createClaim).toHaveBeenCalledWith({
+      candidateId,
+      claimType: 'language',
+      origin: 'manual',
+      status: 'accepted',
+      values: { name: 'English', proficiency: 'Very good' }
+    });
+  });
+
+  it('stores projects without requiring dates', async () => {
+    const repository = createRepositoryDouble();
+    const service = createService(repository);
+
+    await service.createClaim(userId, {
+      type: 'project',
+      values: {
+        name: ' Shop API ',
+        url: 'https://github.com/example/shop',
+        skills: ['Laravel', ' Laravel ', 'Docker']
+      }
+    });
+
+    expect(repository.createClaim).toHaveBeenCalledWith({
+      candidateId,
+      claimType: 'project',
+      origin: 'manual',
+      status: 'accepted',
+      values: {
+        name: 'Shop API',
+        url: 'https://github.com/example/shop',
+        skills: ['Laravel', 'Docker']
+      }
+    });
+  });
+
   it('rejects end dates before start dates', async () => {
     const repository = createRepositoryDouble();
     const service = createService(repository);
@@ -259,6 +323,12 @@ describe('candidates service', () => {
           issueDate: '2023-01',
           expiryDate: '2022-01'
         }
+      })
+    ).rejects.toBeInstanceOf(InvalidClaimDatesError);
+    await expect(
+      service.createClaim(userId, {
+        type: 'project',
+        values: { name: 'Shop API', startDate: '2024-06', endDate: '2024-03' }
       })
     ).rejects.toBeInstanceOf(InvalidClaimDatesError);
     expect(repository.createClaim).not.toHaveBeenCalled();
@@ -375,6 +445,16 @@ describe('candidates service', () => {
         claimId: '44444444-4444-4444-8444-444444444444',
         claimType: 'certification',
         values: { title: 'AWS', issuer: 'Amazon', issueDate: '2023-01' }
+      }),
+      claimRecord({
+        claimId: '55555555-5555-4555-8555-555555555555',
+        claimType: 'language',
+        values: { name: 'English', proficiency: 'Native' }
+      }),
+      claimRecord({
+        claimId: '66666666-6666-4666-8666-666666666666',
+        claimType: 'project',
+        values: { name: 'Shop API' }
       })
     ]);
     const service = createService(repository);
@@ -387,6 +467,7 @@ describe('candidates service', () => {
     expect(result.personalInfo).toEqual({
       fullName: 'Example Candidate',
       email: 'candidate@example.com',
+      contactEmail: null,
       headline: 'Backend Developer',
       summary: null,
       phone: null,
@@ -396,6 +477,17 @@ describe('candidates service', () => {
     expect(result.skills).toEqual([{ claimId, name: 'Python', sources: [] }]);
     expect(Object.keys(result.skills[0] ?? {})[0]).toBe('claimId');
     expect(result.certifications).toHaveLength(1);
+    expect(result.languages).toEqual([
+      {
+        claimId: '55555555-5555-4555-8555-555555555555',
+        name: 'English',
+        proficiency: 'Native',
+        sources: []
+      }
+    ]);
+    expect(result.projects).toEqual([
+      { claimId: '66666666-6666-4666-8666-666666666666', name: 'Shop API', sources: [] }
+    ]);
     expect(result.employment).toEqual([]);
     expect(result.education).toEqual([]);
   });
@@ -482,6 +574,29 @@ describe('candidates routes', () => {
     expect(service.listClaims).not.toHaveBeenCalled();
   });
 
+  it('accepts only a valid contact email on the profile', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me',
+      headers: authorization,
+      payload: { fullName: 'Example Candidate', contactEmail: 'not an email' }
+    });
+    const cleared = await app.inject({
+      method: 'PATCH',
+      url: '/api/candidates/me',
+      headers: authorization,
+      payload: { contactEmail: null }
+    });
+
+    expect(invalid.statusCode).toBe(400);
+    expect(service.createProfile).not.toHaveBeenCalled();
+    expect(cleared.statusCode).toBe(200);
+    expect(service.updateProfile).toHaveBeenCalledWith(userId, { contactEmail: null });
+  });
+
   it('creates a claim for the authenticated user', async () => {
     const service = createServiceDouble();
     app = await createCandidatesApp(service);
@@ -516,7 +631,12 @@ describe('candidates routes', () => {
         values: { institution: 'UJ', degree: 'BSc', startDate: '2021-13' }
       },
       { type: 'skill', values: { name: '   ' } },
-      { type: 'project', values: { name: 'LuminaCV' } }
+      { type: 'language', values: { proficiency: 'Native' } },
+      { type: 'language', values: { name: 'English', proficiency: '' } },
+      { type: 'project', values: { description: 'A shop API' } },
+      { type: 'project', values: { name: 'Shop API', url: 'not a link' } },
+      { type: 'project', values: { name: 'Shop API', startDate: '2024' } },
+      { type: 'award', values: { name: 'Best Graduate' } }
     ];
 
     for (const payload of invalidPayloads) {
@@ -533,6 +653,49 @@ describe('candidates routes', () => {
       });
     }
     expect(service.createClaim).not.toHaveBeenCalled();
+  });
+
+  it('creates a language claim', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+    const payload = { type: 'language', values: { name: 'English', proficiency: 'C1' } };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims',
+      headers: authorization,
+      payload
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(service.createClaim).toHaveBeenCalledWith(userId, payload);
+  });
+
+  it('creates a project claim', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+    const payload = {
+      type: 'project',
+      values: {
+        name: 'Shop API',
+        description: 'REST API for a shop app',
+        role: 'Backend developer',
+        url: 'https://github.com/example/shop',
+        startDate: '2024-03',
+        endDate: '2024-06',
+        skills: ['Laravel', 'Docker']
+      }
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims',
+      headers: authorization,
+      payload
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(service.createClaim).toHaveBeenCalledWith(userId, payload);
   });
 
   it('drops claim fields outside the claim type schema', async () => {
@@ -596,5 +759,14 @@ describe('candidates routes', () => {
       type: 'skill',
       status: 'accepted'
     });
+
+    const languages = await app.inject({
+      method: 'GET',
+      url: '/api/candidates/me/claims?type=language',
+      headers: authorization
+    });
+
+    expect(languages.statusCode).toBe(200);
+    expect(service.listClaims).toHaveBeenCalledWith(userId, { type: 'language' });
   });
 });

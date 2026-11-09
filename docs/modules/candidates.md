@@ -18,6 +18,16 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
    values are never lost.
 6. **Ready for document parsing.** The `extracted` origin exists, and exported
    claims include an empty `sources` list for document references.
+7. **Six claim types:** skills, employment, education, certifications,
+   languages, and projects. Languages keep their proficiency as written, such
+   as "Native" or "C1"; one scale is left to normalization. Project dates are
+   optional, because many CVs list projects without them.
+8. **Two emails.** `email` is the account email from the users module.
+   `contactEmail` is the optional email shown on the CV and profile, which can
+   differ from it. Both appear in the exported profile.
+9. **Nothing from a CV is lost.** Courses, awards, and other information
+   outside these claim types are kept in `document_extractions.unmapped_data`
+   by the AI-output mapping, not as claims.
 
 ## Editing a claim
 

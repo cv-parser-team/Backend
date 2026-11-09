@@ -11,6 +11,8 @@ import {
   ClaimSnapshot,
   educationDetails,
   employmentDetails,
+  languageDetails,
+  projectDetails,
   skillDetails
 } from './candidates.table.js';
 
@@ -22,7 +24,13 @@ export type CreateCandidateInput = Omit<
 export type UpdateCandidateInput = Partial<
   Pick<
     typeof candidates.$inferInsert,
-    'fullName' | 'headline' | 'summary' | 'phone' | 'location' | 'profileLinks'
+    | 'fullName'
+    | 'headline'
+    | 'summary'
+    | 'phone'
+    | 'location'
+    | 'contactEmail'
+    | 'profileLinks'
   >
 >;
 
@@ -152,6 +160,25 @@ function toCertificationRow(values: ClaimValues) {
   };
 }
 
+function toLanguageRow(values: ClaimValues) {
+  return {
+    name: readRequiredText(values, 'name'),
+    proficiency: readText(values, 'proficiency')
+  };
+}
+
+function toProjectRow(values: ClaimValues) {
+  return {
+    name: readRequiredText(values, 'name'),
+    description: readText(values, 'description'),
+    role: readText(values, 'role'),
+    url: readText(values, 'url'),
+    startDate: toDate(readText(values, 'startDate')),
+    endDate: toDate(readText(values, 'endDate')),
+    skills: readList(values, 'skills')
+  };
+}
+
 async function insertDetails(
   executor: QueryExecutor,
   claimId: string,
@@ -176,6 +203,16 @@ async function insertDetails(
       await executor
         .insert(certificationDetails)
         .values({ claimId, ...toCertificationRow(values) });
+      break;
+    case 'language':
+      await executor
+        .insert(languageDetails)
+        .values({ claimId, ...toLanguageRow(values) });
+      break;
+    case 'project':
+      await executor
+        .insert(projectDetails)
+        .values({ claimId, ...toProjectRow(values) });
       break;
   }
 }
@@ -211,6 +248,18 @@ async function updateDetails(
         .set(toCertificationRow(values))
         .where(eq(certificationDetails.claimId, claimId));
       break;
+    case 'language':
+      await executor
+        .update(languageDetails)
+        .set(toLanguageRow(values))
+        .where(eq(languageDetails.claimId, claimId));
+      break;
+    case 'project':
+      await executor
+        .update(projectDetails)
+        .set(toProjectRow(values))
+        .where(eq(projectDetails.claimId, claimId));
+      break;
   }
 }
 
@@ -224,7 +273,9 @@ async function selectClaims(
       skill: skillDetails,
       employment: employmentDetails,
       education: educationDetails,
-      certification: certificationDetails
+      certification: certificationDetails,
+      language: languageDetails,
+      project: projectDetails
     })
     .from(claims)
     .leftJoin(skillDetails, eq(skillDetails.claimId, claims.claimId))
@@ -234,10 +285,12 @@ async function selectClaims(
       certificationDetails,
       eq(certificationDetails.claimId, claims.claimId)
     )
+    .leftJoin(languageDetails, eq(languageDetails.claimId, claims.claimId))
+    .leftJoin(projectDetails, eq(projectDetails.claimId, claims.claimId))
     .where(where)
     .orderBy(asc(claims.createdAt));
 
-  return rows.map(({ claim, skill, employment, education, certification }) => {
+  return rows.map(({ claim, skill, employment, education, certification, language, project }) => {
     let values: ClaimValues = {};
 
     if (claim.claimType === 'skill' && skill) {
@@ -267,6 +320,21 @@ async function selectClaims(
         issueDate: toMonth(certification.issueDate),
         expiryDate: toMonth(certification.expiryDate),
         credentialId: certification.credentialId
+      });
+    } else if (claim.claimType === 'language' && language) {
+      values = compactValues({
+        name: language.name,
+        proficiency: language.proficiency
+      });
+    } else if (claim.claimType === 'project' && project) {
+      values = compactValues({
+        name: project.name,
+        description: project.description,
+        role: project.role,
+        url: project.url,
+        startDate: toMonth(project.startDate),
+        endDate: toMonth(project.endDate),
+        skills: project.skills
       });
     }
 
