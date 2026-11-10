@@ -30,6 +30,8 @@ does not load `.env` files itself.
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the API in watch mode |
+| `npm run worker:dev` | Start the document-processing worker in watch mode |
+| `npm run worker` | Start the compiled document-processing worker |
 | `npm run parsing:inspect` | Select a PDF or DOCX and write a visual HTML parsing report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
@@ -127,3 +129,11 @@ amqp://luminacv:luminacvpassword@localhost:5672
 The RabbitMQ management UI is available at `http://localhost:15672` using the
 local username `luminacv` and password `luminacvpassword`. Override the broker
 connection with `RABBITMQ_URL` outside local development.
+
+RabbitMQ declares a durable dead-letter companion for each application queue.
+Permanent parse failures and malformed messages from
+`document-processing.parse-document` are routed to
+`document-processing.parse-document.dead-letter`; retryable failures remain on
+the main queue. If the main queue already exists locally without dead-letter
+arguments, delete that queue through the management UI before restarting the
+API or worker so RabbitMQ can recreate it with the new topology.

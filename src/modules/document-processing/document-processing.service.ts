@@ -10,7 +10,10 @@ import {
 import type { ParseDocumentJob } from './parse-document.job.js';
 
 const QUEUED_JOB_REPUBLISH_BATCH_SIZE = 100;
+const RETRY_RELEASE_BATCH_SIZE = 100;
+const LEASE_RECOVERY_BATCH_SIZE = 100;
 const PROCESSING_LEASE_MILLISECONDS = 5 * 60 * 1000;
+const PROCESSING_RETRY_DELAY_MILLISECONDS = 30 * 1000;
 
 export interface RepublishFailure {
   jobId: string;
@@ -26,10 +29,18 @@ export interface DocumentProcessingService {
   schedule(documentId: string): Promise<ParseDocumentJob>;
   claim(job: ParseDocumentJob): Promise<ProcessingJobRecord | null>;
   complete(job: ParseDocumentJob): Promise<ProcessingJobRecord | null>;
+  retry(
+    job: ParseDocumentJob,
+    failureCode: string
+  ): Promise<ProcessingJobRecord | null>;
   fail(
     job: ParseDocumentJob,
     failureCode: string
   ): Promise<ProcessingJobRecord | null>;
+  releaseAvailableRetries(): Promise<ProcessingJobRecord[]>;
+  recoverExpiredLeases(): Promise<ProcessingJobRecord[]>;
+  publishAvailableRetries(): Promise<RepublishResult>;
+  publishRecoveredLeases(): Promise<RepublishResult>;
   republishQueuedJobs(): Promise<RepublishResult>;
 }
 
@@ -44,6 +55,35 @@ function toParseDocumentJob(job: ProcessingJobRecord): ParseDocumentJob {
     jobId: job.jobId,
     documentId: job.documentId
   };
+}
+
+function normalizeFailureCode(failureCode: string): string {
+  const normalizedFailureCode = failureCode.trim();
+
+  if (!normalizedFailureCode) {
+    throw new Error('Processing job failure code is required');
+  }
+
+  return normalizedFailureCode;
+}
+
+async function publishJobs(
+  broker: MessageBroker,
+  jobs: ProcessingJobRecord[]
+): Promise<RepublishResult> {
+  const failures: RepublishFailure[] = [];
+  let published = 0;
+
+  for (const job of jobs) {
+    try {
+      await broker.publish(PARSE_DOCUMENT_QUEUE, toParseDocumentJob(job));
+      published += 1;
+    } catch (error) {
+      failures.push({ jobId: job.jobId, error });
+    }
+  }
+
+  return { published, failures };
 }
 
 export function createDocumentProcessingService({
@@ -75,18 +115,53 @@ export function createDocumentProcessingService({
       });
     },
 
+    async retry(job, failureCode) {
+      return repository.retryJob({
+        jobId: job.jobId,
+        documentId: job.documentId,
+        failureCode: normalizeFailureCode(failureCode),
+        delayMilliseconds: PROCESSING_RETRY_DELAY_MILLISECONDS
+      });
+    },
+
     async fail(job, failureCode) {
-      const normalizedFailureCode = failureCode.trim();
-
-      if (!normalizedFailureCode) {
-        throw new Error('Processing job failure code is required');
-      }
-
       return repository.failJob({
         jobId: job.jobId,
         documentId: job.documentId,
-        failureCode: normalizedFailureCode
+        failureCode: normalizeFailureCode(failureCode)
       });
+    },
+
+    releaseAvailableRetries() {
+      return repository.releaseAvailableRetries(
+        new Date(),
+        RETRY_RELEASE_BATCH_SIZE
+      );
+    },
+
+    recoverExpiredLeases() {
+      return repository.releaseExpiredLeases(
+        new Date(),
+        LEASE_RECOVERY_BATCH_SIZE
+      );
+    },
+
+    async publishAvailableRetries() {
+      const jobs = await repository.releaseAvailableRetries(
+        new Date(),
+        RETRY_RELEASE_BATCH_SIZE
+      );
+
+      return publishJobs(broker, jobs);
+    },
+
+    async publishRecoveredLeases() {
+      const jobs = await repository.releaseExpiredLeases(
+        new Date(),
+        LEASE_RECOVERY_BATCH_SIZE
+      );
+
+      return publishJobs(broker, jobs);
     },
 
     async republishQueuedJobs() {
@@ -94,19 +169,8 @@ export function createDocumentProcessingService({
         new Date(),
         QUEUED_JOB_REPUBLISH_BATCH_SIZE
       );
-      const failures: RepublishFailure[] = [];
-      let published = 0;
 
-      for (const job of jobs) {
-        try {
-          await broker.publish(PARSE_DOCUMENT_QUEUE, toParseDocumentJob(job));
-          published += 1;
-        } catch (error) {
-          failures.push({ jobId: job.jobId, error });
-        }
-      }
-
-      return { published, failures };
+      return publishJobs(broker, jobs);
     }
   };
 }

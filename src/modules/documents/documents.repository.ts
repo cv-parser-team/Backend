@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import type { DocumentPurpose } from './documents.formats.js';
@@ -175,7 +175,7 @@ export function createDocumentsRepository(
           .where(
             and(
               eq(documents.documentId, documentId),
-              eq(documents.status, 'stored')
+              inArray(documents.status, ['stored', 'processing'])
             )
           )
           .returning();

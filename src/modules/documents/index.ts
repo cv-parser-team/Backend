@@ -109,6 +109,11 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   await fastify.register(documentsRoutes, {
     prefix: '/api/candidates/me/documents',
     service,
+    processingScheduler: {
+      async schedule(documentId) {
+        await fastify.documentProcessingService.schedule(documentId);
+      }
+    },
     guards: fastify.authGuards,
     maximumUploadFiles: config.documents.maximumUploadFiles
   });

@@ -2,23 +2,53 @@ import type { MessageHandler } from '../../infrastructure/messaging/message-brok
 import type { ParseDocumentHandler } from './parse-document.handler.js';
 import { parseParseDocumentJob } from './parse-document.job.js';
 
+export interface ParseDocumentMessageLogger {
+  info(context: Record<string, unknown>, message: string): void;
+  warn(context: Record<string, unknown>, message: string): void;
+}
+
 export interface ParseDocumentMessageHandlerDependencies {
   handler: Pick<ParseDocumentHandler, 'handle'>;
+  log: ParseDocumentMessageLogger;
 }
 
 export function createParseDocumentMessageHandler({
-  handler
+  handler,
+  log
 }: ParseDocumentMessageHandlerDependencies): MessageHandler {
   return async (message) => {
     let job;
 
     try {
       job = parseParseDocumentJob(message);
-    } catch {
+    } catch (error) {
+      log.warn(
+        { err: error },
+        'Rejected invalid document processing message'
+      );
       return 'reject';
     }
 
-    await handler.handle(job);
-    return 'ack';
+    const context = { jobId: job.jobId, documentId: job.documentId };
+    log.info(context, 'Received document processing job');
+
+    let result;
+
+    try {
+      result = await handler.handle(job);
+    } catch (error) {
+      log.warn(
+        { ...context, err: error },
+        'Document processing job handler failed'
+      );
+      throw error;
+    }
+
+    log.info(
+      { ...context, outcome: result.outcome },
+      'Handled document processing job'
+    );
+
+    return result.outcome === 'failed' ? 'reject' : 'ack';
   };
 }

@@ -1,4 +1,4 @@
-import { and, asc, eq, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
 import { documentProcessingJobs } from './document-processing.table.js';
@@ -22,6 +22,10 @@ export interface FailProcessingJobInput {
   failureCode: string;
 }
 
+export interface RetryProcessingJobInput extends FailProcessingJobInput {
+  delayMilliseconds: number;
+}
+
 export interface DocumentProcessingRepository {
   createQueuedJob(documentId: string): Promise<ProcessingJobRecord>;
   claimJob(
@@ -30,6 +34,17 @@ export interface DocumentProcessingRepository {
   completeJob(
     input: CompleteProcessingJobInput
   ): Promise<ProcessingJobRecord | null>;
+  retryJob(
+    input: RetryProcessingJobInput
+  ): Promise<ProcessingJobRecord | null>;
+  releaseAvailableRetries(
+    availableAt: Date,
+    limit: number
+  ): Promise<ProcessingJobRecord[]>;
+  releaseExpiredLeases(
+    expiredAt: Date,
+    limit: number
+  ): Promise<ProcessingJobRecord[]>;
   failJob(input: FailProcessingJobInput): Promise<ProcessingJobRecord | null>;
   listPublishableJobs(
     availableAt: Date,
@@ -100,6 +115,95 @@ export function createDocumentProcessingRepository(
           .returning();
 
         return completedJob ?? null;
+      });
+    },
+
+    async retryJob({
+      jobId,
+      documentId,
+      failureCode,
+      delayMilliseconds
+    }) {
+      return withDbErrors('Document processing job', async () => {
+        const [retryingJob] = await database.db
+          .update(documentProcessingJobs)
+          .set({
+            status: 'retrying',
+            failureCode,
+            availableAt:
+              sql`now() + ${delayMilliseconds} * interval '1 millisecond'`,
+            lockedUntil: null
+          })
+          .where(
+            and(
+              eq(documentProcessingJobs.jobId, jobId),
+              eq(documentProcessingJobs.documentId, documentId),
+              eq(documentProcessingJobs.status, 'processing')
+            )
+          )
+          .returning();
+
+        return retryingJob ?? null;
+      });
+    },
+
+    async releaseAvailableRetries(availableAt, limit) {
+      return withDbErrors('Document processing jobs', () => {
+        const availableRetryIds = database.db
+          .select({ jobId: documentProcessingJobs.jobId })
+          .from(documentProcessingJobs)
+          .where(
+            and(
+              eq(documentProcessingJobs.status, 'retrying'),
+              lte(documentProcessingJobs.availableAt, availableAt)
+            )
+          )
+          .orderBy(
+            asc(documentProcessingJobs.availableAt),
+            asc(documentProcessingJobs.jobId)
+          )
+          .limit(limit);
+
+        return database.db
+          .update(documentProcessingJobs)
+          .set({ status: 'queued' })
+          .where(
+            and(
+              eq(documentProcessingJobs.status, 'retrying'),
+              inArray(documentProcessingJobs.jobId, availableRetryIds)
+            )
+          )
+          .returning();
+      });
+    },
+
+    async releaseExpiredLeases(expiredAt, limit) {
+      return withDbErrors('Document processing jobs', () => {
+        const expiredLeaseJobIds = database.db
+          .select({ jobId: documentProcessingJobs.jobId })
+          .from(documentProcessingJobs)
+          .where(
+            and(
+              eq(documentProcessingJobs.status, 'processing'),
+              lte(documentProcessingJobs.lockedUntil, expiredAt)
+            )
+          )
+          .orderBy(
+            asc(documentProcessingJobs.lockedUntil),
+            asc(documentProcessingJobs.jobId)
+          )
+          .limit(limit);
+
+        return database.db
+          .update(documentProcessingJobs)
+          .set({ status: 'queued', lockedUntil: null })
+          .where(
+            and(
+              eq(documentProcessingJobs.status, 'processing'),
+              inArray(documentProcessingJobs.jobId, expiredLeaseJobIds)
+            )
+          )
+          .returning();
       });
     },
 

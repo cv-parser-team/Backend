@@ -37,6 +37,9 @@ function createRabbitMqDouble() {
     waitForConfirms: vi.fn(async () => {
       operations.push('confirm');
     }),
+    prefetch: vi.fn(async () => {
+      operations.push('prefetch');
+    }),
     consume: vi.fn(
       async (
         _queue: string,
@@ -107,14 +110,25 @@ describe('RabbitMQ message broker', () => {
     expect(connection.close).toHaveBeenCalledOnce();
   });
 
-  it('declares a durable queue before publishing persistent JSON', async () => {
+  it('declares durable queue topology before publishing persistent JSON', async () => {
     const { channel, connect, operations } = createRabbitMqDouble();
     const broker = await createRabbitMqBroker({ url, connect });
 
     await broker.publish(queue, message);
 
-    expect(operations).toEqual(['assert', 'send', 'confirm']);
-    expect(channel.assertQueue).toHaveBeenCalledWith(queue, { durable: true });
+    expect(operations).toEqual(['assert', 'assert', 'send', 'confirm']);
+    expect(channel.assertQueue).toHaveBeenNthCalledWith(
+      1,
+      `${queue}.dead-letter`,
+      { durable: true }
+    );
+    expect(channel.assertQueue).toHaveBeenNthCalledWith(2, queue, {
+      durable: true,
+      arguments: {
+        'x-dead-letter-exchange': '',
+        'x-dead-letter-routing-key': `${queue}.dead-letter`
+      }
+    });
     expect(channel.sendToQueue).toHaveBeenCalledOnce();
 
     const [sentQueue, content, options] = channel.sendToQueue.mock.calls[0]!;
@@ -174,11 +188,23 @@ describe('RabbitMQ message broker', () => {
     const { channel, connect, deliver } = createRabbitMqDouble();
     const broker = await createRabbitMqBroker({ url, connect });
 
-    await broker.consume(queue, handler);
+    await broker.consume(queue, handler, { maxInFlight: 1 });
     deliver(JSON.stringify(message));
     await vi.waitFor(() => expect(channel.ack).toHaveBeenCalledOnce());
 
-    expect(channel.assertQueue).toHaveBeenCalledWith(queue, { durable: true });
+    expect(channel.assertQueue).toHaveBeenNthCalledWith(
+      1,
+      `${queue}.dead-letter`,
+      { durable: true }
+    );
+    expect(channel.assertQueue).toHaveBeenNthCalledWith(2, queue, {
+      durable: true,
+      arguments: {
+        'x-dead-letter-exchange': '',
+        'x-dead-letter-routing-key': `${queue}.dead-letter`
+      }
+    });
+    expect(channel.prefetch).toHaveBeenCalledWith(1);
     expect(channel.consume).toHaveBeenCalledWith(
       queue,
       expect.any(Function),
@@ -196,7 +222,7 @@ describe('RabbitMQ message broker', () => {
     const { channel, connect, deliver } = createRabbitMqDouble();
     const broker = await createRabbitMqBroker({ url, connect });
 
-    await broker.consume(queue, handler);
+    await broker.consume(queue, handler, { maxInFlight: 1 });
     deliver(JSON.stringify(message));
     await vi.waitFor(() => expect(channel.nack).toHaveBeenCalledOnce());
 
@@ -213,7 +239,7 @@ describe('RabbitMQ message broker', () => {
     const { channel, connect, deliver } = createRabbitMqDouble();
     const broker = await createRabbitMqBroker({ url, connect });
 
-    await broker.consume(queue, handler);
+    await broker.consume(queue, handler, { maxInFlight: 1 });
     deliver(JSON.stringify(message));
     await vi.waitFor(() => expect(channel.nack).toHaveBeenCalledOnce());
 
@@ -225,7 +251,7 @@ describe('RabbitMQ message broker', () => {
     const { channel, connect, deliver } = createRabbitMqDouble();
     const broker = await createRabbitMqBroker({ url, connect });
 
-    await broker.consume(queue, handler);
+    await broker.consume(queue, handler, { maxInFlight: 1 });
     deliver('{invalid json');
     await vi.waitFor(() => expect(channel.nack).toHaveBeenCalledOnce());
 
@@ -237,18 +263,35 @@ describe('RabbitMQ message broker', () => {
     const { channel, connect, operations } = createRabbitMqDouble();
     const broker = await createRabbitMqBroker({ url, connect });
 
-    await broker.consume(queue, async () => 'ack');
+    await broker.consume(queue, async () => 'ack', { maxInFlight: 1 });
     await broker.close();
 
     expect(channel.cancel).toHaveBeenCalledWith('consumer-1');
     expect(operations).toEqual([
       'assert',
+      'assert',
+      'prefetch',
       'consume',
       'cancel',
       'close-channel',
       'close-connection'
     ]);
   });
+
+  it.each([0, -1, 1.5, Number.NaN])(
+    'rejects invalid maxInFlight value %s',
+    async (maxInFlight) => {
+      const { channel, connect } = createRabbitMqDouble();
+      const broker = await createRabbitMqBroker({ url, connect });
+
+      await expect(
+        broker.consume(queue, async () => 'ack', { maxInFlight })
+      ).rejects.toThrow('RabbitMQ maxInFlight must be a positive integer');
+      expect(channel.assertQueue).not.toHaveBeenCalled();
+      expect(channel.prefetch).not.toHaveBeenCalled();
+      expect(channel.consume).not.toHaveBeenCalled();
+    }
+  );
 
   it('closes the channel before the connection and only closes once', async () => {
     const { channel, connect, connection, operations } =

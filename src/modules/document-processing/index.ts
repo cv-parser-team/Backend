@@ -33,31 +33,6 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
       processingService: service
     })
   );
-
-  fastify.addHook('onListen', async () => {
-    try {
-      const result = await service.republishQueuedJobs();
-
-      if (result.published > 0) {
-        fastify.log.info(
-          { publishedJobs: result.published },
-          'Republished queued document processing jobs'
-        );
-      }
-
-      for (const failure of result.failures) {
-        fastify.log.warn(
-          { err: failure.error, jobId: failure.jobId },
-          'Failed to republish queued document processing job'
-        );
-      }
-    } catch (error) {
-      fastify.log.warn(
-        { err: error },
-        'Failed to query queued document processing jobs'
-      );
-    }
-  });
 };
 
 export const documentProcessingModule = fastifyPlugin(
@@ -88,6 +63,7 @@ export type {
   ParseDocumentHandlerResult
 } from './parse-document.handler.js';
 export type {
-  ParseDocumentMessageHandlerDependencies
+  ParseDocumentMessageHandlerDependencies,
+  ParseDocumentMessageLogger
 } from './parse-document.message-handler.js';
 export type { ParseDocumentJob } from './parse-document.job.js';

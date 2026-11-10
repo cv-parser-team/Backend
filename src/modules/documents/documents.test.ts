@@ -10,7 +10,10 @@ import {
   DocumentRecord,
   DocumentsRepository
 } from './documents.repository.js';
-import { documentsRoutes } from './documents.routes.js';
+import {
+  documentsRoutes,
+  type DocumentProcessingScheduler
+} from './documents.routes.js';
 import {
   createDocumentsService,
   DocumentsService
@@ -150,6 +153,12 @@ function createValidator(
   return {
     validate: vi.fn().mockResolvedValue({ mediaType: 'application/pdf' }),
     ...overrides
+  };
+}
+
+function createProcessingScheduler(): DocumentProcessingScheduler {
+  return {
+    schedule: vi.fn().mockResolvedValue(undefined)
   };
 }
 
@@ -382,6 +391,26 @@ describe('documents service', () => {
   });
 
   it('marks a stored document as processing', async () => {
+    const processingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'processing'
+    };
+    const repository = createRepository({
+      markDocumentProcessing: vi.fn().mockResolvedValue(processingDocument)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentProcessing(documentId)
+    ).resolves.toBe(processingDocument);
+    expect(repository.markDocumentProcessing).toHaveBeenCalledWith(documentId);
+  });
+
+  it('keeps an already-processing document in processing', async () => {
     const processingDocument: DocumentRecord = {
       ...documentRecord,
       status: 'processing'
@@ -743,12 +772,14 @@ describe('documents routes', () => {
 
   async function createRoutes(
     service: DocumentsService,
-    maximumUploadFiles = 5
+    maximumUploadFiles = 5,
+    processingScheduler = createProcessingScheduler()
   ) {
     app = Fastify();
     await app.register(multipart);
     await app.register(documentsRoutes, {
       service,
+      processingScheduler,
       guards: createGuards(),
       maximumUploadFiles
     });
@@ -776,7 +807,8 @@ describe('documents routes', () => {
 
   it('uploads one document for the authenticated candidate', async () => {
     const service = createService();
-    await createRoutes(service);
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
     const request = createMultipartPayload([
       multipartFile('file', 'resume.pdf', Buffer.from('document bytes'))
     ]);
@@ -795,6 +827,7 @@ describe('documents routes', () => {
         originalFilename: 'resume.pdf'
       })
     );
+    expect(processingScheduler.schedule).toHaveBeenCalledWith(documentId);
     expect(response.json()).toMatchObject({
       success: true,
       data: [
@@ -814,7 +847,8 @@ describe('documents routes', () => {
       await buffer(input.stream);
       return { document: documentRecord, deduplicated: true };
     });
-    await createRoutes(service);
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
     const request = createMultipartPayload([
       multipartFile('file', 'duplicate.pdf', Buffer.from('same document'))
     ]);
@@ -826,6 +860,7 @@ describe('documents routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(processingScheduler.schedule).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({
       success: true,
       data: [
@@ -835,6 +870,58 @@ describe('documents routes', () => {
           deduplicated: true,
           document: { documentId }
         }
+      ]
+    });
+  });
+
+  it('does not schedule processing for a new evidence document', async () => {
+    const service = createService();
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
+    const request = createMultipartPayload([
+      multipartFile('file', 'evidence.pdf', Buffer.from('evidence bytes'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=evidence',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(processingScheduler.schedule).not.toHaveBeenCalled();
+  });
+
+  it('isolates a scheduling failure within a multi-file upload', async () => {
+    const service = createService();
+    const schedulingError = new Error('processing unavailable');
+    const processingScheduler = createProcessingScheduler();
+    vi.mocked(processingScheduler.schedule)
+      .mockRejectedValueOnce(schedulingError)
+      .mockResolvedValueOnce(undefined);
+    await createRoutes(service, 5, processingScheduler);
+    const request = createMultipartPayload([
+      multipartFile('file', 'first.pdf', Buffer.from('first document')),
+      multipartFile('file', 'second.pdf', Buffer.from('second document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(207);
+    expect(processingScheduler.schedule).toHaveBeenCalledTimes(2);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        {
+          success: false,
+          filename: 'first.pdf',
+          error: { code: 'DOCUMENT_UPLOAD_FAILED' }
+        },
+        { success: true, filename: 'second.pdf' }
       ]
     });
   });

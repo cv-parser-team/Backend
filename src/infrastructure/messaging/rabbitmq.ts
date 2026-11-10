@@ -9,8 +9,13 @@ interface RabbitMqMessage {
   content: Buffer;
 }
 
+interface RabbitMqQueueOptions {
+  durable: boolean;
+  arguments?: Record<string, string>;
+}
+
 interface RabbitMqConfirmChannel {
-  assertQueue(queue: string, options: { durable: boolean }): Promise<unknown>;
+  assertQueue(queue: string, options: RabbitMqQueueOptions): Promise<unknown>;
   sendToQueue(
     queue: string,
     content: Buffer,
@@ -21,6 +26,7 @@ interface RabbitMqConfirmChannel {
     }
   ): boolean;
   waitForConfirms(): Promise<void>;
+  prefetch(count: number): Promise<unknown>;
   consume(
     queue: string,
     handler: (message: RabbitMqMessage | null) => void,
@@ -54,6 +60,28 @@ function serializeMessage(message: unknown): Buffer {
   }
 
   return Buffer.from(serialized, 'utf8');
+}
+
+function assertMaxInFlight(maxInFlight: number): void {
+  if (!Number.isSafeInteger(maxInFlight) || maxInFlight <= 0) {
+    throw new RangeError('RabbitMQ maxInFlight must be a positive integer');
+  }
+}
+
+async function assertQueueTopology(
+  channel: RabbitMqConfirmChannel,
+  queue: string
+): Promise<void> {
+  const deadLetterQueue = `${queue}.dead-letter`;
+
+  await channel.assertQueue(deadLetterQueue, { durable: true });
+  await channel.assertQueue(queue, {
+    durable: true,
+    arguments: {
+      'x-dead-letter-exchange': '',
+      'x-dead-letter-routing-key': deadLetterQueue
+    }
+  });
 }
 
 function settleDelivery(
@@ -117,7 +145,7 @@ export async function createRabbitMqBroker({
     async publish(queue, message) {
       const content = serializeMessage(message);
 
-      await channel.assertQueue(queue, { durable: true });
+      await assertQueueTopology(channel, queue);
       channel.sendToQueue(queue, content, {
         contentEncoding: 'utf-8',
         contentType: 'application/json',
@@ -126,8 +154,10 @@ export async function createRabbitMqBroker({
       await channel.waitForConfirms();
     },
 
-    async consume(queue, handler) {
-      await channel.assertQueue(queue, { durable: true });
+    async consume(queue, handler, options) {
+      assertMaxInFlight(options.maxInFlight);
+      await assertQueueTopology(channel, queue);
+      await channel.prefetch(options.maxInFlight);
       const { consumerTag } = await channel.consume(
         queue,
         (message) => {

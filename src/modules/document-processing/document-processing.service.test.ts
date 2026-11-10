@@ -35,6 +35,9 @@ function createRepositoryDouble(
     createQueuedJob: vi.fn().mockResolvedValue(record),
     claimJob: vi.fn().mockResolvedValue(null),
     completeJob: vi.fn().mockResolvedValue(null),
+    retryJob: vi.fn().mockResolvedValue(null),
+    releaseAvailableRetries: vi.fn().mockResolvedValue([]),
+    releaseExpiredLeases: vi.fn().mockResolvedValue([]),
     failJob: vi.fn().mockResolvedValue(null),
     listPublishableJobs: vi.fn().mockResolvedValue([]),
     ...overrides
@@ -208,6 +211,230 @@ describe('document processing service', () => {
     await expect(
       service.complete({ version: 1, jobId, documentId })
     ).resolves.toBeNull();
+  });
+
+  it('schedules a processing job retry with a fixed delay', async () => {
+    const retryingJob = createJobRecord({
+      status: 'retrying',
+      attemptCount: 1,
+      failureCode: 'STORAGE_UNAVAILABLE',
+      availableAt: new Date('2026-01-01T00:00:30.000Z'),
+      lockedUntil: null
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      retryJob: vi.fn().mockResolvedValue(retryingJob)
+    });
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(
+      service.retry(
+        { version: 1, jobId, documentId },
+        ' STORAGE_UNAVAILABLE '
+      )
+    ).resolves.toBe(retryingJob);
+    expect(repository.retryJob).toHaveBeenCalledWith({
+      jobId,
+      documentId,
+      failureCode: 'STORAGE_UNAVAILABLE',
+      delayMilliseconds: 30_000
+    });
+  });
+
+  it('returns null when a processing job cannot be scheduled for retry', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(
+      service.retry(
+        { version: 1, jobId, documentId },
+        'STORAGE_UNAVAILABLE'
+      )
+    ).resolves.toBeNull();
+  });
+
+  it('rejects an empty retry failure code', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(
+      service.retry({ version: 1, jobId, documentId }, '  ')
+    ).rejects.toThrow('Processing job failure code is required');
+    expect(repository.retryJob).not.toHaveBeenCalled();
+  });
+
+  it('releases one bounded batch of available retries', async () => {
+    const releasedJob = createJobRecord({
+      status: 'queued',
+      attemptCount: 1,
+      failureCode: 'STORAGE_UNAVAILABLE',
+      availableAt: new Date('2026-01-01T00:00:30.000Z')
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      releaseAvailableRetries: vi.fn().mockResolvedValue([releasedJob])
+    });
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(service.releaseAvailableRetries()).resolves.toEqual([
+      releasedJob
+    ]);
+    expect(repository.releaseAvailableRetries).toHaveBeenCalledWith(
+      expect.any(Date),
+      100
+    );
+  });
+
+  it('leaves future retries unavailable', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(service.releaseAvailableRetries()).resolves.toEqual([]);
+    expect(repository.releaseAvailableRetries).toHaveBeenCalledOnce();
+  });
+
+  it('publishes released retries using their existing job IDs', async () => {
+    const releasedJob = createJobRecord({
+      status: 'queued',
+      attemptCount: 1,
+      failureCode: 'STORAGE_UNAVAILABLE'
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      releaseAvailableRetries: vi.fn().mockResolvedValue([releasedJob])
+    });
+    const broker = createBrokerDouble();
+    const service = createDocumentProcessingService({ broker, repository });
+
+    await expect(service.publishAvailableRetries()).resolves.toEqual({
+      published: 1,
+      failures: []
+    });
+    expect(repository.releaseAvailableRetries).toHaveBeenCalledWith(
+      expect.any(Date),
+      100
+    );
+    expect(broker.publish).toHaveBeenCalledWith(PARSE_DOCUMENT_QUEUE, {
+      version: 1,
+      jobId,
+      documentId
+    });
+  });
+
+  it('continues publishing released retries after an individual failure', async () => {
+    const failure = new Error('broker unavailable');
+    const secondJob = createJobRecord({
+      jobId: '33333333-3333-4333-8333-333333333333',
+      documentId: '44444444-4444-4444-8444-444444444444'
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      releaseAvailableRetries: vi
+        .fn()
+        .mockResolvedValue([createJobRecord(), secondJob])
+    });
+    const broker: MessageBroker = {
+      publish: vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce(undefined)
+    };
+    const service = createDocumentProcessingService({ broker, repository });
+
+    await expect(service.publishAvailableRetries()).resolves.toEqual({
+      published: 1,
+      failures: [{ jobId, error: failure }]
+    });
+    expect(broker.publish).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes nothing when no retries are available', async () => {
+    const repository = createRepositoryDouble();
+    const broker = createBrokerDouble();
+    const service = createDocumentProcessingService({ broker, repository });
+
+    await expect(service.publishAvailableRetries()).resolves.toEqual({
+      published: 0,
+      failures: []
+    });
+    expect(broker.publish).not.toHaveBeenCalled();
+  });
+
+  it('recovers one bounded batch of expired processing leases', async () => {
+    const recoveredJob = createJobRecord({
+      status: 'queued',
+      attemptCount: 1,
+      lockedUntil: null
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      releaseExpiredLeases: vi.fn().mockResolvedValue([recoveredJob])
+    });
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await expect(service.recoverExpiredLeases()).resolves.toEqual([
+      recoveredJob
+    ]);
+    expect(repository.releaseExpiredLeases).toHaveBeenCalledWith(
+      expect.any(Date),
+      100
+    );
+  });
+
+  it('publishes recovered leases using their existing job IDs', async () => {
+    const recoveredJob = createJobRecord({
+      status: 'queued',
+      attemptCount: 1,
+      lockedUntil: null
+    });
+    const repository = createRepositoryDouble(createJobRecord(), {
+      releaseExpiredLeases: vi.fn().mockResolvedValue([recoveredJob])
+    });
+    const broker = createBrokerDouble();
+    const service = createDocumentProcessingService({ broker, repository });
+
+    await expect(service.publishRecoveredLeases()).resolves.toEqual({
+      published: 1,
+      failures: []
+    });
+    expect(repository.releaseExpiredLeases).toHaveBeenCalledWith(
+      expect.any(Date),
+      100
+    );
+    expect(broker.publish).toHaveBeenCalledWith(PARSE_DOCUMENT_QUEUE, {
+      version: 1,
+      jobId,
+      documentId
+    });
+  });
+
+  it('reports individual recovered-lease publication failures', async () => {
+    const failure = new Error('broker unavailable');
+    const repository = createRepositoryDouble(createJobRecord(), {
+      releaseExpiredLeases: vi.fn().mockResolvedValue([createJobRecord()])
+    });
+    const broker: MessageBroker = {
+      publish: vi.fn().mockRejectedValue(failure)
+    };
+    const service = createDocumentProcessingService({ broker, repository });
+
+    await expect(service.publishRecoveredLeases()).resolves.toEqual({
+      published: 0,
+      failures: [{ jobId, error: failure }]
+    });
   });
 
   it('fails a processing job and clears its lease', async () => {

@@ -6,9 +6,12 @@ import type { DocumentProcessingService } from './document-processing.service.js
 import type { ParseDocumentJob } from './parse-document.job.js';
 
 const PARSING_FAILURE_CODE = 'PARSING_FAILED';
+const MAX_PROCESSING_ATTEMPTS = 3;
 
 export type ParseDocumentHandlerResult =
   | { outcome: 'processed'; processingJob: ProcessingJobRecord }
+  | { outcome: 'retrying'; processingJob: ProcessingJobRecord }
+  | { outcome: 'failed'; processingJob: ProcessingJobRecord }
   | { outcome: 'skipped' };
 
 export interface ParseDocumentHandler {
@@ -20,8 +23,31 @@ export interface ParseDocumentHandlerDependencies {
   parsingService: Pick<ParsingService, 'extract'>;
   processingService: Pick<
     DocumentProcessingService,
-    'claim' | 'complete' | 'fail'
+    'claim' | 'complete' | 'fail' | 'retry'
   >;
+}
+
+async function scheduleParsingRetry(
+  job: ParseDocumentJob,
+  error: unknown,
+  processingService: Pick<DocumentProcessingService, 'retry'>
+): Promise<ProcessingJobRecord> {
+  try {
+    const retryingJob = await processingService.retry(job, PARSING_FAILURE_CODE);
+
+    if (retryingJob) {
+      return retryingJob;
+    }
+
+    throw new Error(
+      `Processing job ${job.jobId} could not transition to retrying`
+    );
+  } catch (retryError) {
+    throw new AggregateError(
+      [error, retryError],
+      'Document parsing and retry scheduling both failed'
+    );
+  }
 }
 
 async function recordParsingFailure(
@@ -29,8 +55,9 @@ async function recordParsingFailure(
   error: unknown,
   documentsService: ProcessingDocumentsService,
   processingService: Pick<DocumentProcessingService, 'fail'>
-): Promise<never> {
+): Promise<ProcessingJobRecord> {
   const cleanupErrors: unknown[] = [];
+  let failedJob: ProcessingJobRecord | null = null;
 
   try {
     const failedDocument = await documentsService.markDocumentFailed(
@@ -48,7 +75,7 @@ async function recordParsingFailure(
   }
 
   try {
-    const failedJob = await processingService.fail(job, PARSING_FAILURE_CODE);
+    failedJob = await processingService.fail(job, PARSING_FAILURE_CODE);
 
     if (!failedJob) {
       cleanupErrors.push(
@@ -66,7 +93,14 @@ async function recordParsingFailure(
     );
   }
 
-  throw error;
+  if (!failedJob) {
+    throw new AggregateError(
+      [error],
+      'Document parsing failed without a failed processing job'
+    );
+  }
+
+  return failedJob;
 }
 
 export function createParseDocumentHandler({
@@ -102,12 +136,24 @@ export function createParseDocumentHandler({
           content
         });
       } catch (error) {
-        await recordParsingFailure(
+        if (processingJob.attemptCount < MAX_PROCESSING_ATTEMPTS) {
+          const retryingJob = await scheduleParsingRetry(
+            job,
+            error,
+            processingService
+          );
+
+          return { outcome: 'retrying', processingJob: retryingJob };
+        }
+
+        const failedJob = await recordParsingFailure(
           job,
           error,
           documentsService,
           processingService
         );
+
+        return { outcome: 'failed', processingJob: failedJob };
       }
 
       const readyDocument = await documentsService.markDocumentReady(

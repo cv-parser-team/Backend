@@ -4,7 +4,10 @@ import type {
   ParseDocumentHandler,
   ParseDocumentHandlerResult
 } from './parse-document.handler.js';
-import { createParseDocumentMessageHandler } from './parse-document.message-handler.js';
+import {
+  createParseDocumentMessageHandler,
+  type ParseDocumentMessageLogger
+} from './parse-document.message-handler.js';
 import type { ParseDocumentJob } from './parse-document.job.js';
 
 const job: ParseDocumentJob = {
@@ -24,6 +27,16 @@ const completedJob: ProcessingJobRecord = {
   createdAt: timestamp,
   updatedAt: timestamp
 };
+const failedJob: ProcessingJobRecord = {
+  ...completedJob,
+  status: 'failed',
+  failureCode: 'PARSING_FAILED'
+};
+const retryingJob: ProcessingJobRecord = {
+  ...completedJob,
+  status: 'retrying',
+  failureCode: 'PARSING_FAILED'
+};
 
 function createHandler(
   result: ParseDocumentHandlerResult
@@ -33,20 +46,66 @@ function createHandler(
   };
 }
 
+function createLogger(): ParseDocumentMessageLogger {
+  return {
+    info: vi.fn(),
+    warn: vi.fn()
+  };
+}
+
 describe('parse document message handler', () => {
   it.each([
     { outcome: 'processed', processingJob: completedJob },
+    { outcome: 'retrying', processingJob: retryingJob },
     { outcome: 'skipped' }
   ] satisfies ParseDocumentHandlerResult[])(
     'acknowledges $outcome jobs',
     async (result) => {
       const handler = createHandler(result);
-      const messageHandler = createParseDocumentMessageHandler({ handler });
+      const log = createLogger();
+      const messageHandler = createParseDocumentMessageHandler({
+        handler,
+        log
+      });
 
       await expect(messageHandler(job)).resolves.toBe('ack');
       expect(handler.handle).toHaveBeenCalledWith(job);
+      expect(log.info).toHaveBeenNthCalledWith(
+        1,
+        { jobId: job.jobId, documentId: job.documentId },
+        'Received document processing job'
+      );
+      expect(log.info).toHaveBeenNthCalledWith(
+        2,
+        {
+          jobId: job.jobId,
+          documentId: job.documentId,
+          outcome: result.outcome
+        },
+        'Handled document processing job'
+      );
     }
   );
+
+  it('rejects permanently failed jobs without requeueing', async () => {
+    const handler = createHandler({
+      outcome: 'failed',
+      processingJob: failedJob
+    });
+    const log = createLogger();
+    const messageHandler = createParseDocumentMessageHandler({ handler, log });
+
+    await expect(messageHandler(job)).resolves.toBe('reject');
+    expect(handler.handle).toHaveBeenCalledWith(job);
+    expect(log.info).toHaveBeenLastCalledWith(
+      {
+        jobId: job.jobId,
+        documentId: job.documentId,
+        outcome: 'failed'
+      },
+      'Handled document processing job'
+    );
+  });
 
   it.each([
     null,
@@ -57,10 +116,22 @@ describe('parse document message handler', () => {
     'rejects invalid payloads without invoking the handler',
     async (message) => {
       const handler = createHandler({ outcome: 'skipped' });
-      const messageHandler = createParseDocumentMessageHandler({ handler });
+      const log = createLogger();
+      const messageHandler = createParseDocumentMessageHandler({
+        handler,
+        log
+      });
 
       await expect(messageHandler(message)).resolves.toBe('reject');
       expect(handler.handle).not.toHaveBeenCalled();
+      expect(log.warn).toHaveBeenCalledWith(
+        { err: expect.any(Error) },
+        'Rejected invalid document processing message'
+      );
+      const [context] = vi.mocked(log.warn).mock.calls[0] ?? [];
+      expect(context).not.toHaveProperty('message');
+      expect(context).not.toHaveProperty('jobId');
+      expect(context).not.toHaveProperty('documentId');
     }
   );
 
@@ -69,8 +140,13 @@ describe('parse document message handler', () => {
     const handler: Pick<ParseDocumentHandler, 'handle'> = {
       handle: vi.fn().mockRejectedValue(failure)
     };
-    const messageHandler = createParseDocumentMessageHandler({ handler });
+    const log = createLogger();
+    const messageHandler = createParseDocumentMessageHandler({ handler, log });
 
     await expect(messageHandler(job)).rejects.toBe(failure);
+    expect(log.warn).toHaveBeenCalledWith(
+      { jobId: job.jobId, documentId: job.documentId, err: failure },
+      'Document processing job handler failed'
+    );
   });
 });
