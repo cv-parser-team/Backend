@@ -46,7 +46,7 @@ Content-Type: multipart/form-data; boundary=LuminaCVProcessingBoundary
 Content-Disposition: form-data; name="file"; filename="processing-test.pdf"
 Content-Type: application/pdf
 
-< ./documents/valid.pdf
+< ../testResumes/Alexander.pdf
 --LuminaCVProcessingBoundary--
 
 ###
@@ -55,6 +55,8 @@ Content-Type: application/pdf
 ### Check the processed document (200)
 # Wait for the worker log to report outcome=processed, then run this request.
 # Expected document status: ready.
+# To verify the latest database result, run this command in a terminal:
+# docker compose exec -T postgres psql -U postgres -d luminacv -c "SELECT d.document_id, d.status AS document_status, j.status AS job_status, j.attempt_count, e.status AS extraction_status, e.page_count, jsonb_array_length(e.content->'pages') AS parsed_pages, jsonb_array_length(e.content->'blocks') AS parsed_blocks, e.failures FROM documents d JOIN document_processing_jobs j USING (document_id) JOIN document_extractions e USING (document_id) ORDER BY e.updated_at DESC LIMIT 1;"
 GET {{baseUrl}}/api/candidates/me/documents/{{documentId}}
 Authorization: Bearer {{accessToken}}
 
@@ -74,7 +76,7 @@ Content-Type: multipart/form-data; boundary=LuminaCVDeduplicationBoundary
 Content-Disposition: form-data; name="file"; filename="processing-test-copy.pdf"
 Content-Type: application/pdf
 
-< ./documents/valid.pdf
+< ../testResumes/Alexander.pdf
 --LuminaCVDeduplicationBoundary--
 
 ### Reject an unauthenticated source upload (401)

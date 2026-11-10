@@ -138,11 +138,14 @@ stateDiagram-v2
 ```
 
 In the normal failure path, the handler allows three claimed parsing attempts.
-Failures on attempts one and two move the job to `retrying` for 30 seconds. The
-current RabbitMQ delivery is acknowledged after that durable transition; the
-retry publisher later releases and republishes the job. A failure on attempt
-three or later marks both the document and job failed and rejects the message
-without requeueing, which sends it to the dead-letter queue.
+Thrown parser errors and persisted extraction results with `status = failed`
+use the same failure path. Failures on attempts one and two move the job to
+`retrying` for 30 seconds. The current RabbitMQ delivery is acknowledged after
+that durable transition; the retry publisher later releases and republishes
+the job. A failure on attempt three or later marks both the document and job
+failed and rejects the message without requeueing, which sends it to the
+dead-letter queue. Persisted `succeeded` and `partial` extractions complete the
+job and mark the document ready.
 
 Every claim creates a five-minute processing lease. If a worker exits before
 settling the job, the recovery publisher moves the expired `processing` job

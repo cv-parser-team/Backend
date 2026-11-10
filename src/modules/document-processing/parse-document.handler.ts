@@ -130,11 +130,17 @@ export function createParseDocumentHandler({
           await documentsService.openDocumentForProcessing(job.documentId);
         const content = await buffer(stream);
 
-        await parsingService.extract({
+        const extraction = await parsingService.extract({
           documentId: job.documentId,
           mediaType: document.mediaType,
           content
         });
+
+        if (extraction.status === 'failed') {
+          throw new Error(
+            `Parsing produced a failed extraction for document ${job.documentId}`
+          );
+        }
       } catch (error) {
         if (processingJob.attemptCount < MAX_PROCESSING_ATTEMPTS) {
           const retryingJob = await scheduleParsingRetry(

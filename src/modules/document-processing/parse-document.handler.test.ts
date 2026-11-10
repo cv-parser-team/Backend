@@ -51,7 +51,9 @@ function createDocument(status: DocumentRecord['status']): DocumentRecord {
   };
 }
 
-function createExtraction(): ExtractionRecord {
+function createExtraction(
+  overrides: Partial<ExtractionRecord> = {}
+): ExtractionRecord {
   return {
     extractionId: '44444444-4444-4444-8444-444444444444',
     documentId: job.documentId,
@@ -63,7 +65,8 @@ function createExtraction(): ExtractionRecord {
     unmappedData: [],
     parserVersion: 'test',
     createdAt: timestamp,
-    updatedAt: timestamp
+    updatedAt: timestamp,
+    ...overrides
   };
 }
 
@@ -168,6 +171,36 @@ describe('parse document handler', () => {
       mediaType: 'application/pdf',
       content: Buffer.from('document bytes')
     });
+  });
+
+  it('completes a partial extraction', async () => {
+    const completedJob = createProcessingJob('completed');
+    const processingService = createProcessingService(
+      createProcessingJob(),
+      completedJob
+    );
+    const documentsService = createDocumentsService();
+    const parsingService: Pick<ParsingService, 'extract'> = {
+      extract: vi
+        .fn()
+        .mockResolvedValue(createExtraction({ status: 'partial' }))
+    };
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      processingService
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'processed',
+      processingJob: completedJob
+    });
+    expect(documentsService.markDocumentReady).toHaveBeenCalledWith(
+      job.documentId
+    );
+    expect(processingService.complete).toHaveBeenCalledWith(job);
+    expect(processingService.retry).not.toHaveBeenCalled();
+    expect(processingService.fail).not.toHaveBeenCalled();
   });
 
   it('skips an unavailable delivery without touching the document', async () => {
@@ -276,6 +309,35 @@ describe('parse document handler', () => {
     }
   );
 
+  it('schedules a retry when parsing stores a failed extraction', async () => {
+    const retryingJob = createProcessingJob('retrying');
+    const processingService = createProcessingService();
+    processingService.retry = vi.fn().mockResolvedValue(retryingJob);
+    const documentsService = createDocumentsService();
+    const parsingService: Pick<ParsingService, 'extract'> = {
+      extract: vi
+        .fn()
+        .mockResolvedValue(createExtraction({ status: 'failed' }))
+    };
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      processingService
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'retrying',
+      processingJob: retryingJob
+    });
+    expect(processingService.retry).toHaveBeenCalledWith(
+      job,
+      'PARSING_FAILED'
+    );
+    expect(documentsService.markDocumentFailed).not.toHaveBeenCalled();
+    expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
+    expect(processingService.complete).not.toHaveBeenCalled();
+  });
+
   it('records a parser failure on the document and job at the attempt limit', async () => {
     const parsingError = new Error('parser failed');
     const failedJob = createProcessingJob('failed', 3);
@@ -286,6 +348,38 @@ describe('parse document handler', () => {
     const documentsService = createDocumentsService();
     const parsingService: Pick<ParsingService, 'extract'> = {
       extract: vi.fn().mockRejectedValue(parsingError)
+    };
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      processingService
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'failed',
+      processingJob: failedJob
+    });
+    expect(documentsService.markDocumentFailed).toHaveBeenCalledWith(
+      job.documentId,
+      'PARSING_FAILED'
+    );
+    expect(processingService.fail).toHaveBeenCalledWith(job, 'PARSING_FAILED');
+    expect(processingService.retry).not.toHaveBeenCalled();
+    expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
+    expect(processingService.complete).not.toHaveBeenCalled();
+  });
+
+  it('records a failed extraction on the document and job at the attempt limit', async () => {
+    const failedJob = createProcessingJob('failed', 3);
+    const processingService = createProcessingService(
+      createProcessingJob('processing', 3)
+    );
+    processingService.fail = vi.fn().mockResolvedValue(failedJob);
+    const documentsService = createDocumentsService();
+    const parsingService: Pick<ParsingService, 'extract'> = {
+      extract: vi
+        .fn()
+        .mockResolvedValue(createExtraction({ status: 'failed' }))
     };
     const handler = createParseDocumentHandler({
       documentsService,
