@@ -1,0 +1,150 @@
+@baseUrl = http://localhost:4000
+@rabbitManagementUrl = http://localhost:15672
+@rabbitUser = luminacv
+@rabbitPassword = luminacvpassword
+@email = document-processing@example.com
+@password = secure-password
+
+### Prerequisites
+# Start PostgreSQL and RabbitMQ: npm run infra:up
+# Start the API: npm run dev
+# Start the worker in another terminal: npm run worker:dev
+# Run requests in order. On later runs, registration returns 409; continue with sign-in.
+
+### Register the manual-test candidate (201 on the first run)
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Document Processing Test",
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+### Sign in and capture an access token (200)
+# @name signIn
+POST {{baseUrl}}/api/auth/sign-in
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+###
+@accessToken = {{signIn.response.body.data.accessToken}}
+
+### Upload a source document and schedule processing (201)
+# @name sourceUpload
+# The initial document status can be stored, processing, or ready depending on
+# how quickly the worker handles the RabbitMQ delivery.
+POST {{baseUrl}}/api/candidates/me/documents?purpose=source
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=LuminaCVProcessingBoundary
+
+--LuminaCVProcessingBoundary
+Content-Disposition: form-data; name="file"; filename="processing-test.pdf"
+Content-Type: application/pdf
+
+< ./documents/valid.pdf
+--LuminaCVProcessingBoundary--
+
+###
+@documentId = {{sourceUpload.response.body.data[0].document.documentId}}
+
+### Check the processed document (200)
+# Wait for the worker log to report outcome=processed, then run this request.
+# Expected document status: ready.
+GET {{baseUrl}}/api/candidates/me/documents/{{documentId}}
+Authorization: Bearer {{accessToken}}
+
+### List ready source documents (200)
+# The uploaded document should be present after processing completes.
+GET {{baseUrl}}/api/candidates/me/documents?purpose=source&status=ready
+Authorization: Bearer {{accessToken}}
+
+### Upload the same source again (200; deduplicated=true)
+# Deduplicated uploads reference the original document and do not schedule a
+# second processing job.
+POST {{baseUrl}}/api/candidates/me/documents?purpose=source
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=LuminaCVDeduplicationBoundary
+
+--LuminaCVDeduplicationBoundary
+Content-Disposition: form-data; name="file"; filename="processing-test-copy.pdf"
+Content-Type: application/pdf
+
+< ./documents/valid.pdf
+--LuminaCVDeduplicationBoundary--
+
+### Reject an unauthenticated source upload (401)
+POST {{baseUrl}}/api/candidates/me/documents?purpose=source
+Content-Type: multipart/form-data; boundary=LuminaCVUnauthorizedBoundary
+
+--LuminaCVUnauthorizedBoundary
+Content-Disposition: form-data; name="file"; filename="unauthorized.pdf"
+Content-Type: application/pdf
+
+< ./documents/valid.pdf
+--LuminaCVUnauthorizedBoundary--
+
+### Inspect the main processing queue (200)
+# After successful processing, messages_ready and messages_unacknowledged
+# should normally both be zero.
+GET {{rabbitManagementUrl}}/api/queues/%2F/document-processing.parse-document
+Authorization: Basic {{rabbitUser}} {{rabbitPassword}}
+
+### Publish a malformed job through the RabbitMQ management API (200)
+# @name publishMalformedJob
+# Expected response: {"routed":true}. The worker rejects this unsupported
+# version and RabbitMQ routes it to the dead-letter queue.
+POST {{rabbitManagementUrl}}/api/exchanges/%2F/amq.default/publish
+Authorization: Basic {{rabbitUser}} {{rabbitPassword}}
+Content-Type: application/json
+
+{
+  "properties": {
+    "content_type": "application/json",
+    "delivery_mode": 2
+  },
+  "routing_key": "document-processing.parse-document",
+  "payload": "{\"version\":2,\"jobId\":\"11111111-1111-4111-8111-111111111111\",\"documentId\":\"22222222-2222-4222-8222-222222222222\"}",
+  "payload_encoding": "string"
+}
+
+### Inspect the dead-letter queue (200)
+# Wait for the worker warning "Rejected invalid document processing message".
+# Expected messages_ready: at least 1.
+GET {{rabbitManagementUrl}}/api/queues/%2F/document-processing.parse-document.dead-letter
+Authorization: Basic {{rabbitUser}} {{rabbitPassword}}
+
+### Read one dead-letter without removing it (200)
+# The response payload should contain version 2. ack_requeue_true returns the
+# message to the dead-letter queue after inspection.
+POST {{rabbitManagementUrl}}/api/queues/%2F/document-processing.parse-document.dead-letter/get
+Authorization: Basic {{rabbitUser}} {{rabbitPassword}}
+Content-Type: application/json
+
+{
+  "count": 1,
+  "ackmode": "ack_requeue_true",
+  "encoding": "auto",
+  "truncate": 50000
+}
+
+### Remove one inspected dead-letter message (200)
+# Run only when the dead-letter queue contains the malformed test message.
+POST {{rabbitManagementUrl}}/api/queues/%2F/document-processing.parse-document.dead-letter/get
+Authorization: Basic {{rabbitUser}} {{rabbitPassword}}
+Content-Type: application/json
+
+{
+  "count": 1,
+  "ackmode": "ack_requeue_false",
+  "encoding": "auto",
+  "truncate": 50000
+}
+
+### Delete the uploaded document and its processing job (204)
+DELETE {{baseUrl}}/api/candidates/me/documents/{{documentId}}
+Authorization: Bearer {{accessToken}}
