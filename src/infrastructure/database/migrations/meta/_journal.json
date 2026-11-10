@@ -57,6 +57,13 @@
       "when": 1794217592840,
       "tag": "0007_clear_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794307561260,
+      "tag": "0008_luxuriant_lady_bullseye",
+      "breakpoints": true
     }
   ]
 }

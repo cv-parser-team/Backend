@@ -1,3 +1,4 @@
+import { FastifyBaseLogger } from 'fastify';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { UsersService } from '../users/users.service.js';
 import {
@@ -68,9 +69,17 @@ export interface CandidatesService {
   exportProfile(userId: string): Promise<ExportedProfile>;
 }
 
+// Links claim values to canonical terms. Implemented by the normalization
+// module; only this call is needed here.
+export interface ClaimNormalizer {
+  normalizeClaim(claim: ClaimRecord): Promise<unknown>;
+}
+
 export interface CandidatesServiceDependencies {
   repository: CandidatesRepository;
   usersService: Pick<UsersService, 'getUserById'>;
+  normalizer: ClaimNormalizer;
+  logger: Pick<FastifyBaseLogger, 'warn'>;
 }
 
 function trimOptional(value: string | null | undefined): string | null {
@@ -162,8 +171,20 @@ function toExportedClaim(claim: ClaimRecord): ExportedClaim {
 
 export function createCandidatesService({
   repository,
-  usersService
+  usersService,
+  normalizer,
+  logger
 }: CandidatesServiceDependencies): CandidatesService {
+  // The claim is already saved. If normalization fails, the claim stays
+  // without a decision and is treated as unmatched; it can be normalized again.
+  async function normalize(claim: ClaimRecord): Promise<void> {
+    try {
+      await normalizer.normalizeClaim(claim);
+    } catch (error) {
+      logger.warn({ err: error, claimId: claim.claimId }, 'Claim normalization failed');
+    }
+  }
+
   async function requireCandidate(userId: string): Promise<CandidateRecord> {
     const candidate = await repository.findCandidateByUserId(userId);
     if (!candidate) {
@@ -249,13 +270,15 @@ export function createCandidatesService({
       assertValidClaimDates(input);
 
       // Candidate-entered information needs no review and has no source document.
-      return repository.createClaim({
+      const claim = await repository.createClaim({
         candidateId: candidate.candidateId,
         claimType: input.type,
         origin: 'manual',
         status: 'accepted',
         values: normalizeClaimValues(input.values)
       });
+      await normalize(claim);
+      return claim;
     },
 
     async listClaims(userId, query) {
@@ -288,6 +311,7 @@ export function createCandidatesService({
       if (!updated) {
         throw new RecordNotFoundError('Claim', claimId);
       }
+      await normalize(updated);
       return updated;
     },
 

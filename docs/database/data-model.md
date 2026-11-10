@@ -98,6 +98,37 @@ erDiagram
         date end_date "nullable"
         text[] skills
     }
+    CANONICAL_TERMS {
+        uuid term_id PK
+        canonical_category category
+        text canonical_name
+        text match_key
+        canonical_status status
+        uuid merged_into_id FK "nullable"
+        timestamptz created_at
+    }
+    ALIASES {
+        uuid alias_id PK
+        uuid term_id FK
+        text alias_text
+        text match_key
+        alias_scope scope
+        alias_origin origin
+        alias_status status
+        timestamptz created_at
+    }
+    NORMALIZATION_DECISIONS {
+        uuid normalization_id PK
+        uuid claim_id FK
+        uuid term_id FK "nullable"
+        text original_value
+        normalization_method method "nullable"
+        numeric confidence_score "nullable"
+        actor_type actor_type
+        text rule_version
+        normalization_status status
+        timestamptz created_at
+    }
     CLAIM_REVISIONS {
         uuid revision_id PK
         uuid claim_id FK
@@ -156,6 +187,9 @@ erDiagram
     CLAIMS ||--o| LANGUAGE_DETAILS : "type language"
     CLAIMS ||--o| PROJECT_DETAILS : "type project"
     CLAIMS ||--o{ CLAIM_REVISIONS : archives
+    CLAIMS ||--o{ NORMALIZATION_DECISIONS : "normalized in"
+    CANONICAL_TERMS ||--o{ ALIASES : "written as"
+    CANONICAL_TERMS ||--o{ NORMALIZATION_DECISIONS : "chosen in"
 ```
 
 ## Users
@@ -343,6 +377,74 @@ Revisions are not searched and cascade on claim deletion.
   `language`, `project`
 - `claim_origin`: `manual`, `extracted`
 - `claim_status`: `pending`, `accepted`, `rejected`
+
+## Normalization
+
+Owned by the `normalization` module and defined in
+`src/modules/normalization/normalization.table.ts`. See
+[Normalization](../modules/normalization.md) for the design.
+
+Normalization links a claim's value to a canonical term without changing the
+claim. Values are compared by a match key: the text in NFKC form, trimmed, with
+inner spaces collapsed and letters in lowercase; punctuation is kept.
+
+### `canonical_terms`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `term_id` | UUID | Primary key, generated | Stable term identifier |
+| `category` | `canonical_category` | Required, unique with `match_key` | Kind of value the term names |
+| `canonical_name` | Text | Required | The term as shown, such as "JavaScript" |
+| `match_key` | Text | Required | Name used for matching |
+| `status` | `canonical_status` | Required, defaults to `active` | Whether the term is used or was merged |
+| `merged_into_id` | UUID | Nullable, canonical term FK, set null on delete | Term this one was merged into |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+
+### `aliases`
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `alias_id` | UUID | Primary key, generated | Stable alias identifier |
+| `term_id` | UUID | Required, canonical term FK, cascade delete, unique with `match_key` | Term the alias writes |
+| `alias_text` | Text | Required | Another way of writing the term, such as "JS" |
+| `match_key` | Text | Required, indexed | Alias used for matching |
+| `scope` | `alias_scope` | Required, defaults to `global` | Whether the alias applies to everyone |
+| `origin` | `alias_origin` | Required | Where the alias came from |
+| `status` | `alias_status` | Required, defaults to `pending` | Only `approved` aliases are used for matching |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+
+### `normalization_decisions`
+
+Each normalization of a claim adds a row. The newest row of a claim is its
+current decision; older rows are its history. A decision for an unchanged
+value is not repeated.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `normalization_id` | UUID | Primary key, generated | Stable decision identifier |
+| `claim_id` | UUID | Required, claim FK, cascade delete, indexed with `created_at` | Normalized claim |
+| `term_id` | UUID | Nullable, canonical term FK, set null on delete | Chosen term; null when unmatched or ambiguous |
+| `original_value` | Text | Required | The claim value that was normalized |
+| `method` | `normalization_method` | Nullable | How the term was found; null when unmatched |
+| `confidence_score` | Numeric(3, 2) | Nullable | `1` for an exact match; null otherwise |
+| `actor_type` | `actor_type` | Required | Who decided; `system` for automatic matching |
+| `rule_version` | Text | Required | Matching rules used, such as `exact-v1` |
+| `status` | `normalization_status` | Required | `matched`, `unmatched`, or `ambiguous` |
+| `created_at` | Timestamp with time zone | Required, generated | Decision time |
+
+### Normalization enumerations
+
+- `canonical_category`: `skill`, `job_title`, `degree`
+- `canonical_status`: `active`, `merged`
+- `alias_scope`: `global`, `candidate`
+- `alias_origin`: `seed`, `ai`, `candidate`, `reviewer`
+- `alias_status`: `pending`, `approved`, `rejected`
+- `normalization_method`: `canonical`, `alias`, `fuzzy`, `ai`, `candidate`
+- `normalization_status`: `matched`, `unmatched`, `ambiguous`
+- `actor_type`: `system`, `ai`, `candidate`, `reviewer`
+
+Values that the first version does not use are defined for the later matching
+steps of the requirements.
 
 ## Documents
 
