@@ -28,6 +28,10 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
 9. **Nothing from a CV is lost.** Courses, awards, and other information
    outside these claim types are kept in `document_extractions.unmapped_data`
    by the AI-output mapping, not as claims.
+10. **Claims are normalized after they are saved.** Skill names, job titles,
+    and degrees are linked to canonical terms by the normalization module,
+    without changing the claim. If normalization fails, the claim is still
+    saved. See [Normalization](normalization.md).
 
 ## Editing a claim
 

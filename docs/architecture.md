@@ -18,6 +18,7 @@ src/
 │   ├── candidates/           # Candidate profiles, claims, profile export
 │   ├── documents/            # Candidate document upload and storage boundary
 │   ├── extraction/           # AI-output contract and mapping to claim drafts
+│   ├── normalization/        # Canonical terms, aliases, and claim normalization
 │   ├── parsing/              # Text extraction from PDF and DOCX documents
 │   └── users/                # Table, schemas, repository, service, routes
 └── shared/                   # Module-independent contracts and errors

@@ -20,6 +20,7 @@ import {
 import { candidatesRoutes } from './candidates.routes.js';
 import {
   CandidatesService,
+  ClaimNormalizer,
   createCandidatesService
 } from './candidates.service.js';
 import {
@@ -99,10 +100,20 @@ function createUsersServiceDouble(): Pick<UsersService, 'getUserById'> {
   };
 }
 
-function createService(repository: CandidatesRepository): CandidatesService {
+function createNormalizerDouble(): ClaimNormalizer {
+  return { normalizeClaim: vi.fn().mockResolvedValue(null) };
+}
+
+function createService(
+  repository: CandidatesRepository,
+  normalizer: ClaimNormalizer = createNormalizerDouble(),
+  logger = { warn: vi.fn() }
+): CandidatesService {
   return createCandidatesService({
     repository,
-    usersService: createUsersServiceDouble()
+    usersService: createUsersServiceDouble(),
+    normalizer,
+    logger
   });
 }
 
@@ -297,6 +308,41 @@ describe('candidates service', () => {
         skills: ['Laravel', 'Docker']
       }
     });
+  });
+
+  it('normalizes a claim after saving it', async () => {
+    const repository = createRepositoryDouble();
+    const normalizer = createNormalizerDouble();
+    const service = createService(repository, normalizer);
+
+    const claim = await service.createClaim(userId, { type: 'skill', values: { name: 'JS' } });
+
+    expect(normalizer.normalizeClaim).toHaveBeenCalledWith(claim);
+  });
+
+  it('keeps a saved claim when normalization fails', async () => {
+    const repository = createRepositoryDouble();
+    const normalizer = createNormalizerDouble();
+    vi.mocked(normalizer.normalizeClaim).mockRejectedValue(new Error('dictionary unavailable'));
+    const logger = { warn: vi.fn() };
+    const service = createService(repository, normalizer, logger);
+
+    await expect(
+      service.createClaim(userId, { type: 'skill', values: { name: 'JS' } })
+    ).resolves.toEqual(claimRecord());
+    expect(logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it('normalizes a changed claim again but not an unchanged one', async () => {
+    const repository = createRepositoryDouble();
+    const normalizer = createNormalizerDouble();
+    const service = createService(repository, normalizer);
+
+    await service.updateClaim(userId, claimId, { type: 'skill', values: { name: 'Python' } });
+    expect(normalizer.normalizeClaim).not.toHaveBeenCalled();
+
+    await service.updateClaim(userId, claimId, { type: 'skill', values: { name: 'Python 3' } });
+    expect(normalizer.normalizeClaim).toHaveBeenCalledOnce();
   });
 
   it('rejects end dates before start dates', async () => {

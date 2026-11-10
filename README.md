@@ -32,6 +32,7 @@ does not load `.env` files itself.
 | `npm run dev` | Start the API in watch mode |
 | `npm run parsing:inspect` | Select a PDF or DOCX and write a visual HTML parsing report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
+| `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |
 | `npm run test:watch` | Run tests in watch mode |
