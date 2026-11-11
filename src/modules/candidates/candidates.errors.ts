@@ -14,6 +14,20 @@ export class InvalidClaimDatesError extends AppError {
   readonly code = 'INVALID_CLAIM_DATES';
 }
 
+// The record changed after the client read it. `details.current` holds the
+// record as it is now, so the client can show the change and let the person
+// decide; nothing was overwritten.
+export class VersionConflictError extends AppError {
+  readonly statusCode = 409;
+  readonly code = 'VERSION_CONFLICT';
+
+  constructor(entity: string, current: unknown) {
+    super(`${entity} was changed by another request. Reload it and try again`, {
+      current
+    });
+  }
+}
+
 export class ClaimTypeMismatchError extends AppError {
   readonly statusCode = 400;
   readonly code = 'CLAIM_TYPE_MISMATCH';

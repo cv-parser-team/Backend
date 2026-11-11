@@ -31,7 +31,10 @@ export async function createApp(
 
   // CORS configuration
   await app.register(cors, {
-    origin: true
+    origin: true,
+    // Browsers hide response headers from other origins unless exposed; the
+    // ETag carries the version that edits send back in If-Match.
+    exposedHeaders: ['ETag']
   });
 
   // Swagger / OpenAPI configuration

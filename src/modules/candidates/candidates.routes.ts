@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { AuthGuards } from '../auth/auth.guards.js';
 import { ApiResponse } from '../../shared/http/api-response.js';
+import { parseIfMatchVersion, versionEtag } from '../../shared/http/if-match.js';
 import { ClaimRecord } from './candidates.repository.js';
 import {
   ClaimBody,
@@ -51,7 +52,7 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     }
   );
 
-  fastify.get('/me', { preHandler: candidateOnly }, async (request) => {
+  fastify.get('/me', { preHandler: candidateOnly }, async (request, reply) => {
     const data = await service.getProfile(request.auth.userId);
     const response: ApiResponse<CandidateProfile> = {
       success: true,
@@ -59,14 +60,20 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
       timestamp: new Date().toISOString()
     };
 
-    return response;
+    return reply.header('etag', versionEtag(data.version)).send(response);
   });
 
+  // Edits accept the version the client last read in `If-Match`; a profile or
+  // claim that changed since is refused with 409 VERSION_CONFLICT.
   fastify.patch<{ Body: UpdateCandidateBody }>(
     '/me',
     { schema: { body: updateCandidateBodySchema }, preHandler: candidateOnly },
-    async (request) => {
-      const data = await service.updateProfile(request.auth.userId, request.body);
+    async (request, reply) => {
+      const data = await service.updateProfile(
+        request.auth.userId,
+        request.body,
+        parseIfMatchVersion(request.headers['if-match'])
+      );
       const response: ApiResponse<CandidateProfile> = {
         success: true,
         data,
@@ -74,7 +81,7 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
         timestamp: new Date().toISOString()
       };
 
-      return response;
+      return reply.header('etag', versionEtag(data.version)).send(response);
     }
   );
 
@@ -101,7 +108,10 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
         timestamp: new Date().toISOString()
       };
 
-      return reply.status(201).send(response);
+      return reply
+        .status(201)
+        .header('etag', versionEtag(data.version))
+        .send(response);
     }
   );
 
@@ -126,11 +136,12 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
       schema: { params: claimParamsSchema, body: claimBodySchema },
       preHandler: candidateOnly
     },
-    async (request) => {
+    async (request, reply) => {
       const data = await service.updateClaim(
         request.auth.userId,
         request.params.claimId,
-        request.body
+        request.body,
+        parseIfMatchVersion(request.headers['if-match'])
       );
       const response: ApiResponse<ClaimRecord> = {
         success: true,
@@ -139,7 +150,7 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
         timestamp: new Date().toISOString()
       };
 
-      return response;
+      return reply.header('etag', versionEtag(data.version)).send(response);
     }
   );
 
@@ -147,7 +158,11 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     '/me/claims/:claimId',
     { schema: { params: claimParamsSchema }, preHandler: candidateOnly },
     async (request, reply) => {
-      await service.deleteClaim(request.auth.userId, request.params.claimId);
+      await service.deleteClaim(
+        request.auth.userId,
+        request.params.claimId,
+        parseIfMatchVersion(request.headers['if-match'])
+      );
       return reply.status(204).send();
     }
   );

@@ -26,6 +26,28 @@ describe('application', () => {
     });
   });
 
+  it('lets browsers on other origins read entity tags and send If-Match', async () => {
+    app = await createTestApp();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/candidates/me',
+      headers: { origin: 'http://localhost:3000' }
+    });
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/candidates/me/claims/00000000-0000-4000-8000-000000000000',
+      headers: {
+        origin: 'http://localhost:3000',
+        'access-control-request-method': 'PUT',
+        'access-control-request-headers': 'authorization, if-match'
+      }
+    });
+
+    expect(response.headers['access-control-expose-headers']).toBe('ETag');
+    expect(preflight.headers['access-control-allow-headers']).toContain('if-match');
+  });
+
   it('POST /api/auth/register validates missing fields via Ajv JSON Schema', async () => {
     app = await createTestApp();
     const response = await app.inject({
