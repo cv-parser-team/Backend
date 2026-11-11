@@ -87,6 +87,18 @@ describe('parse document message handler', () => {
     }
   );
 
+  it('acknowledges a stale attempt and warns about it', async () => {
+    const handler = createHandler({ outcome: 'stale' });
+    const log = createLogger();
+    const messageHandler = createParseDocumentMessageHandler({ handler, log });
+
+    await expect(messageHandler(job)).resolves.toBe('ack');
+    expect(log.warn).toHaveBeenCalledWith(
+      { jobId: job.jobId, documentId: job.documentId },
+      'Document processing attempt stopped because another attempt claimed the job'
+    );
+  });
+
   it('rejects permanently failed jobs without requeueing', async () => {
     const handler = createHandler({
       outcome: 'failed',

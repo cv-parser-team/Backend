@@ -3,6 +3,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { AuthGuards } from '../auth/auth.guards.js';
 import { UnsupportedDocumentTypeError } from './documents.errors.js';
@@ -458,7 +459,26 @@ describe('documents service', () => {
     await expect(service.markDocumentReady(documentId)).resolves.toBe(
       documentRecord
     );
-    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId);
+    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId, undefined);
+  });
+
+  it('marks ready and failed in the given transaction', async () => {
+    const repository = createRepository();
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+    const transaction = {} as DatabaseExecutor;
+
+    await service.markDocumentReady(documentId, transaction);
+    await service.markDocumentFailed(documentId, 'PARSING_FAILED', transaction);
+
+    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId, transaction);
+    expect(repository.markDocumentFailed).toHaveBeenCalledWith(
+      { documentId, failureCode: 'PARSING_FAILED' },
+      transaction
+    );
   });
 
   it('returns null when a document cannot be marked as ready', async () => {
@@ -492,10 +512,10 @@ describe('documents service', () => {
     await expect(
       service.markDocumentFailed(documentId, ' PARSING_FAILED ')
     ).resolves.toBe(failedDocument);
-    expect(repository.markDocumentFailed).toHaveBeenCalledWith({
-      documentId,
-      failureCode: 'PARSING_FAILED'
-    });
+    expect(repository.markDocumentFailed).toHaveBeenCalledWith(
+      { documentId, failureCode: 'PARSING_FAILED' },
+      undefined
+    );
   });
 
   it('returns null when a document cannot be marked as failed', async () => {

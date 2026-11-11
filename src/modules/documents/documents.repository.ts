@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { AppDatabase } from '../../infrastructure/database/database.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import type { DocumentPurpose } from './documents.formats.js';
 import { DocumentStatus, documents } from './documents.table.js';
 
@@ -50,9 +51,13 @@ export interface DocumentsRepository {
     input: FindDocumentByChecksumInput
   ): Promise<DocumentRecord | null>;
   markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
-  markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentReady(
+    documentId: string,
+    transaction?: DatabaseExecutor
+  ): Promise<DocumentRecord | null>;
   markDocumentFailed(
-    input: MarkDocumentFailedInput
+    input: MarkDocumentFailedInput,
+    transaction?: DatabaseExecutor
   ): Promise<DocumentRecord | null>;
   updateDocumentStatus(
     input: UpdateDocumentStatusInput
@@ -184,9 +189,9 @@ export function createDocumentsRepository(
       });
     },
 
-    async markDocumentReady(documentId) {
+    async markDocumentReady(documentId, transaction = database.db) {
       return withDbErrors('Document', async () => {
-        const [readyDocument] = await database.db
+        const [readyDocument] = await transaction
           .update(documents)
           .set({ status: 'ready', failureCode: null })
           .where(
@@ -201,9 +206,12 @@ export function createDocumentsRepository(
       });
     },
 
-    async markDocumentFailed({ documentId, failureCode }) {
+    async markDocumentFailed(
+      { documentId, failureCode },
+      transaction = database.db
+    ) {
       return withDbErrors('Document', async () => {
-        const [failedDocument] = await database.db
+        const [failedDocument] = await transaction
           .update(documents)
           .set({ status: 'failed', failureCode })
           .where(

@@ -84,6 +84,27 @@ describe('document processing jobs table', () => {
     ]);
   });
 
+  it('allows one active job per document', () => {
+    const activeJobIndex = tableConfig.indexes.find(
+      (tableIndex) =>
+        tableIndex.config.name === 'document_processing_jobs_active_document_unique'
+    );
+
+    expect(activeJobIndex?.config.unique).toBe(true);
+    expect(
+      activeJobIndex?.config.columns.map((column) =>
+        'name' in column ? column.name : undefined
+      )
+    ).toEqual(['document_id']);
+    expect(
+      activeJobIndex?.config.where
+        ? normalizeSql(dialect.sqlToQuery(activeJobIndex.config.where).sql)
+        : undefined
+    ).toBe(
+      `"document_processing_jobs"."status" in ('queued', 'processing', 'retrying')`
+    );
+  });
+
   it('prevents negative attempt counts', () => {
     const constraint = tableConfig.checks.find(
       (candidate) =>

@@ -3,6 +3,7 @@ import {
   DocumentRecord,
   DocumentsRepository
 } from './documents.repository.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import type { Readable } from 'node:stream';
 import type { DocumentPurpose } from './documents.formats.js';
@@ -48,10 +49,16 @@ export interface OrphanCleanupResult {
 
 export interface ProcessingDocumentsService {
   markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
-  markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  // Ready and failed are reached only from processing; inside the given
+  // transaction, if any.
+  markDocumentReady(
+    documentId: string,
+    transaction?: DatabaseExecutor
+  ): Promise<DocumentRecord | null>;
   markDocumentFailed(
     documentId: string,
-    failureCode: string
+    failureCode: string,
+    transaction?: DatabaseExecutor
   ): Promise<DocumentRecord | null>;
   openDocumentForProcessing(documentId: string): Promise<DocumentContent>;
 }
@@ -257,20 +264,20 @@ export function createDocumentsService({
     markDocumentProcessing(documentId) {
       return repository.markDocumentProcessing(documentId);
     },
-    markDocumentReady(documentId) {
-      return repository.markDocumentReady(documentId);
+    markDocumentReady(documentId, transaction) {
+      return repository.markDocumentReady(documentId, transaction);
     },
-    async markDocumentFailed(documentId, failureCode) {
+    async markDocumentFailed(documentId, failureCode, transaction) {
       const normalizedFailureCode = failureCode.trim();
 
       if (!normalizedFailureCode) {
         throw new Error('Document failure code is required');
       }
 
-      return repository.markDocumentFailed({
-        documentId,
-        failureCode: normalizedFailureCode
-      });
+      return repository.markDocumentFailed(
+        { documentId, failureCode: normalizedFailureCode },
+        transaction
+      );
     },
     async openDocumentForProcessing(documentId) {
       const document = await repository.findDocumentById(documentId);

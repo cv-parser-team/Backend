@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import type { MessageBroker } from '../../infrastructure/messaging/message-broker.js';
 import type {
   DocumentProcessingRepository,
@@ -9,6 +10,7 @@ import { PARSE_DOCUMENT_QUEUE } from './parse-document.job.js';
 
 const documentId = '22222222-2222-4222-8222-222222222222';
 const jobId = '11111111-1111-4111-8111-111111111111';
+const claim = { jobId, documentId, attemptCount: 1 };
 
 function createJobRecord(
   overrides: Partial<ProcessingJobRecord> = {}
@@ -34,6 +36,7 @@ function createRepositoryDouble(
   return {
     createQueuedJob: vi.fn().mockResolvedValue(record),
     claimJob: vi.fn().mockResolvedValue(null),
+    lockClaimedJob: vi.fn().mockResolvedValue(null),
     completeJob: vi.fn().mockResolvedValue(null),
     retryJob: vi.fn().mockResolvedValue(null),
     releaseAvailableRetries: vi.fn().mockResolvedValue([]),
@@ -195,10 +198,48 @@ describe('document processing service', () => {
       repository
     });
 
-    await expect(
-      service.complete({ version: 1, jobId, documentId })
-    ).resolves.toBe(completedJob);
-    expect(repository.completeJob).toHaveBeenCalledWith({ jobId, documentId });
+    await expect(service.complete(claim)).resolves.toBe(completedJob);
+    expect(repository.completeJob).toHaveBeenCalledWith(claim, undefined);
+  });
+
+  it('locks and finishes the claim in the given transaction', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+    const transaction = {} as DatabaseExecutor;
+
+    await service.lockClaim(claim, transaction);
+    await service.complete(claim, transaction);
+    await service.retry(claim, 'PARSING_FAILED', transaction);
+    await service.fail(claim, 'PARSING_FAILED', transaction);
+
+    expect(repository.lockClaimedJob).toHaveBeenCalledWith(claim, transaction);
+    expect(repository.completeJob).toHaveBeenCalledWith(claim, transaction);
+    expect(repository.retryJob).toHaveBeenCalledWith(
+      expect.objectContaining(claim),
+      transaction
+    );
+    expect(repository.failJob).toHaveBeenCalledWith(
+      expect.objectContaining(claim),
+      transaction
+    );
+  });
+
+  it('sends only the claim when given the whole claimed job record', async () => {
+    const repository = createRepositoryDouble();
+    const service = createDocumentProcessingService({
+      broker: createBrokerDouble(),
+      repository
+    });
+
+    await service.complete(createJobRecord({ attemptCount: 2 }));
+
+    expect(repository.completeJob).toHaveBeenCalledWith(
+      { jobId, documentId, attemptCount: 2 },
+      undefined
+    );
   });
 
   it('returns null when a processing job cannot be completed', async () => {
@@ -208,9 +249,7 @@ describe('document processing service', () => {
       repository
     });
 
-    await expect(
-      service.complete({ version: 1, jobId, documentId })
-    ).resolves.toBeNull();
+    await expect(service.complete(claim)).resolves.toBeNull();
   });
 
   it('schedules a processing job retry with a fixed delay', async () => {
@@ -230,17 +269,16 @@ describe('document processing service', () => {
     });
 
     await expect(
-      service.retry(
-        { version: 1, jobId, documentId },
-        ' STORAGE_UNAVAILABLE '
-      )
+      service.retry(claim, ' STORAGE_UNAVAILABLE ')
     ).resolves.toBe(retryingJob);
-    expect(repository.retryJob).toHaveBeenCalledWith({
-      jobId,
-      documentId,
-      failureCode: 'STORAGE_UNAVAILABLE',
-      delayMilliseconds: 30_000
-    });
+    expect(repository.retryJob).toHaveBeenCalledWith(
+      {
+        ...claim,
+        failureCode: 'STORAGE_UNAVAILABLE',
+        delayMilliseconds: 30_000
+      },
+      undefined
+    );
   });
 
   it('returns null when a processing job cannot be scheduled for retry', async () => {
@@ -251,10 +289,7 @@ describe('document processing service', () => {
     });
 
     await expect(
-      service.retry(
-        { version: 1, jobId, documentId },
-        'STORAGE_UNAVAILABLE'
-      )
+      service.retry(claim, 'STORAGE_UNAVAILABLE')
     ).resolves.toBeNull();
   });
 
@@ -266,7 +301,7 @@ describe('document processing service', () => {
     });
 
     await expect(
-      service.retry({ version: 1, jobId, documentId }, '  ')
+      service.retry(claim, '  ')
     ).rejects.toThrow('Processing job failure code is required');
     expect(repository.retryJob).not.toHaveBeenCalled();
   });
@@ -453,13 +488,12 @@ describe('document processing service', () => {
     });
 
     await expect(
-      service.fail({ version: 1, jobId, documentId }, ' PARSING_FAILED ')
+      service.fail(claim, ' PARSING_FAILED ')
     ).resolves.toBe(failedJob);
-    expect(repository.failJob).toHaveBeenCalledWith({
-      jobId,
-      documentId,
-      failureCode: 'PARSING_FAILED'
-    });
+    expect(repository.failJob).toHaveBeenCalledWith(
+      { ...claim, failureCode: 'PARSING_FAILED' },
+      undefined
+    );
   });
 
   it('returns null when a processing job cannot be failed', async () => {
@@ -470,7 +504,7 @@ describe('document processing service', () => {
     });
 
     await expect(
-      service.fail({ version: 1, jobId, documentId }, 'PARSING_FAILED')
+      service.fail(claim, 'PARSING_FAILED')
     ).resolves.toBeNull();
   });
 
@@ -482,7 +516,7 @@ describe('document processing service', () => {
     });
 
     await expect(
-      service.fail({ version: 1, jobId, documentId }, '  ')
+      service.fail(claim, '  ')
     ).rejects.toThrow('Processing job failure code is required');
     expect(repository.failJob).not.toHaveBeenCalled();
   });

@@ -1,5 +1,6 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   check,
   index,
   integer,
@@ -7,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
 import { documents } from '../documents/documents.table.js';
@@ -21,6 +23,13 @@ export const processingJobStatus = pgEnum('processing_job_status', [
 
 export type ProcessingJobStatus =
   (typeof processingJobStatus.enumValues)[number];
+
+// A job in one of these statuses will still run; a document has at most one.
+// The statuses are written as literals, because the conflict target of an
+// insert must repeat the partial index's condition exactly.
+export function isActiveJob(status: AnyPgColumn): SQL {
+  return sql`${status} in ('queued', 'processing', 'retrying')`;
+}
 
 export const documentProcessingJobs = pgTable(
   'document_processing_jobs',
@@ -66,6 +75,9 @@ export const documentProcessingJobs = pgTable(
       table.lockedUntil
     ),
     index('document_processing_jobs_document_id_idx').on(table.documentId),
+    uniqueIndex('document_processing_jobs_active_document_unique')
+      .on(table.documentId)
+      .where(isActiveJob(table.status)),
     check(
       'document_processing_jobs_attempt_count_nonnegative',
       sql`${table.attemptCount} >= 0`

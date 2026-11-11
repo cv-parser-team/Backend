@@ -2,6 +2,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import {
   createDocumentsRepository,
   type DocumentRecord
@@ -46,5 +47,57 @@ describe('documents repository', () => {
     expect(query.sql).toContain('"documents"."document_id" = $1');
     expect(query.sql).toContain('"documents"."status" in ($2, $3)');
     expect(query.params).toEqual([documentId, 'stored', 'processing']);
+  });
+
+  function createUpdateExecutor() {
+    const returning = vi.fn().mockResolvedValue([processingDocument]);
+    const where = vi.fn<(condition: SQL) => { returning: typeof returning }>(
+      () => ({ returning })
+    );
+    const set = vi.fn(() => ({ where }));
+    const update = vi.fn(() => ({ set }));
+
+    return { update, set, where };
+  }
+
+  it('marks ready and failed only from processing, in the given transaction', async () => {
+    const transaction = createUpdateExecutor();
+    // The database is never used: both writes must join the transaction.
+    const repository = createDocumentsRepository({ db: {} } as unknown as AppDatabase);
+
+    await repository.markDocumentReady(
+      documentId,
+      transaction as unknown as DatabaseExecutor
+    );
+    await repository.markDocumentFailed(
+      { documentId, failureCode: 'PARSING_FAILED' },
+      transaction as unknown as DatabaseExecutor
+    );
+
+    expect(transaction.set).toHaveBeenNthCalledWith(1, {
+      status: 'ready',
+      failureCode: null
+    });
+    expect(transaction.set).toHaveBeenNthCalledWith(2, {
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    });
+    for (const [condition] of transaction.where.mock.calls) {
+      const query = new PgDialect().sqlToQuery(condition);
+      expect(query.sql).toContain('"documents"."status" = $2');
+      expect(query.params).toEqual([documentId, 'processing']);
+    }
+  });
+
+  it('marks ready on the database when no transaction is given', async () => {
+    const executor = createUpdateExecutor();
+    const repository = createDocumentsRepository({
+      db: executor
+    } as unknown as AppDatabase);
+
+    await expect(repository.markDocumentReady(documentId)).resolves.toBe(
+      processingDocument
+    );
+    expect(executor.update).toHaveBeenCalledOnce();
   });
 });

@@ -1,5 +1,7 @@
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import type { MessageBroker } from '../../infrastructure/messaging/message-broker.js';
 import type {
+  ClaimedProcessingJob,
   DocumentProcessingRepository,
   ProcessingJobRecord
 } from './document-processing.repository.js';
@@ -28,14 +30,27 @@ export interface RepublishResult {
 export interface DocumentProcessingService {
   schedule(documentId: string): Promise<ParseDocumentJob>;
   claim(job: ParseDocumentJob): Promise<ProcessingJobRecord | null>;
-  complete(job: ParseDocumentJob): Promise<ProcessingJobRecord | null>;
+  // Locks the job in the transaction while the claim still owns it; returns
+  // null otherwise.
+  lockClaim(
+    claimedJob: ClaimedProcessingJob,
+    transaction: DatabaseExecutor
+  ): Promise<ProcessingJobRecord | null>;
+  // These finish the job only while the given claim still owns it, and return
+  // null otherwise.
+  complete(
+    claimedJob: ClaimedProcessingJob,
+    transaction?: DatabaseExecutor
+  ): Promise<ProcessingJobRecord | null>;
   retry(
-    job: ParseDocumentJob,
-    failureCode: string
+    claimedJob: ClaimedProcessingJob,
+    failureCode: string,
+    transaction?: DatabaseExecutor
   ): Promise<ProcessingJobRecord | null>;
   fail(
-    job: ParseDocumentJob,
-    failureCode: string
+    claimedJob: ClaimedProcessingJob,
+    failureCode: string,
+    transaction?: DatabaseExecutor
   ): Promise<ProcessingJobRecord | null>;
   releaseAvailableRetries(): Promise<ProcessingJobRecord[]>;
   recoverExpiredLeases(): Promise<ProcessingJobRecord[]>;
@@ -55,6 +70,15 @@ function toParseDocumentJob(job: ProcessingJobRecord): ParseDocumentJob {
     jobId: job.jobId,
     documentId: job.documentId
   };
+}
+
+// Callers may pass the whole claimed job record; only the claim is sent on.
+function toClaim({
+  jobId,
+  documentId,
+  attemptCount
+}: ClaimedProcessingJob): ClaimedProcessingJob {
+  return { jobId, documentId, attemptCount };
 }
 
 function normalizeFailureCode(failureCode: string): string {
@@ -108,28 +132,33 @@ export function createDocumentProcessingService({
       });
     },
 
-    complete(job) {
-      return repository.completeJob({
-        jobId: job.jobId,
-        documentId: job.documentId
-      });
+    lockClaim(claimedJob, transaction) {
+      return repository.lockClaimedJob(toClaim(claimedJob), transaction);
     },
 
-    async retry(job, failureCode) {
-      return repository.retryJob({
-        jobId: job.jobId,
-        documentId: job.documentId,
-        failureCode: normalizeFailureCode(failureCode),
-        delayMilliseconds: PROCESSING_RETRY_DELAY_MILLISECONDS
-      });
+    complete(claimedJob, transaction) {
+      return repository.completeJob(toClaim(claimedJob), transaction);
     },
 
-    async fail(job, failureCode) {
-      return repository.failJob({
-        jobId: job.jobId,
-        documentId: job.documentId,
-        failureCode: normalizeFailureCode(failureCode)
-      });
+    async retry(claimedJob, failureCode, transaction) {
+      return repository.retryJob(
+        {
+          ...toClaim(claimedJob),
+          failureCode: normalizeFailureCode(failureCode),
+          delayMilliseconds: PROCESSING_RETRY_DELAY_MILLISECONDS
+        },
+        transaction
+      );
+    },
+
+    async fail(claimedJob, failureCode, transaction) {
+      return repository.failJob(
+        {
+          ...toClaim(claimedJob),
+          failureCode: normalizeFailureCode(failureCode)
+        },
+        transaction
+      );
     },
 
     releaseAvailableRetries() {
