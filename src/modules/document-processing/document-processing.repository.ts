@@ -1,7 +1,11 @@
 import { and, asc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
-import { documentProcessingJobs } from './document-processing.table.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
+import {
+  documentProcessingJobs,
+  isActiveJob
+} from './document-processing.table.js';
 
 export type ProcessingJobRecord = typeof documentProcessingJobs.$inferSelect;
 
@@ -11,14 +15,17 @@ export interface ClaimProcessingJobInput {
   leaseMilliseconds: number;
 }
 
-export interface CompleteProcessingJobInput {
-  jobId: string;
-  documentId: string;
-}
+// The job as one worker claimed it. Its attempt count identifies that claim:
+// once the lease expires and another worker claims the job, the count grows,
+// and writes with the old count no longer match.
+export type ClaimedProcessingJob = Pick<
+  ProcessingJobRecord,
+  'jobId' | 'documentId' | 'attemptCount'
+>;
 
-export interface FailProcessingJobInput {
-  jobId: string;
-  documentId: string;
+export type CompleteProcessingJobInput = ClaimedProcessingJob;
+
+export interface FailProcessingJobInput extends ClaimedProcessingJob {
   failureCode: string;
 }
 
@@ -31,11 +38,19 @@ export interface DocumentProcessingRepository {
   claimJob(
     input: ClaimProcessingJobInput
   ): Promise<ProcessingJobRecord | null>;
+  // Locks the job until the transaction ends, or returns null when this claim
+  // no longer owns it. While locked, lease recovery cannot take the job.
+  lockClaimedJob(
+    claim: ClaimedProcessingJob,
+    transaction: DatabaseExecutor
+  ): Promise<ProcessingJobRecord | null>;
   completeJob(
-    input: CompleteProcessingJobInput
+    input: CompleteProcessingJobInput,
+    transaction?: DatabaseExecutor
   ): Promise<ProcessingJobRecord | null>;
   retryJob(
-    input: RetryProcessingJobInput
+    input: RetryProcessingJobInput,
+    transaction?: DatabaseExecutor
   ): Promise<ProcessingJobRecord | null>;
   releaseAvailableRetries(
     availableAt: Date,
@@ -45,29 +60,69 @@ export interface DocumentProcessingRepository {
     expiredAt: Date,
     limit: number
   ): Promise<ProcessingJobRecord[]>;
-  failJob(input: FailProcessingJobInput): Promise<ProcessingJobRecord | null>;
+  failJob(
+    input: FailProcessingJobInput,
+    transaction?: DatabaseExecutor
+  ): Promise<ProcessingJobRecord | null>;
   listPublishableJobs(
     availableAt: Date,
     limit: number
   ): Promise<ProcessingJobRecord[]>;
 }
 
+// Matches the job only while it is still processing under this claim.
+function ownedByClaim({ jobId, documentId, attemptCount }: ClaimedProcessingJob) {
+  return and(
+    eq(documentProcessingJobs.jobId, jobId),
+    eq(documentProcessingJobs.documentId, documentId),
+    eq(documentProcessingJobs.status, 'processing'),
+    eq(documentProcessingJobs.attemptCount, attemptCount)
+  );
+}
+
 export function createDocumentProcessingRepository(
   database: AppDatabase
 ): DocumentProcessingRepository {
   return {
+    // A document has at most one active job, so scheduling it again returns
+    // the job that will already run instead of creating a duplicate.
     async createQueuedJob(documentId) {
       return withDbErrors('Document processing job', async () => {
-        const [createdJob] = await database.db
-          .insert(documentProcessingJobs)
-          .values({ documentId })
-          .returning();
+        // The active job can finish between the conflict and the read, so the
+        // insert is tried once more before giving up.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const [createdJob] = await database.db
+            .insert(documentProcessingJobs)
+            .values({ documentId })
+            .onConflictDoNothing({
+              target: documentProcessingJobs.documentId,
+              where: isActiveJob(documentProcessingJobs.status)
+            })
+            .returning();
 
-        if (!createdJob) {
-          throw new Error('Document processing job creation returned no record');
+          if (createdJob) {
+            return createdJob;
+          }
+
+          const [activeJob] = await database.db
+            .select()
+            .from(documentProcessingJobs)
+            .where(
+              and(
+                eq(documentProcessingJobs.documentId, documentId),
+                isActiveJob(documentProcessingJobs.status)
+              )
+            )
+            .limit(1);
+
+          if (activeJob) {
+            return activeJob;
+          }
         }
 
-        return createdJob;
+        throw new Error(
+          `Document ${documentId} has neither a new nor an active processing job`
+        );
       });
     },
 
@@ -96,36 +151,41 @@ export function createDocumentProcessingRepository(
       });
     },
 
-    async completeJob({ jobId, documentId }) {
+    async lockClaimedJob(claim, transaction) {
       return withDbErrors('Document processing job', async () => {
-        const [completedJob] = await database.db
+        const [lockedJob] = await transaction
+          .select()
+          .from(documentProcessingJobs)
+          .where(ownedByClaim(claim))
+          .limit(1)
+          .for('update');
+
+        return lockedJob ?? null;
+      });
+    },
+
+    async completeJob(claimedJob, transaction = database.db) {
+      return withDbErrors('Document processing job', async () => {
+        const [completedJob] = await transaction
           .update(documentProcessingJobs)
           .set({
             status: 'completed',
             failureCode: null,
             lockedUntil: null
           })
-          .where(
-            and(
-              eq(documentProcessingJobs.jobId, jobId),
-              eq(documentProcessingJobs.documentId, documentId),
-              eq(documentProcessingJobs.status, 'processing')
-            )
-          )
+          .where(ownedByClaim(claimedJob))
           .returning();
 
         return completedJob ?? null;
       });
     },
 
-    async retryJob({
-      jobId,
-      documentId,
-      failureCode,
-      delayMilliseconds
-    }) {
+    async retryJob(
+      { failureCode, delayMilliseconds, ...claimedJob },
+      transaction = database.db
+    ) {
       return withDbErrors('Document processing job', async () => {
-        const [retryingJob] = await database.db
+        const [retryingJob] = await transaction
           .update(documentProcessingJobs)
           .set({
             status: 'retrying',
@@ -134,13 +194,7 @@ export function createDocumentProcessingRepository(
               sql`now() + ${delayMilliseconds} * interval '1 millisecond'`,
             lockedUntil: null
           })
-          .where(
-            and(
-              eq(documentProcessingJobs.jobId, jobId),
-              eq(documentProcessingJobs.documentId, documentId),
-              eq(documentProcessingJobs.status, 'processing')
-            )
-          )
+          .where(ownedByClaim(claimedJob))
           .returning();
 
         return retryingJob ?? null;
@@ -207,22 +261,16 @@ export function createDocumentProcessingRepository(
       });
     },
 
-    async failJob({ jobId, documentId, failureCode }) {
+    async failJob({ failureCode, ...claimedJob }, transaction = database.db) {
       return withDbErrors('Document processing job', async () => {
-        const [failedJob] = await database.db
+        const [failedJob] = await transaction
           .update(documentProcessingJobs)
           .set({
             status: 'failed',
             failureCode,
             lockedUntil: null
           })
-          .where(
-            and(
-              eq(documentProcessingJobs.jobId, jobId),
-              eq(documentProcessingJobs.documentId, documentId),
-              eq(documentProcessingJobs.status, 'processing')
-            )
-          )
+          .where(ownedByClaim(claimedJob))
           .returning();
 
         return failedJob ?? null;

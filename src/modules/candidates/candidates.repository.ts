@@ -1,7 +1,7 @@
-import { and, asc, eq, SQL } from 'drizzle-orm';
+import { and, asc, eq, sql, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
-import { RecordNotFoundError } from '../../shared/errors/app.error.js';
+import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
 import {
   candidates,
   certificationDetails,
@@ -43,6 +43,7 @@ export interface ClaimRecord {
   origin: ClaimRow['origin'];
   status: ClaimRow['status'];
   values: ClaimValues;
+  version: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -64,20 +65,40 @@ export interface UpdateClaimValuesInput {
   candidateId: string;
   claimId: string;
   values: ClaimValues;
+  // The version the caller last read. When given, the write only happens if
+  // the record still has it.
+  expectedVersion?: number;
 }
+
+// The result of a write guarded by `expectedVersion`. `conflict` carries the
+// current record, so the caller can show what changed since it was read.
+export type VersionedWrite<T> =
+  | { status: 'saved'; record: T }
+  | { status: 'conflict'; current: T }
+  | { status: 'missing' };
+
+export type VersionedDelete<T> =
+  | { status: 'deleted' }
+  | { status: 'conflict'; current: T }
+  | { status: 'missing' };
 
 export interface CandidatesRepository {
   findCandidateByUserId(userId: string): Promise<CandidateRecord | null>;
   createCandidate(input: CreateCandidateInput): Promise<CandidateRecord>;
   updateCandidate(
     candidateId: string,
-    input: UpdateCandidateInput
-  ): Promise<CandidateRecord>;
+    input: UpdateCandidateInput,
+    expectedVersion?: number
+  ): Promise<VersionedWrite<CandidateRecord>>;
   createClaim(input: CreateClaimInput): Promise<ClaimRecord>;
   listClaims(candidateId: string, filters?: ClaimFilters): Promise<ClaimRecord[]>;
   findClaim(candidateId: string, claimId: string): Promise<ClaimRecord | null>;
-  updateClaimValues(input: UpdateClaimValuesInput): Promise<ClaimRecord | null>;
-  deleteClaim(candidateId: string, claimId: string): Promise<boolean>;
+  updateClaimValues(input: UpdateClaimValuesInput): Promise<VersionedWrite<ClaimRecord>>;
+  deleteClaim(
+    candidateId: string,
+    claimId: string,
+    expectedVersion?: number
+  ): Promise<VersionedDelete<ClaimRecord>>;
 }
 
 type QueryExecutor = Pick<AppDatabase['db'], 'select' | 'insert' | 'update'>;
@@ -344,6 +365,7 @@ async function selectClaims(
       origin: claim.origin,
       status: claim.status,
       values,
+      version: claim.version,
       createdAt: claim.createdAt,
       updatedAt: claim.updatedAt
     };
@@ -381,24 +403,41 @@ export function createCandidatesRepository(
       });
     },
 
-    async updateCandidate(candidateId, input) {
-      return withDbErrors('Candidate', async () => {
+    // Every update increases the version. With an expected version, the update
+    // only happens if the profile still has it.
+    async updateCandidate(candidateId, input, expectedVersion) {
+      return withDbErrors('Candidate', async (): Promise<VersionedWrite<CandidateRecord>> => {
         const [updatedCandidate] = await database.db
           .update(candidates)
-          .set(input)
-          .where(eq(candidates.candidateId, candidateId))
+          .set({ ...input, version: sql`${candidates.version} + 1` })
+          .where(
+            and(
+              eq(candidates.candidateId, candidateId),
+              expectedVersion === undefined
+                ? undefined
+                : eq(candidates.version, expectedVersion)
+            )
+          )
           .returning();
 
-        if (!updatedCandidate) {
-          throw new RecordNotFoundError('Candidate', candidateId);
+        if (updatedCandidate) {
+          return { status: 'saved', record: updatedCandidate };
         }
 
-        return updatedCandidate;
+        const [current] = await database.db
+          .select()
+          .from(candidates)
+          .where(eq(candidates.candidateId, candidateId))
+          .limit(1);
+
+        return current ? { status: 'conflict', current } : { status: 'missing' };
       });
     },
 
+    // Both claim writes are whole transactions, so a transient failure rolls
+    // back and the transaction runs again.
     async createClaim(input) {
-      return withDbErrors('Claim', () => {
+      return withTransientRetry(() => withDbErrors('Claim', () => {
         return database.db.transaction(async (transaction) => {
           const [createdClaim] = await transaction
             .insert(claims)
@@ -430,7 +469,7 @@ export function createCandidatesRepository(
           }
           return claim;
         });
-      });
+      }));
     },
 
     async listClaims(candidateId, filters = {}) {
@@ -456,48 +495,85 @@ export function createCandidatesRepository(
       });
     },
 
+    // The claim row is locked first, so concurrent edits run one after the
+    // other: each archives the values it actually replaces, and an edit based
+    // on an older version is refused.
     async updateClaimValues(input) {
-      return withDbErrors('Claim', () => {
-        return database.db.transaction(async (transaction) => {
-          const ownedClaim = and(
-            eq(claims.claimId, input.claimId),
-            eq(claims.candidateId, input.candidateId)
-          );
-          const [current] = await selectClaims(transaction, ownedClaim);
-          if (!current) {
-            return null;
+      return withTransientRetry(() => withDbErrors('Claim', () => {
+        return database.db.transaction(
+          async (transaction): Promise<VersionedWrite<ClaimRecord>> => {
+            const ownedClaim = and(
+              eq(claims.claimId, input.claimId),
+              eq(claims.candidateId, input.candidateId)
+            );
+            // Locked on its own: PostgreSQL cannot lock rows through the outer
+            // joins that read the claim's details.
+            const [locked] = await transaction
+              .select({ claimId: claims.claimId })
+              .from(claims)
+              .where(ownedClaim)
+              .for('update');
+            const [current] = locked
+              ? await selectClaims(transaction, ownedClaim)
+              : [];
+            if (!current) {
+              return { status: 'missing' };
+            }
+            if (
+              input.expectedVersion !== undefined &&
+              current.version !== input.expectedVersion
+            ) {
+              return { status: 'conflict', current };
+            }
+
+            await transaction
+              .insert(claimRevisions)
+              .values({ claimId: current.claimId, previousValues: current.values });
+            await updateDetails(
+              transaction,
+              current.claimId,
+              current.claimType,
+              input.values
+            );
+            await transaction
+              .update(claims)
+              .set({ updatedAt: new Date(), version: sql`${claims.version} + 1` })
+              .where(ownedClaim);
+
+            const [updated] = await selectClaims(transaction, ownedClaim);
+            if (!updated) {
+              throw new Error('Updated claim could not be read');
+            }
+            return { status: 'saved', record: updated };
           }
-
-          await transaction
-            .insert(claimRevisions)
-            .values({ claimId: current.claimId, previousValues: current.values });
-          await updateDetails(
-            transaction,
-            current.claimId,
-            current.claimType,
-            input.values
-          );
-          await transaction
-            .update(claims)
-            .set({ updatedAt: new Date() })
-            .where(ownedClaim);
-
-          const [updated] = await selectClaims(transaction, ownedClaim);
-          return updated ?? null;
-        });
-      });
+        );
+      }));
     },
 
-    async deleteClaim(candidateId, claimId) {
-      return withDbErrors('Claim', async () => {
+    async deleteClaim(candidateId, claimId, expectedVersion) {
+      return withDbErrors('Claim', async (): Promise<VersionedDelete<ClaimRecord>> => {
+        const ownedClaim = and(
+          eq(claims.claimId, claimId),
+          eq(claims.candidateId, candidateId)
+        );
         const deleted = await database.db
           .delete(claims)
           .where(
-            and(eq(claims.claimId, claimId), eq(claims.candidateId, candidateId))
+            and(
+              ownedClaim,
+              expectedVersion === undefined
+                ? undefined
+                : eq(claims.version, expectedVersion)
+            )
           )
           .returning({ claimId: claims.claimId });
 
-        return deleted.length > 0;
+        if (deleted.length > 0) {
+          return { status: 'deleted' };
+        }
+
+        const [current] = await selectClaims(database.db, ownedClaim);
+        return current ? { status: 'conflict', current } : { status: 'missing' };
       });
     }
   };

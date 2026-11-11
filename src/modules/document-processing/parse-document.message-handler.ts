@@ -44,10 +44,17 @@ export function createParseDocumentMessageHandler({
       throw error;
     }
 
-    log.info(
-      { ...context, outcome: result.outcome },
-      'Handled document processing job'
-    );
+    if (result.outcome === 'stale') {
+      log.warn(
+        context,
+        'Document processing attempt stopped because another attempt claimed the job'
+      );
+    } else {
+      log.info(
+        { ...context, outcome: result.outcome },
+        'Handled document processing job'
+      );
+    }
 
     return result.outcome === 'failed' ? 'reject' : 'ack';
   };

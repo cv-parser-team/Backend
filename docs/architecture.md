@@ -79,10 +79,23 @@ tokens without storing JWTs.
 
 ## Transactions
 
-Services own transactions when multiple writes must succeed atomically. Add a
-Unit of Work abstraction around `database.db.transaction` when the first such
-use case appears. Do not add transactions to single repository operations
-without a consistency requirement.
+Services own transactions when multiple writes must succeed atomically. The
+`UnitOfWork` in `infrastructure/database/unit-of-work.ts` runs such writes as
+one transaction, even when different modules own them: it passes a
+`DatabaseExecutor` to the work, and repository methods that must join the
+transaction accept it as an optional last argument. Its first use ends a
+document processing attempt. Do not add transactions to single repository
+operations without a consistency requirement.
+
+Deadlocks, serialization failures, unavailable locks, and lost connections are
+mapped to `TransientDatabaseError`. `withTransientRetry` in
+`infrastructure/database/transient-retry.ts` runs a whole transaction again, up
+to three times in total, only for these errors; the `UnitOfWork` and the claim
+transactions use it. Never retry a write that was refused because another
+request changed the record first.
+
+How duplicates, concurrent writes, and retries are handled is described in
+[Duplicate and conflict resolution](duplicates-and-conflicts.md).
 
 ## Testing strategy
 

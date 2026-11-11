@@ -1,6 +1,6 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../../app.js';
+import { createTestApp } from '../../testing/create-test-app.js';
 import {
   CreateNormalizationDecisionInput,
   DecisionStore,
@@ -385,7 +385,7 @@ describe('claim normalization', () => {
 
 describe('normalization module', () => {
   it('shares the normalization service with other modules', async () => {
-    const app = await createApp();
+    const app = await createTestApp();
     try {
       await app.ready();
       expect(app.hasDecorator('normalizationService')).toBe(true);

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "document_processing_jobs_active_document_unique" ON "document_processing_jobs" USING btree ("document_id") WHERE "document_processing_jobs"."status" in ('queued', 'processing', 'retrying');

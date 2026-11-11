@@ -3,9 +3,13 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { AuthGuards } from '../auth/auth.guards.js';
-import { UnsupportedDocumentTypeError } from './documents.errors.js';
+import {
+  DocumentBeingDeletedError,
+  UnsupportedDocumentTypeError
+} from './documents.errors.js';
 import {
   DocumentRecord,
   DocumentsRepository
@@ -73,9 +77,13 @@ function createService(): DocumentsService {
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     getDocument: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
+    // A newly uploaded document is always stored until it is processed.
     uploadDocument: vi.fn().mockImplementation(async (input) => {
       await buffer(input.stream);
-      return { document: documentRecord, deduplicated: false };
+      return {
+        document: { ...documentRecord, status: 'stored', purpose: input.purpose },
+        deduplicated: false
+      };
     }),
     openDocument: vi.fn().mockResolvedValue({
       document: documentRecord,
@@ -91,6 +99,7 @@ function createService(): DocumentsService {
       status: 'failed',
       failureCode: 'PARSING_FAILED'
     }),
+    lockDocumentForProcessing: vi.fn().mockResolvedValue(documentRecord),
     openDocumentForProcessing: vi.fn().mockResolvedValue({
       document: documentRecord,
       stream: Readable.from('stored document')
@@ -109,6 +118,7 @@ function createRepository(
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
     findDocumentById: vi.fn().mockResolvedValue(documentRecord),
+    lockDocument: vi.fn().mockResolvedValue(documentRecord),
     markDocumentProcessing: vi.fn().mockResolvedValue({
       ...documentRecord,
       status: 'processing'
@@ -458,7 +468,26 @@ describe('documents service', () => {
     await expect(service.markDocumentReady(documentId)).resolves.toBe(
       documentRecord
     );
-    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId);
+    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId, undefined);
+  });
+
+  it('marks ready and failed in the given transaction', async () => {
+    const repository = createRepository();
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+    const transaction = {} as DatabaseExecutor;
+
+    await service.markDocumentReady(documentId, transaction);
+    await service.markDocumentFailed(documentId, 'PARSING_FAILED', transaction);
+
+    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId, transaction);
+    expect(repository.markDocumentFailed).toHaveBeenCalledWith(
+      { documentId, failureCode: 'PARSING_FAILED' },
+      transaction
+    );
   });
 
   it('returns null when a document cannot be marked as ready', async () => {
@@ -492,10 +521,10 @@ describe('documents service', () => {
     await expect(
       service.markDocumentFailed(documentId, ' PARSING_FAILED ')
     ).resolves.toBe(failedDocument);
-    expect(repository.markDocumentFailed).toHaveBeenCalledWith({
-      documentId,
-      failureCode: 'PARSING_FAILED'
-    });
+    expect(repository.markDocumentFailed).toHaveBeenCalledWith(
+      { documentId, failureCode: 'PARSING_FAILED' },
+      undefined
+    );
   });
 
   it('returns null when a document cannot be marked as failed', async () => {
@@ -590,6 +619,40 @@ describe('documents service', () => {
     expect(repository.deleteDocument).not.toHaveBeenCalled();
   });
 
+  it('succeeds when a concurrent delete removed the document first', async () => {
+    const repository = createRepository({
+      updateDocumentStatus: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.deleteDocument(ownerUserId, documentId)
+    ).resolves.toBeUndefined();
+    expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  it('succeeds when a concurrent delete removed the row while files were deleted', async () => {
+    const repository = createRepository({
+      deleteDocument: vi.fn().mockResolvedValue(false)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.deleteDocument(ownerUserId, documentId)
+    ).resolves.toBeUndefined();
+    expect(storage.delete).toHaveBeenCalledWith(documentRecord.storageKey);
+  });
+
   it('keeps deleting metadata when storage deletion fails', async () => {
     const storageError = new Error('storage unavailable');
     const repository = createRepository();
@@ -679,6 +742,64 @@ describe('documents service', () => {
     );
     expect(storage.commit).not.toHaveBeenCalled();
     expect(repository.createDocument).not.toHaveBeenCalled();
+  });
+
+  it('refuses a duplicate of a document that is being deleted', async () => {
+    const deletingDocument: DocumentRecord = { ...documentRecord, status: 'deleting' };
+    const repository = createRepository({
+      findDocumentByChecksum: vi.fn().mockResolvedValue(deletingDocument)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    const upload = service.uploadDocument({
+      ownerUserId,
+      purpose: 'source',
+      originalFilename: 'resume.pdf',
+      stream: Readable.from('same document')
+    });
+
+    await expect(upload).rejects.toBeInstanceOf(DocumentBeingDeletedError);
+    await expect(upload).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'DOCUMENT_BEING_DELETED'
+    });
+    expect(storage.discard).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    expect(storage.commit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a concurrent duplicate that is being deleted', async () => {
+    const repository = createRepository({
+      findDocumentByChecksum: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...documentRecord, status: 'deleting' }),
+      createDocument: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.uploadDocument({
+        ownerUserId,
+        purpose: 'source',
+        originalFilename: 'resume.pdf',
+        stream: Readable.from('same document')
+      })
+    ).rejects.toBeInstanceOf(DocumentBeingDeletedError);
+    expect(storage.delete).toHaveBeenCalledWith(
+      '33333333-3333-4333-8333-333333333333'
+    );
   });
 
   it('removes the losing object when a concurrent duplicate wins', async () => {
@@ -872,6 +993,31 @@ describe('documents routes', () => {
         }
       ]
     });
+  });
+
+  it('schedules a re-uploaded document whose processing failed', async () => {
+    const service = createService();
+    service.uploadDocument = vi.fn().mockImplementation(async (input) => {
+      await buffer(input.stream);
+      return {
+        document: { ...documentRecord, status: 'failed', failureCode: 'PARSING_FAILED' },
+        deduplicated: true
+      };
+    });
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
+    const request = createMultipartPayload([
+      multipartFile('file', 'resume.pdf', Buffer.from('same document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(processingScheduler.schedule).toHaveBeenCalledWith(documentId);
   });
 
   it('does not schedule processing for a new evidence document', async () => {

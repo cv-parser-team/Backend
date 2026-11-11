@@ -83,6 +83,28 @@ and always act on the authenticated user's own profile:
 
 There is intentionally no health endpoint.
 
+### Concurrent edits
+
+The profile and each claim carry a `version`, returned in the body and as an
+`ETag` header. To make sure an edit does not overwrite a change made in
+another tab or by another request, send the version you read:
+
+```http
+PUT /api/candidates/me/claims/:claimId
+If-Match: "3"
+```
+
+`PATCH /api/candidates/me` and `DELETE /api/candidates/me/claims/:claimId`
+accept `If-Match` the same way. If the record changed since, the request fails
+with `409 VERSION_CONFLICT`, and `error.details.current` holds the record as it
+is now. `If-Match` is optional for now; without it, edits are not checked.
+
+Uploading a file whose earlier copy is still being deleted returns
+`409 DOCUMENT_BEING_DELETED` for that file; upload it again shortly. A request
+that hits a temporary database conflict, such as a deadlock, is retried
+automatically and returns `503 TRANSIENT_DATABASE_ERROR` only if it keeps
+failing.
+
 ## Authentication
 
 Registration and sign-in return a signed JWT access token. Send it to protected
