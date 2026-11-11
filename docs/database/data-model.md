@@ -41,6 +41,7 @@ erDiagram
         text location "nullable"
         text contact_email "nullable"
         jsonb profile_links
+        integer version
         timestamptz created_at
         timestamptz updated_at
     }
@@ -50,6 +51,7 @@ erDiagram
         claim_type claim_type
         claim_origin origin
         claim_status status
+        integer version
         timestamptz created_at
         timestamptz updated_at
     }
@@ -252,6 +254,7 @@ through the users service. The row cascades on user deletion.
 | `location` | Text | Nullable | Candidate location |
 | `contact_email` | Text | Nullable, valid email | Email shown on the CV and profile; can differ from the account email |
 | `profile_links` | JSONB | Required, defaults to `[]` | `{ label, url }` links such as LinkedIn or GitHub |
+| `version` | Integer | Required, defaults to `1` | Increases on every update; an edit sent with an older version in `If-Match` is refused |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last update time |
 
@@ -272,6 +275,7 @@ Claims cascade on profile deletion.
 | `claim_type` | `claim_type` | Required | Kind of profile information |
 | `origin` | `claim_origin` | Required | Whether the candidate entered or extraction produced the claim |
 | `status` | `claim_status` | Required, defaults to `pending` | Review state; only `accepted` is exported |
+| `version` | Integer | Required, defaults to `1` | Increases on every value change; an edit or delete sent with an older version in `If-Match` is refused |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last value change |
 
@@ -483,9 +487,12 @@ Owned by the `document-processing` module and defined in
 workflow design.
 
 `document_processing_jobs` stores durable scheduling, retry, and lease state
-for asynchronous parsing. A document may have multiple jobs over its lifetime;
-the job ID is the idempotency key carried by queue messages. Deleting a
-document deletes its processing history.
+for asynchronous parsing. A document may have multiple jobs over its lifetime,
+but at most one active job (`queued`, `processing`, or `retrying`), enforced by
+the partial unique index `document_processing_jobs_active_document_unique`.
+The job ID is the idempotency key carried by queue messages, and
+`attempt_count` identifies each claim of the job, so writes by an older attempt
+are refused. Deleting a document deletes its processing history.
 
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |

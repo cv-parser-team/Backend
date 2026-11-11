@@ -50,6 +50,11 @@ the API keeps the first permitted files and returns `207 Multi-Status` with
 An upload matching an existing owner, purpose, and SHA-256 returns that document
 with `deduplicated: true` instead of creating another row or storage object.
 
+An upload matching a document that is being deleted fails for that file with
+`409 DOCUMENT_BEING_DELETED`, instead of returning a document about to
+disappear. Deleting is idempotent: when two deletes of the same document run
+at once, the one that finds the row already removed also returns `204`.
+
 A source document is scheduled for processing whenever an upload returns it
 `stored` or `failed`, new or deduplicated. Re-uploading therefore schedules a
 document whose earlier scheduling failed or whose processing failed. Scheduling
