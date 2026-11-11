@@ -79,7 +79,7 @@ saved.
 
 ```mermaid
 flowchart LR
-    Caller[Documents service] --> Service[Parsing service]
+    Caller[Parse job handler] --> Service[Parsing service]
     Service --> PDF[PDF parser]
     Service --> DOCX[DOCX parser]
     PDF --> Layout[PDF layout pipeline]
@@ -94,13 +94,13 @@ flowchart LR
 
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
-| Parsing service | Select a parser by exact media type and persist its result | Interpret CV meaning or contain format-specific parsing rules |
+| Parsing service | `parse`: select a parser by exact media type and return its result without saving it. `saveExtraction`: save a result, inside the caller's transaction when one is given | Interpret CV meaning or contain format-specific parsing rules |
 | PDF parser | Open and validate PDFs; extract page primitives, links, styles, marks, and separators; record page failures | Decide final layout ownership |
 | DOCX parser and HTML builder | Convert DOCX to ordered paragraph/table blocks and preserve explicit Word structure | Invent page coordinates or run the PDF layout pipeline |
 | Language policy | Apply the shared Arabic threshold and remove permitted fragments | Perform OCR or reconstruct Arabic layout |
 | PDF layout pipeline | Reconstruct lines, measure geometry, score candidates, resolve scopes and groups, and produce compatibility plus shadow layouts | Normalize résumé claims or infer broad section meaning |
 | AI input builder | Format stored output into compact text with stable references and conservative joins | Modify stored text or repair incorrect ownership |
-| Parsing repository | Upsert and retrieve one versioned extraction per document | Recompute parsing results or query inside the JSON as domain data |
+| Parsing repository | Upsert, optionally in a given transaction, and retrieve one versioned extraction per document | Recompute parsing results or query inside the JSON as domain data |
 | Inspection report | Render stage evidence, scores, associations, ownership, and AI previews for diagnostics | Define persisted behavior or become a production contract |
 
 The documents module owns file metadata, storage, lifecycle status, and the

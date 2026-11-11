@@ -1,7 +1,9 @@
 # Duplicate and conflict resolution (design)
 
-> **Status: design for review.** Built on `Main` after the processing
-> pipeline merge (`231a6d4`). Decisions that need approval are in
+> **Status: in progress.** Built on `Main` after the processing pipeline merge
+> (`231a6d4`). Part 1 (processing jobs, G1–G5) is implemented; see
+> [Document processing](modules/document-processing.md#concurrency-and-duplicates).
+> G6–G10 are next. Decisions that need approval are in
 > [section 11](#11-open-decisions).
 
 ## 1. Goal
@@ -34,18 +36,24 @@
 
 **Gaps**
 
-| # | Gap | Where | Effect |
-| --- | --- | --- | --- |
-| G1 | `completeJob`, `retryJob`, and `failJob` check only `status = 'processing'` | `document-processing.repository.ts` | After a lease expires and another worker claims the job, the old worker can complete, retry, or fail the new attempt |
-| G2 | The parsing result is saved without checking that the attempt still owns the job | `parse-document.handler.ts` → `parsing.repository.ts` | An old attempt overwrites the result of the newer one |
-| G3 | Nothing stops two active jobs for one document | `createQueuedJob` | Duplicate processing of one document |
-| G4 | When the document is `deleting` or gone, the handler throws before its retry logic | `parse-document.handler.ts` | The message is requeued and skipped, the lease expires, the job is released, and it fails again: **the job loops forever**, and the 3-attempt limit never applies |
-| G5 | If `schedule` fails after the document is created, the file is reported as failed; the client re-uploads it, the upload is deduplicated, and nothing schedules it again | `documents.routes.ts` | The document stays `stored` with no job |
-| G6 | A deduplicated upload returns the existing document whatever its status | `uploadDocument` | Re-uploading a file that is being deleted returns a document that disappears a moment later |
-| G7 | Claim edits read and then write without a lock or version | `updateClaimValues` | Two simultaneous edits: one is lost, and both revisions archive the same old values |
-| G8 | Profile updates have no version | `updateCandidate` | The later save silently overwrites the earlier one |
-| G9 | Creating a profile twice at once returns `UNIQUE_CONSTRAINT_VIOLATION` instead of `CANDIDATE_PROFILE_EXISTS` | `createProfile` | Two different errors for one situation |
-| G10 | Deadlocks and serialization failures are reported as a generic `DATABASE_ERROR` | `database.errors.ts` | Retryable and permanent failures cannot be told apart |
+| # | Gap | Where | Effect | Status |
+| --- | --- | --- | --- | --- |
+| G1 | `completeJob`, `retryJob`, and `failJob` check only `status = 'processing'` | `document-processing.repository.ts` | After a lease expires and another worker claims the job, the old worker can complete, retry, or fail the new attempt | Done |
+| G2 | The parsing result is saved without checking that the attempt still owns the job | `parse-document.handler.ts` → `parsing.repository.ts` | An old attempt overwrites the result of the newer one | Done |
+| G3 | Nothing stops two active jobs for one document | `createQueuedJob` | Duplicate processing of one document | Done |
+| G4 | When the document is `deleting` or gone, the handler throws before its retry logic | `parse-document.handler.ts` | The message is requeued and skipped, the lease expires, the job is released, and it fails again: **the job loops forever**, and the 3-attempt limit never applies | Done |
+| G5 | If `schedule` fails after the document is created, the file is reported as failed; the client re-uploads it, the upload is deduplicated, and nothing schedules it again | `documents.routes.ts` | The document stays `stored` with no job | Done |
+| G6 | A deduplicated upload returns the existing document whatever its status | `uploadDocument` | Re-uploading a file that is being deleted returns a document that disappears a moment later | Next |
+| G7 | Claim edits read and then write without a lock or version | `updateClaimValues` | Two simultaneous edits: one is lost, and both revisions archive the same old values | Next |
+| G8 | Profile updates have no version | `updateCandidate` | The later save silently overwrites the earlier one | Next |
+| G9 | Creating a profile twice at once returns `UNIQUE_CONSTRAINT_VIOLATION` instead of `CANDIDATE_PROFILE_EXISTS` | `createProfile` | Two different errors for one situation | Next |
+| G10 | Deadlocks and serialization failures are reported as a generic `DATABASE_ERROR` | `database.errors.ts` | Retryable and permanent failures cannot be told apart | Next |
+
+While building part 1, two more cases were found and fixed: a worker that keeps
+crashing never reached the retry limit (now failed with
+`MAX_ATTEMPTS_EXCEEDED`), and a crash between completing the job and marking
+the document ready left the document `processing` forever (now one
+transaction).
 
 ## 3. The strategy
 
