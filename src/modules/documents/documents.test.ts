@@ -10,7 +10,10 @@ import {
   DocumentRecord,
   DocumentsRepository
 } from './documents.repository.js';
-import { documentsRoutes } from './documents.routes.js';
+import {
+  documentsRoutes,
+  type DocumentProcessingScheduler
+} from './documents.routes.js';
 import {
   createDocumentsService,
   DocumentsService
@@ -77,6 +80,20 @@ function createService(): DocumentsService {
     openDocument: vi.fn().mockResolvedValue({
       document: documentRecord,
       stream: Readable.from('stored document')
+    }),
+    markDocumentProcessing: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'processing'
+    }),
+    markDocumentReady: vi.fn().mockResolvedValue(documentRecord),
+    markDocumentFailed: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    }),
+    openDocumentForProcessing: vi.fn().mockResolvedValue({
+      document: documentRecord,
+      stream: Readable.from('stored document')
     })
   };
 }
@@ -91,6 +108,17 @@ function createRepository(
     listStorageKeys: vi.fn().mockResolvedValue([documentRecord.storageKey]),
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
+    findDocumentById: vi.fn().mockResolvedValue(documentRecord),
+    markDocumentProcessing: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'processing'
+    }),
+    markDocumentReady: vi.fn().mockResolvedValue(documentRecord),
+    markDocumentFailed: vi.fn().mockResolvedValue({
+      ...documentRecord,
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    }),
     updateDocumentStatus: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(true),
     ...overrides
@@ -125,6 +153,12 @@ function createValidator(
   return {
     validate: vi.fn().mockResolvedValue({ mediaType: 'application/pdf' }),
     ...overrides
+  };
+}
+
+function createProcessingScheduler(): DocumentProcessingScheduler {
+  return {
+    schedule: vi.fn().mockResolvedValue(undefined)
   };
 }
 
@@ -333,6 +367,181 @@ describe('documents service', () => {
     expect(storage.open).toHaveBeenCalledWith(documentRecord.storageKey);
     expect(result.document).toEqual(documentRecord);
     await expect(buffer(result.stream)).resolves.toEqual(contents);
+  });
+
+  it('opens a document for processing without requiring an owner ID', async () => {
+    const contents = Buffer.from('document processing bytes');
+    const repository = createRepository();
+    const storage = createStorage({
+      open: vi.fn().mockResolvedValue(Readable.from(contents))
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    const result = await service.openDocumentForProcessing(documentId);
+
+    expect(repository.findDocumentById).toHaveBeenCalledWith(documentId);
+    expect(repository.findDocument).not.toHaveBeenCalled();
+    expect(storage.open).toHaveBeenCalledWith(documentRecord.storageKey);
+    expect(result.document.mediaType).toBe('application/pdf');
+    await expect(buffer(result.stream)).resolves.toEqual(contents);
+  });
+
+  it('marks a stored document as processing', async () => {
+    const processingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'processing'
+    };
+    const repository = createRepository({
+      markDocumentProcessing: vi.fn().mockResolvedValue(processingDocument)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentProcessing(documentId)
+    ).resolves.toBe(processingDocument);
+    expect(repository.markDocumentProcessing).toHaveBeenCalledWith(documentId);
+  });
+
+  it('keeps an already-processing document in processing', async () => {
+    const processingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'processing'
+    };
+    const repository = createRepository({
+      markDocumentProcessing: vi.fn().mockResolvedValue(processingDocument)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentProcessing(documentId)
+    ).resolves.toBe(processingDocument);
+    expect(repository.markDocumentProcessing).toHaveBeenCalledWith(documentId);
+  });
+
+  it('returns null when a document cannot be marked as processing', async () => {
+    const repository = createRepository({
+      markDocumentProcessing: vi.fn().mockResolvedValue(null)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentProcessing(documentId)
+    ).resolves.toBeNull();
+  });
+
+  it('marks a processing document as ready', async () => {
+    const repository = createRepository({
+      markDocumentReady: vi.fn().mockResolvedValue(documentRecord)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(service.markDocumentReady(documentId)).resolves.toBe(
+      documentRecord
+    );
+    expect(repository.markDocumentReady).toHaveBeenCalledWith(documentId);
+  });
+
+  it('returns null when a document cannot be marked as ready', async () => {
+    const repository = createRepository({
+      markDocumentReady: vi.fn().mockResolvedValue(null)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(service.markDocumentReady(documentId)).resolves.toBeNull();
+  });
+
+  it('marks a processing document as failed with its failure code', async () => {
+    const failedDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'failed',
+      failureCode: 'PARSING_FAILED'
+    };
+    const repository = createRepository({
+      markDocumentFailed: vi.fn().mockResolvedValue(failedDocument)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentFailed(documentId, ' PARSING_FAILED ')
+    ).resolves.toBe(failedDocument);
+    expect(repository.markDocumentFailed).toHaveBeenCalledWith({
+      documentId,
+      failureCode: 'PARSING_FAILED'
+    });
+  });
+
+  it('returns null when a document cannot be marked as failed', async () => {
+    const repository = createRepository({
+      markDocumentFailed: vi.fn().mockResolvedValue(null)
+    });
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(
+      service.markDocumentFailed(documentId, 'PARSING_FAILED')
+    ).resolves.toBeNull();
+  });
+
+  it('rejects an empty document failure code', async () => {
+    const repository = createRepository();
+    const service = createDocumentsService({
+      repository,
+      storage: createStorage(),
+      validator: createValidator()
+    });
+
+    await expect(service.markDocumentFailed(documentId, '  ')).rejects.toThrow(
+      'Document failure code is required'
+    );
+    expect(repository.markDocumentFailed).not.toHaveBeenCalled();
+  });
+
+  it('rejects processing access when document metadata is absent', async () => {
+    const repository = createRepository({
+      findDocumentById: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.openDocumentForProcessing(documentId)
+    ).rejects.toBeInstanceOf(RecordNotFoundError);
+    expect(storage.open).not.toHaveBeenCalled();
   });
 
   it('deletes the owned storage object and its metadata', async () => {
@@ -563,12 +772,14 @@ describe('documents routes', () => {
 
   async function createRoutes(
     service: DocumentsService,
-    maximumUploadFiles = 5
+    maximumUploadFiles = 5,
+    processingScheduler = createProcessingScheduler()
   ) {
     app = Fastify();
     await app.register(multipart);
     await app.register(documentsRoutes, {
       service,
+      processingScheduler,
       guards: createGuards(),
       maximumUploadFiles
     });
@@ -596,7 +807,8 @@ describe('documents routes', () => {
 
   it('uploads one document for the authenticated candidate', async () => {
     const service = createService();
-    await createRoutes(service);
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
     const request = createMultipartPayload([
       multipartFile('file', 'resume.pdf', Buffer.from('document bytes'))
     ]);
@@ -615,6 +827,7 @@ describe('documents routes', () => {
         originalFilename: 'resume.pdf'
       })
     );
+    expect(processingScheduler.schedule).toHaveBeenCalledWith(documentId);
     expect(response.json()).toMatchObject({
       success: true,
       data: [
@@ -634,7 +847,8 @@ describe('documents routes', () => {
       await buffer(input.stream);
       return { document: documentRecord, deduplicated: true };
     });
-    await createRoutes(service);
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
     const request = createMultipartPayload([
       multipartFile('file', 'duplicate.pdf', Buffer.from('same document'))
     ]);
@@ -646,6 +860,7 @@ describe('documents routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(processingScheduler.schedule).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({
       success: true,
       data: [
@@ -655,6 +870,58 @@ describe('documents routes', () => {
           deduplicated: true,
           document: { documentId }
         }
+      ]
+    });
+  });
+
+  it('does not schedule processing for a new evidence document', async () => {
+    const service = createService();
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
+    const request = createMultipartPayload([
+      multipartFile('file', 'evidence.pdf', Buffer.from('evidence bytes'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=evidence',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(processingScheduler.schedule).not.toHaveBeenCalled();
+  });
+
+  it('isolates a scheduling failure within a multi-file upload', async () => {
+    const service = createService();
+    const schedulingError = new Error('processing unavailable');
+    const processingScheduler = createProcessingScheduler();
+    vi.mocked(processingScheduler.schedule)
+      .mockRejectedValueOnce(schedulingError)
+      .mockResolvedValueOnce(undefined);
+    await createRoutes(service, 5, processingScheduler);
+    const request = createMultipartPayload([
+      multipartFile('file', 'first.pdf', Buffer.from('first document')),
+      multipartFile('file', 'second.pdf', Buffer.from('second document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(207);
+    expect(processingScheduler.schedule).toHaveBeenCalledTimes(2);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        {
+          success: false,
+          filename: 'first.pdf',
+          error: { code: 'DOCUMENT_UPLOAD_FAILED' }
+        },
+        { success: true, filename: 'second.pdf' }
       ]
     });
   });

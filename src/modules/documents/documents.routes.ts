@@ -17,10 +17,26 @@ import type {
 } from './documents.schemas.js';
 import type { DocumentsService } from './documents.service.js';
 
+export interface DocumentProcessingScheduler {
+  schedule(documentId: string): Promise<void>;
+}
+
 export interface DocumentsRoutesOptions {
   service: DocumentsService;
+  processingScheduler: DocumentProcessingScheduler;
   guards: AuthGuards;
   maximumUploadFiles: number;
+}
+
+export async function scheduleUploadedDocumentProcessing(
+  processingScheduler: DocumentProcessingScheduler,
+  purpose: UploadDocumentQuery['purpose'],
+  documentId: string,
+  deduplicated: boolean
+): Promise<void> {
+  if (purpose === 'source' && !deduplicated) {
+    await processingScheduler.schedule(documentId);
+  }
 }
 
 interface DocumentUploadSuccess {
@@ -92,7 +108,7 @@ function attachmentHeader(filename: string): string {
 
 export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async (
   fastify,
-  { service, guards, maximumUploadFiles }
+  { service, processingScheduler, guards, maximumUploadFiles }
 ) => {
   const candidateOnly = [
     guards.authenticate,
@@ -137,6 +153,14 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
               originalFilename: file.filename,
               stream: file.file
             });
+
+            await scheduleUploadedDocumentProcessing(
+              processingScheduler,
+              request.query.purpose,
+              document.documentId,
+              deduplicated
+            );
+
             results.push({
               success: true,
               filename: file.filename,
