@@ -5,6 +5,7 @@ import {
 } from './documents.repository.js';
 import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
+import { DocumentBeingDeletedError } from './documents.errors.js';
 import type { Readable } from 'node:stream';
 import type { DocumentPurpose } from './documents.formats.js';
 import type { DocumentStorage } from './documents.storage.js';
@@ -91,6 +92,16 @@ export interface DocumentsServiceDependencies {
   validator: DocumentValidator;
 }
 
+// An identical upload returns the existing document, unless that document is
+// being deleted: returning it would hand back a document about to disappear.
+function deduplicatedUpload(document: DocumentRecord): UploadDocumentResult {
+  if (document.status === 'deleting') {
+    throw new DocumentBeingDeletedError(document.documentId);
+  }
+
+  return { document, deduplicated: true };
+}
+
 export function createDocumentsService({
   repository,
   storage,
@@ -158,6 +169,8 @@ export function createDocumentsService({
 
       return document;
     },
+    // Deleting is idempotent: once the document was found, a concurrent delete
+    // that removes the row first counts as success, not as a missing document.
     async deleteDocument(ownerUserId, documentId) {
       const document = await repository.findDocument(ownerUserId, documentId);
 
@@ -173,16 +186,11 @@ export function createDocumentsService({
       });
 
       if (!deletingDocument) {
-        throw new RecordNotFoundError('Document', documentId);
+        return;
       }
 
       await storage.delete(document.storageKey);
-
-      const deleted = await repository.deleteDocument(ownerUserId, documentId);
-
-      if (!deleted) {
-        throw new RecordNotFoundError('Document', documentId);
-      }
+      await repository.deleteDocument(ownerUserId, documentId);
     },
     async uploadDocument(input) {
       const staged = await storage.stage(input.stream);
@@ -207,7 +215,7 @@ export function createDocumentsService({
 
         if (existingDocument) {
           await storage.discard(staged.stagingKey);
-          return { document: existingDocument, deduplicated: true };
+          return deduplicatedUpload(existingDocument);
         }
 
         storageKey = await storage.commit(staged.stagingKey);
@@ -238,7 +246,7 @@ export function createDocumentsService({
           );
         }
 
-        return { document: concurrentDocument, deduplicated: true };
+        return deduplicatedUpload(concurrentDocument);
       } catch (error) {
         try {
           if (storageKey === undefined) {

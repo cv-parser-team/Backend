@@ -61,6 +61,17 @@ export class DocumentPurposeMismatchError extends AppError {
   }
 }
 
+// The same file was uploaded while its earlier copy is being deleted. Once the
+// delete finishes, the upload succeeds as a new document.
+export class DocumentBeingDeletedError extends AppError {
+  readonly statusCode = 409;
+  readonly code = 'DOCUMENT_BEING_DELETED';
+
+  constructor(readonly documentId: string) {
+    super('This document is being deleted. Try the upload again shortly');
+  }
+}
+
 export class CorruptedDocumentError extends AppError {
   readonly statusCode = 400;
   readonly code = 'CORRUPTED_DOCUMENT';

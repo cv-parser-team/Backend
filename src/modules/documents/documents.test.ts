@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { AuthGuards } from '../auth/auth.guards.js';
-import { UnsupportedDocumentTypeError } from './documents.errors.js';
+import {
+  DocumentBeingDeletedError,
+  UnsupportedDocumentTypeError
+} from './documents.errors.js';
 import {
   DocumentRecord,
   DocumentsRepository
@@ -616,6 +619,40 @@ describe('documents service', () => {
     expect(repository.deleteDocument).not.toHaveBeenCalled();
   });
 
+  it('succeeds when a concurrent delete removed the document first', async () => {
+    const repository = createRepository({
+      updateDocumentStatus: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.deleteDocument(ownerUserId, documentId)
+    ).resolves.toBeUndefined();
+    expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  it('succeeds when a concurrent delete removed the row while files were deleted', async () => {
+    const repository = createRepository({
+      deleteDocument: vi.fn().mockResolvedValue(false)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.deleteDocument(ownerUserId, documentId)
+    ).resolves.toBeUndefined();
+    expect(storage.delete).toHaveBeenCalledWith(documentRecord.storageKey);
+  });
+
   it('keeps deleting metadata when storage deletion fails', async () => {
     const storageError = new Error('storage unavailable');
     const repository = createRepository();
@@ -705,6 +742,64 @@ describe('documents service', () => {
     );
     expect(storage.commit).not.toHaveBeenCalled();
     expect(repository.createDocument).not.toHaveBeenCalled();
+  });
+
+  it('refuses a duplicate of a document that is being deleted', async () => {
+    const deletingDocument: DocumentRecord = { ...documentRecord, status: 'deleting' };
+    const repository = createRepository({
+      findDocumentByChecksum: vi.fn().mockResolvedValue(deletingDocument)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    const upload = service.uploadDocument({
+      ownerUserId,
+      purpose: 'source',
+      originalFilename: 'resume.pdf',
+      stream: Readable.from('same document')
+    });
+
+    await expect(upload).rejects.toBeInstanceOf(DocumentBeingDeletedError);
+    await expect(upload).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'DOCUMENT_BEING_DELETED'
+    });
+    expect(storage.discard).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    expect(storage.commit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a concurrent duplicate that is being deleted', async () => {
+    const repository = createRepository({
+      findDocumentByChecksum: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...documentRecord, status: 'deleting' }),
+      createDocument: vi.fn().mockResolvedValue(null)
+    });
+    const storage = createStorage();
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator()
+    });
+
+    await expect(
+      service.uploadDocument({
+        ownerUserId,
+        purpose: 'source',
+        originalFilename: 'resume.pdf',
+        stream: Readable.from('same document')
+      })
+    ).rejects.toBeInstanceOf(DocumentBeingDeletedError);
+    expect(storage.delete).toHaveBeenCalledWith(
+      '33333333-3333-4333-8333-333333333333'
+    );
   });
 
   it('removes the losing object when a concurrent duplicate wins', async () => {
