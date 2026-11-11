@@ -138,6 +138,9 @@ function createDocumentsService(statuses: DocumentRecord['status'][]) {
       statuses.push(document.status);
       return document;
     },
+    async lockDocumentForProcessing(requestedDocumentId) {
+      return requestedDocumentId === document.documentId ? document : null;
+    },
     async markDocumentReady(requestedDocumentId) {
       if (
         requestedDocumentId !== document.documentId ||

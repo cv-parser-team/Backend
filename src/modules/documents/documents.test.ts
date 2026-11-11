@@ -74,9 +74,13 @@ function createService(): DocumentsService {
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     getDocument: vi.fn().mockResolvedValue(documentRecord),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
+    // A newly uploaded document is always stored until it is processed.
     uploadDocument: vi.fn().mockImplementation(async (input) => {
       await buffer(input.stream);
-      return { document: documentRecord, deduplicated: false };
+      return {
+        document: { ...documentRecord, status: 'stored', purpose: input.purpose },
+        deduplicated: false
+      };
     }),
     openDocument: vi.fn().mockResolvedValue({
       document: documentRecord,
@@ -92,6 +96,7 @@ function createService(): DocumentsService {
       status: 'failed',
       failureCode: 'PARSING_FAILED'
     }),
+    lockDocumentForProcessing: vi.fn().mockResolvedValue(documentRecord),
     openDocumentForProcessing: vi.fn().mockResolvedValue({
       document: documentRecord,
       stream: Readable.from('stored document')
@@ -110,6 +115,7 @@ function createRepository(
     listDocuments: vi.fn().mockResolvedValue([documentRecord]),
     findDocument: vi.fn().mockResolvedValue(documentRecord),
     findDocumentById: vi.fn().mockResolvedValue(documentRecord),
+    lockDocument: vi.fn().mockResolvedValue(documentRecord),
     markDocumentProcessing: vi.fn().mockResolvedValue({
       ...documentRecord,
       status: 'processing'
@@ -892,6 +898,31 @@ describe('documents routes', () => {
         }
       ]
     });
+  });
+
+  it('schedules a re-uploaded document whose processing failed', async () => {
+    const service = createService();
+    service.uploadDocument = vi.fn().mockImplementation(async (input) => {
+      await buffer(input.stream);
+      return {
+        document: { ...documentRecord, status: 'failed', failureCode: 'PARSING_FAILED' },
+        deduplicated: true
+      };
+    });
+    const processingScheduler = createProcessingScheduler();
+    await createRoutes(service, 5, processingScheduler);
+    const request = createMultipartPayload([
+      multipartFile('file', 'resume.pdf', Buffer.from('same document'))
+    ]);
+
+    const response = await app!.inject({
+      method: 'POST',
+      url: '/?purpose=source',
+      ...request
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(processingScheduler.schedule).toHaveBeenCalledWith(documentId);
   });
 
   it('does not schedule processing for a new evidence document', async () => {

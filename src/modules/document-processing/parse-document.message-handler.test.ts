@@ -57,6 +57,7 @@ describe('parse document message handler', () => {
   it.each([
     { outcome: 'processed', processingJob: completedJob },
     { outcome: 'retrying', processingJob: retryingJob },
+    { outcome: 'cancelled', processingJob: failedJob },
     { outcome: 'skipped' }
   ] satisfies ParseDocumentHandlerResult[])(
     'acknowledges $outcome jobs',

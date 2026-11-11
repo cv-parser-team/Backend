@@ -5,6 +5,7 @@ import type { ApiResponse } from '../../shared/http/api-response.js';
 import type { AuthGuards } from '../auth/auth.guards.js';
 import { InvalidDocumentUploadError } from './documents.errors.js';
 import type { DocumentRecord } from './documents.repository.js';
+import type { DocumentStatus } from './documents.table.js';
 import {
   documentParamsSchema,
   listDocumentsQuerySchema,
@@ -28,14 +29,21 @@ export interface DocumentsRoutesOptions {
   maximumUploadFiles: number;
 }
 
+// Source documents are processed until they succeed. The status, not whether
+// the upload was deduplicated, decides: a re-upload schedules a document whose
+// earlier scheduling failed (still `stored`) or whose processing failed.
+// Scheduling twice is harmless, because a document has one active job at most.
+const SCHEDULABLE_STATUSES: readonly DocumentStatus[] = ['stored', 'failed'];
+
 export async function scheduleUploadedDocumentProcessing(
   processingScheduler: DocumentProcessingScheduler,
-  purpose: UploadDocumentQuery['purpose'],
-  documentId: string,
-  deduplicated: boolean
+  document: Pick<DocumentRecord, 'documentId' | 'purpose' | 'status'>
 ): Promise<void> {
-  if (purpose === 'source' && !deduplicated) {
-    await processingScheduler.schedule(documentId);
+  if (
+    document.purpose === 'source' &&
+    SCHEDULABLE_STATUSES.includes(document.status)
+  ) {
+    await processingScheduler.schedule(document.documentId);
   }
 }
 
@@ -154,12 +162,7 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
               stream: file.file
             });
 
-            await scheduleUploadedDocumentProcessing(
-              processingScheduler,
-              request.query.purpose,
-              document.documentId,
-              deduplicated
-            );
+            await scheduleUploadedDocumentProcessing(processingScheduler, document);
 
             results.push({
               success: true,

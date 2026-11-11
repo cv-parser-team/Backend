@@ -27,7 +27,7 @@ const processingDocument: DocumentRecord = {
 };
 
 describe('documents repository', () => {
-  it('marks only stored or already-processing documents as processing', async () => {
+  it('marks only stored, already-processing, or failed documents as processing', async () => {
     const returning = vi.fn().mockResolvedValue([processingDocument]);
     const where = vi.fn<(condition: SQL) => { returning: typeof returning }>(
       () => ({ returning })
@@ -45,8 +45,8 @@ describe('documents repository', () => {
     expect(condition).toBeDefined();
     const query = new PgDialect().sqlToQuery(condition!);
     expect(query.sql).toContain('"documents"."document_id" = $1');
-    expect(query.sql).toContain('"documents"."status" in ($2, $3)');
-    expect(query.params).toEqual([documentId, 'stored', 'processing']);
+    expect(query.sql).toContain('"documents"."status" in ($2, $3, $4)');
+    expect(query.params).toEqual([documentId, 'stored', 'processing', 'failed']);
   });
 
   function createUpdateExecutor() {
@@ -87,6 +87,26 @@ describe('documents repository', () => {
       expect(query.sql).toContain('"documents"."status" = $2');
       expect(query.params).toEqual([documentId, 'processing']);
     }
+  });
+
+  it('locks the document for update in the transaction', async () => {
+    const lockFor = vi.fn().mockResolvedValue([processingDocument]);
+    const limit = vi.fn(() => ({ for: lockFor }));
+    const where = vi.fn<(condition: SQL) => { limit: typeof limit }>(() => ({
+      limit
+    }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    const repository = createDocumentsRepository({ db: {} } as unknown as AppDatabase);
+
+    await expect(
+      repository.lockDocument(documentId, { select } as unknown as DatabaseExecutor)
+    ).resolves.toBe(processingDocument);
+
+    expect(lockFor).toHaveBeenCalledWith('update');
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(query.sql).toBe('"documents"."document_id" = $1');
+    expect(query.params).toEqual([documentId]);
   });
 
   it('marks ready on the database when no transaction is given', async () => {

@@ -49,6 +49,12 @@ export interface OrphanCleanupResult {
 
 export interface ProcessingDocumentsService {
   markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
+  // Locks the document in the transaction so a delete waits until the
+  // processing attempt has finished. Returns null when it no longer exists.
+  lockDocumentForProcessing(
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<DocumentRecord | null>;
   // Ready and failed are reached only from processing; inside the given
   // transaction, if any.
   markDocumentReady(
@@ -263,6 +269,9 @@ export function createDocumentsService({
     },
     markDocumentProcessing(documentId) {
       return repository.markDocumentProcessing(documentId);
+    },
+    lockDocumentForProcessing(documentId, transaction) {
+      return repository.lockDocument(documentId, transaction);
     },
     markDocumentReady(documentId, transaction) {
       return repository.markDocumentReady(documentId, transaction);

@@ -1,5 +1,8 @@
 import { buffer } from 'node:stream/consumers';
-import type { UnitOfWork } from '../../infrastructure/database/unit-of-work.js';
+import type {
+  DatabaseExecutor,
+  UnitOfWork
+} from '../../infrastructure/database/unit-of-work.js';
 import type { ProcessingDocumentsService } from '../documents/index.js';
 import type { ParsingService } from '../parsing/index.js';
 import type { ExtractionResult } from '../parsing/parsing.types.js';
@@ -8,14 +11,18 @@ import type { DocumentProcessingService } from './document-processing.service.js
 import type { ParseDocumentJob } from './parse-document.job.js';
 
 const PARSING_FAILURE_CODE = 'PARSING_FAILED';
+const DOCUMENT_DELETED_FAILURE_CODE = 'DOCUMENT_DELETED';
+const MAX_ATTEMPTS_FAILURE_CODE = 'MAX_ATTEMPTS_EXCEEDED';
 const MAX_PROCESSING_ATTEMPTS = 3;
 
 // `stale`: the lease expired and another worker claimed the job, so this
 // attempt stopped without saving anything.
+// `cancelled`: the document was deleted, so the job was failed without retry.
 export type ParseDocumentHandlerResult =
   | { outcome: 'processed'; processingJob: ProcessingJobRecord }
   | { outcome: 'retrying'; processingJob: ProcessingJobRecord }
   | { outcome: 'failed'; processingJob: ProcessingJobRecord }
+  | { outcome: 'cancelled'; processingJob: ProcessingJobRecord }
   | { outcome: 'skipped' }
   | { outcome: 'stale' };
 
@@ -45,6 +52,56 @@ export function createParseDocumentHandler({
   processingService,
   unitOfWork
 }: ParseDocumentHandlerDependencies): ParseDocumentHandler {
+  // Runs after the job is locked. The document is locked as well, so a delete
+  // waits for this attempt; a document that is gone or being deleted ends the
+  // job for good instead of letting it be retried forever.
+  async function cancelIfDocumentDeleted(
+    processingJob: ProcessingJobRecord,
+    transaction: DatabaseExecutor
+  ): Promise<ParseDocumentHandlerResult | null> {
+    const document = await documentsService.lockDocumentForProcessing(
+      processingJob.documentId,
+      transaction
+    );
+    if (document && document.status !== 'deleting') {
+      return null;
+    }
+
+    const failedJob = await processingService.fail(
+      processingJob,
+      DOCUMENT_DELETED_FAILURE_CODE,
+      transaction
+    );
+    if (!failedJob) {
+      throw new Error(
+        `Processing job ${processingJob.jobId} could not transition to failed`
+      );
+    }
+
+    return { outcome: 'cancelled', processingJob: failedJob };
+  }
+
+  // Called when the document could not move to processing: ends the job if
+  // the document was deleted, and reports any other state as an error.
+  async function cancelUnprocessable(
+    processingJob: ProcessingJobRecord
+  ): Promise<ParseDocumentHandlerResult> {
+    return unitOfWork.run(async (transaction) => {
+      if (!(await processingService.lockClaim(processingJob, transaction))) {
+        return STALE;
+      }
+
+      const cancelled = await cancelIfDocumentDeleted(processingJob, transaction);
+      if (cancelled) {
+        return cancelled;
+      }
+
+      throw new Error(
+        `Document ${processingJob.documentId} could not transition to processing`
+      );
+    });
+  }
+
   async function finishParsed(
     processingJob: ProcessingJobRecord,
     extraction: ExtractionResult
@@ -52,6 +109,11 @@ export function createParseDocumentHandler({
     return unitOfWork.run(async (transaction) => {
       if (!(await processingService.lockClaim(processingJob, transaction))) {
         return STALE;
+      }
+
+      const cancelled = await cancelIfDocumentDeleted(processingJob, transaction);
+      if (cancelled) {
+        return cancelled;
       }
 
       await parsingService.saveExtraction(
@@ -84,6 +146,62 @@ export function createParseDocumentHandler({
     });
   }
 
+  // Ends the job and the document as failed for good, in the caller's
+  // transaction, after the job and the document were locked.
+  async function failJobAndDocument(
+    processingJob: ProcessingJobRecord,
+    failureCode: string,
+    transaction: DatabaseExecutor
+  ): Promise<ParseDocumentHandlerResult> {
+    const failedJob = await processingService.fail(
+      processingJob,
+      failureCode,
+      transaction
+    );
+    if (!failedJob) {
+      throw new Error(
+        `Processing job ${processingJob.jobId} could not transition to failed`
+      );
+    }
+
+    const failedDocument = await documentsService.markDocumentFailed(
+      processingJob.documentId,
+      failureCode,
+      transaction
+    );
+    if (!failedDocument) {
+      throw new Error(
+        `Document ${processingJob.documentId} could not transition to failed`
+      );
+    }
+
+    return { outcome: 'failed', processingJob: failedJob };
+  }
+
+  // A worker that keeps crashing never reaches the retry logic, while every
+  // lease recovery adds an attempt. Such a job is failed before the document
+  // is read again.
+  async function failExhausted(
+    processingJob: ProcessingJobRecord
+  ): Promise<ParseDocumentHandlerResult> {
+    return unitOfWork.run(async (transaction) => {
+      if (!(await processingService.lockClaim(processingJob, transaction))) {
+        return STALE;
+      }
+
+      const cancelled = await cancelIfDocumentDeleted(processingJob, transaction);
+      if (cancelled) {
+        return cancelled;
+      }
+
+      return failJobAndDocument(
+        processingJob,
+        MAX_ATTEMPTS_FAILURE_CODE,
+        transaction
+      );
+    });
+  }
+
   // `extraction` is set when the parser returned a failed result, which is
   // kept like any other result.
   async function finishFailed(
@@ -97,6 +215,14 @@ export function createParseDocumentHandler({
       return await unitOfWork.run(async (transaction) => {
         if (!(await processingService.lockClaim(processingJob, transaction))) {
           return STALE;
+        }
+
+        const cancelled = await cancelIfDocumentDeleted(
+          processingJob,
+          transaction
+        );
+        if (cancelled) {
+          return cancelled;
         }
 
         if (extraction) {
@@ -121,29 +247,11 @@ export function createParseDocumentHandler({
           return { outcome: 'retrying', processingJob: retryingJob };
         }
 
-        const failedJob = await processingService.fail(
+        return failJobAndDocument(
           processingJob,
           PARSING_FAILURE_CODE,
           transaction
         );
-        if (!failedJob) {
-          throw new Error(
-            `Processing job ${processingJob.jobId} could not transition to failed`
-          );
-        }
-
-        const failedDocument = await documentsService.markDocumentFailed(
-          processingJob.documentId,
-          PARSING_FAILURE_CODE,
-          transaction
-        );
-        if (!failedDocument) {
-          throw new Error(
-            `Document ${processingJob.documentId} could not transition to failed`
-          );
-        }
-
-        return { outcome: 'failed', processingJob: failedJob };
       });
     } catch (recordingError) {
       throw new AggregateError(
@@ -167,9 +275,11 @@ export function createParseDocumentHandler({
         await documentsService.markDocumentProcessing(job.documentId);
 
       if (!processingDocument) {
-        throw new Error(
-          `Document ${job.documentId} could not transition to processing`
-        );
+        return cancelUnprocessable(processingJob);
+      }
+
+      if (processingJob.attemptCount > MAX_PROCESSING_ATTEMPTS) {
+        return failExhausted(processingJob);
       }
 
       let extraction: ExtractionResult;

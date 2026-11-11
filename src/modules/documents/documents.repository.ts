@@ -47,6 +47,12 @@ export interface DocumentsRepository {
     documentId: string
   ): Promise<DocumentRecord | null>;
   findDocumentById(documentId: string): Promise<DocumentRecord | null>;
+  // Locks the document until the transaction ends, so its status cannot
+  // change meanwhile. Returns null when the document no longer exists.
+  lockDocument(
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<DocumentRecord | null>;
   findDocumentByChecksum(
     input: FindDocumentByChecksumInput
   ): Promise<DocumentRecord | null>;
@@ -154,6 +160,19 @@ export function createDocumentsRepository(
       });
     },
 
+    async lockDocument(documentId, transaction) {
+      return withDbErrors('Document', async () => {
+        const [document] = await transaction
+          .select()
+          .from(documents)
+          .where(eq(documents.documentId, documentId))
+          .limit(1)
+          .for('update');
+
+        return document ?? null;
+      });
+    },
+
     async findDocumentByChecksum(input) {
       return withDbErrors('Document', async () => {
         const [document] = await database.db
@@ -172,6 +191,8 @@ export function createDocumentsRepository(
       });
     },
 
+    // From `processing` when a lease expired and the job is processed again,
+    // and from `failed` when a failed document is scheduled again.
     async markDocumentProcessing(documentId) {
       return withDbErrors('Document', async () => {
         const [processingDocument] = await database.db
@@ -180,7 +201,7 @@ export function createDocumentsRepository(
           .where(
             and(
               eq(documents.documentId, documentId),
-              inArray(documents.status, ['stored', 'processing'])
+              inArray(documents.status, ['stored', 'processing', 'failed'])
             )
           )
           .returning();

@@ -139,6 +139,7 @@ function createDocumentsService(
 
   return {
     markDocumentProcessing: vi.fn().mockResolvedValue(processingDocument),
+    lockDocumentForProcessing: vi.fn().mockResolvedValue(processingDocument),
     openDocumentForProcessing: vi.fn(async () => ({
       document: processingDocument,
       stream: Readable.from('document bytes')
@@ -263,23 +264,239 @@ describe('parse document handler', () => {
     expect(unitOfWork.run).not.toHaveBeenCalled();
   });
 
-  it('stops when the document cannot transition to processing', async () => {
+  it('throws when a document that still exists cannot transition to processing', async () => {
     const parsingService = createParsingService();
-    const unitOfWork = createUnitOfWork();
     const handler = createParseDocumentHandler({
       documentsService: createDocumentsService({
-        markDocumentProcessing: vi.fn().mockResolvedValue(null)
+        markDocumentProcessing: vi.fn().mockResolvedValue(null),
+        lockDocumentForProcessing: vi.fn().mockResolvedValue(createDocument('ready'))
       }),
       parsingService,
       processingService: createProcessingService(),
-      unitOfWork
+      unitOfWork: createUnitOfWork()
     });
 
     await expect(handler.handle(job)).rejects.toThrow(
       `Document ${job.documentId} could not transition to processing`
     );
     expect(parsingService.parse).not.toHaveBeenCalled();
-    expect(unitOfWork.run).not.toHaveBeenCalled();
+  });
+
+  describe('after too many attempts', () => {
+    it('fails the job and the document without reading it again', async () => {
+      const claimedJob = createProcessingJob('processing', 4);
+      const failedJob = createProcessingJob('failed', 4);
+      const processingService = createProcessingService(claimedJob);
+      processingService.fail = vi.fn().mockResolvedValue(failedJob);
+      const documentsService = createDocumentsService();
+      const parsingService = createParsingService();
+      const handler = createParseDocumentHandler({
+        documentsService,
+        parsingService,
+        processingService,
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toEqual({
+        outcome: 'failed',
+        processingJob: failedJob
+      });
+      expect(processingService.fail).toHaveBeenCalledWith(
+        claimedJob,
+        'MAX_ATTEMPTS_EXCEEDED',
+        transaction
+      );
+      expect(documentsService.markDocumentFailed).toHaveBeenCalledWith(
+        job.documentId,
+        'MAX_ATTEMPTS_EXCEEDED',
+        transaction
+      );
+      expect(documentsService.openDocumentForProcessing).not.toHaveBeenCalled();
+      expect(parsingService.parse).not.toHaveBeenCalled();
+      expect(processingService.retry).not.toHaveBeenCalled();
+    });
+
+    it('still processes the last allowed attempt', async () => {
+      const parsingService = createParsingService();
+      const handler = createParseDocumentHandler({
+        documentsService: createDocumentsService(),
+        parsingService,
+        processingService: createProcessingService(createProcessingJob('processing', 3)),
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toMatchObject({
+        outcome: 'processed'
+      });
+      expect(parsingService.parse).toHaveBeenCalledOnce();
+    });
+
+    it('cancels instead when the document was deleted', async () => {
+      const processingService = createProcessingService(
+        createProcessingJob('processing', 4)
+      );
+      const documentsService = createDocumentsService({
+        lockDocumentForProcessing: vi.fn().mockResolvedValue(null)
+      });
+      const handler = createParseDocumentHandler({
+        documentsService,
+        parsingService: createParsingService(),
+        processingService,
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toMatchObject({
+        outcome: 'cancelled'
+      });
+      expect(processingService.fail).toHaveBeenCalledWith(
+        createProcessingJob('processing', 4),
+        'DOCUMENT_DELETED',
+        transaction
+      );
+      expect(documentsService.markDocumentFailed).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when another attempt owns the job', async () => {
+      const processingService = createProcessingService(
+        createProcessingJob('processing', 4)
+      );
+      processingService.lockClaim = vi.fn().mockResolvedValue(null);
+      const handler = createParseDocumentHandler({
+        documentsService: createDocumentsService(),
+        parsingService: createParsingService(),
+        processingService,
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toEqual({ outcome: 'stale' });
+      expect(processingService.fail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when the document is deleted', () => {
+    const deletedDocuments = [
+      ['gone', null],
+      ['being deleted', createDocument('deleting')]
+    ] as const;
+
+    it.each(deletedDocuments)(
+      'cancels the job before parsing when the document is %s',
+      async (_state, lockedDocument) => {
+        const processingService = createProcessingService();
+        const cancelledJob = createProcessingJob('failed');
+        processingService.fail = vi.fn().mockResolvedValue(cancelledJob);
+        const parsingService = createParsingService();
+        const handler = createParseDocumentHandler({
+          documentsService: createDocumentsService({
+            markDocumentProcessing: vi.fn().mockResolvedValue(null),
+            lockDocumentForProcessing: vi.fn().mockResolvedValue(lockedDocument)
+          }),
+          parsingService,
+          processingService,
+          unitOfWork: createUnitOfWork()
+        });
+
+        await expect(handler.handle(job)).resolves.toEqual({
+          outcome: 'cancelled',
+          processingJob: cancelledJob
+        });
+        expect(processingService.fail).toHaveBeenCalledWith(
+          createProcessingJob(),
+          'DOCUMENT_DELETED',
+          transaction
+        );
+        expect(parsingService.parse).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each(deletedDocuments)(
+      'cancels the job without saving the result when the document is %s after parsing',
+      async (_state, lockedDocument) => {
+        const processingService = createProcessingService();
+        const documentsService = createDocumentsService({
+          lockDocumentForProcessing: vi.fn().mockResolvedValue(lockedDocument)
+        });
+        const parsingService = createParsingService();
+        const handler = createParseDocumentHandler({
+          documentsService,
+          parsingService,
+          processingService,
+          unitOfWork: createUnitOfWork()
+        });
+
+        await expect(handler.handle(job)).resolves.toMatchObject({
+          outcome: 'cancelled'
+        });
+        expect(documentsService.lockDocumentForProcessing).toHaveBeenCalledWith(
+          job.documentId,
+          transaction
+        );
+        expect(parsingService.saveExtraction).not.toHaveBeenCalled();
+        expect(processingService.complete).not.toHaveBeenCalled();
+        expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
+      }
+    );
+
+    it('cancels instead of failing the document at the attempt limit', async () => {
+      const processingService = createProcessingService(
+        createProcessingJob('processing', 3)
+      );
+      const documentsService = createDocumentsService({
+        lockDocumentForProcessing: vi.fn().mockResolvedValue(null)
+      });
+      const handler = createParseDocumentHandler({
+        documentsService,
+        parsingService: failingParser(),
+        processingService,
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toMatchObject({
+        outcome: 'cancelled'
+      });
+      expect(processingService.fail).toHaveBeenCalledOnce();
+      expect(processingService.fail).toHaveBeenCalledWith(
+        createProcessingJob('processing', 3),
+        'DOCUMENT_DELETED',
+        transaction
+      );
+      expect(documentsService.markDocumentFailed).not.toHaveBeenCalled();
+    });
+
+    it('cancels instead of scheduling a retry', async () => {
+      const processingService = createProcessingService();
+      const handler = createParseDocumentHandler({
+        documentsService: createDocumentsService({
+          lockDocumentForProcessing: vi.fn().mockResolvedValue(null)
+        }),
+        parsingService: failingParser(),
+        processingService,
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toMatchObject({
+        outcome: 'cancelled'
+      });
+      expect(processingService.retry).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when another attempt owns the job', async () => {
+      const processingService = createProcessingService();
+      processingService.lockClaim = vi.fn().mockResolvedValue(null);
+      const documentsService = createDocumentsService({
+        markDocumentProcessing: vi.fn().mockResolvedValue(null)
+      });
+      const handler = createParseDocumentHandler({
+        documentsService,
+        parsingService: createParsingService(),
+        processingService,
+        unitOfWork: createUnitOfWork()
+      });
+
+      await expect(handler.handle(job)).resolves.toEqual({ outcome: 'stale' });
+      expect(documentsService.lockDocumentForProcessing).not.toHaveBeenCalled();
+      expect(processingService.fail).not.toHaveBeenCalled();
+    });
   });
 
   it('saves nothing when another attempt owns the job', async () => {

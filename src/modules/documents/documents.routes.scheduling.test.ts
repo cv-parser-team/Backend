@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { DocumentRecord } from './documents.repository.js';
 import {
   scheduleUploadedDocumentProcessing,
   type DocumentProcessingScheduler
@@ -12,38 +13,43 @@ function createScheduler(): DocumentProcessingScheduler {
   };
 }
 
+function uploaded(
+  status: DocumentRecord['status'],
+  purpose: DocumentRecord['purpose'] = 'source'
+): Pick<DocumentRecord, 'documentId' | 'purpose' | 'status'> {
+  return { documentId, purpose, status };
+}
+
 describe('document upload processing scheduling', () => {
-  it('schedules a newly uploaded source document', async () => {
-    const scheduler = createScheduler();
-
-    await scheduleUploadedDocumentProcessing(
-      scheduler,
-      'source',
-      documentId,
-      false
-    );
-
-    expect(scheduler.schedule).toHaveBeenCalledWith(documentId);
-  });
-
-  it.each([
-    { purpose: 'source' as const, deduplicated: true },
-    { purpose: 'evidence' as const, deduplicated: false }
-  ])(
-    'does not schedule $purpose when deduplicated is $deduplicated',
-    async ({ purpose, deduplicated }) => {
+  it.each(['stored', 'failed'] as const)(
+    'schedules a %s source document, new or uploaded again',
+    async (status) => {
       const scheduler = createScheduler();
 
-      await scheduleUploadedDocumentProcessing(
-        scheduler,
-        purpose,
-        documentId,
-        deduplicated
-      );
+      await scheduleUploadedDocumentProcessing(scheduler, uploaded(status));
+
+      expect(scheduler.schedule).toHaveBeenCalledWith(documentId);
+    }
+  );
+
+  it.each(['processing', 'ready', 'deleting'] as const)(
+    'does not schedule a %s source document',
+    async (status) => {
+      const scheduler = createScheduler();
+
+      await scheduleUploadedDocumentProcessing(scheduler, uploaded(status));
 
       expect(scheduler.schedule).not.toHaveBeenCalled();
     }
   );
+
+  it('does not schedule evidence documents', async () => {
+    const scheduler = createScheduler();
+
+    await scheduleUploadedDocumentProcessing(scheduler, uploaded('stored', 'evidence'));
+
+    expect(scheduler.schedule).not.toHaveBeenCalled();
+  });
 
   it('propagates scheduling failures to the per-file upload boundary', async () => {
     const failure = new Error('processing unavailable');
@@ -51,12 +57,7 @@ describe('document upload processing scheduling', () => {
     vi.mocked(scheduler.schedule).mockRejectedValue(failure);
 
     await expect(
-      scheduleUploadedDocumentProcessing(
-        scheduler,
-        'source',
-        documentId,
-        false
-      )
+      scheduleUploadedDocumentProcessing(scheduler, uploaded('stored'))
     ).rejects.toBe(failure);
   });
 });
