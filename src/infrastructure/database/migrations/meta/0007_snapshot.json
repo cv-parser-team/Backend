@@ -1,5 +1,5 @@
 {
-  "id": "099441b8-f56f-42d6-8b06-30c3d488d633",
+  "id": "04d3339a-e79d-4ccf-aceb-e629f54bb5ed",
   "prevId": "4c11f0ac-595f-4249-95df-6112d315629e",
   "version": "7",
   "dialect": "postgresql",
@@ -765,6 +765,157 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.document_processing_jobs": {
+      "name": "document_processing_jobs",
+      "schema": "",
+      "columns": {
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "document_id": {
+          "name": "document_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "processing_job_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "available_at": {
+          "name": "available_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "document_processing_jobs_runnable_idx": {
+          "name": "document_processing_jobs_runnable_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "document_processing_jobs_lease_idx": {
+          "name": "document_processing_jobs_lease_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "locked_until",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "document_processing_jobs_document_id_idx": {
+          "name": "document_processing_jobs_document_id_idx",
+          "columns": [
+            {
+              "expression": "document_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "document_processing_jobs_document_id_documents_document_id_fk": {
+          "name": "document_processing_jobs_document_id_documents_document_id_fk",
+          "tableFrom": "document_processing_jobs",
+          "tableTo": "documents",
+          "columnsFrom": [
+            "document_id"
+          ],
+          "columnsTo": [
+            "document_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "document_processing_jobs_attempt_count_nonnegative": {
+          "name": "document_processing_jobs_attempt_count_nonnegative",
+          "value": "\"document_processing_jobs\".\"attempt_count\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.documents": {
       "name": "documents",
       "schema": "",
@@ -961,348 +1112,6 @@
           "value": "(\n                \"documents\".\"status\" = 'failed' and \"documents\".\"failure_code\" is not null\n            ) or (\n                \"documents\".\"status\" <> 'failed' and \"documents\".\"failure_code\" is null\n            )"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.aliases": {
-      "name": "aliases",
-      "schema": "",
-      "columns": {
-        "alias_id": {
-          "name": "alias_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "term_id": {
-          "name": "term_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "alias_text": {
-          "name": "alias_text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "match_key": {
-          "name": "match_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope": {
-          "name": "scope",
-          "type": "alias_scope",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'global'"
-        },
-        "origin": {
-          "name": "origin",
-          "type": "alias_origin",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "alias_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "aliases_term_id_match_key_unique": {
-          "name": "aliases_term_id_match_key_unique",
-          "columns": [
-            {
-              "expression": "term_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "match_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "aliases_match_key_idx": {
-          "name": "aliases_match_key_idx",
-          "columns": [
-            {
-              "expression": "match_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "aliases_term_id_canonical_terms_term_id_fk": {
-          "name": "aliases_term_id_canonical_terms_term_id_fk",
-          "tableFrom": "aliases",
-          "tableTo": "canonical_terms",
-          "columnsFrom": [
-            "term_id"
-          ],
-          "columnsTo": [
-            "term_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.canonical_terms": {
-      "name": "canonical_terms",
-      "schema": "",
-      "columns": {
-        "term_id": {
-          "name": "term_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "category": {
-          "name": "category",
-          "type": "canonical_category",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "canonical_name": {
-          "name": "canonical_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "match_key": {
-          "name": "match_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "canonical_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "merged_into_id": {
-          "name": "merged_into_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "canonical_terms_category_match_key_unique": {
-          "name": "canonical_terms_category_match_key_unique",
-          "columns": [
-            {
-              "expression": "category",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "match_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "canonical_terms_merged_into_id_canonical_terms_term_id_fk": {
-          "name": "canonical_terms_merged_into_id_canonical_terms_term_id_fk",
-          "tableFrom": "canonical_terms",
-          "tableTo": "canonical_terms",
-          "columnsFrom": [
-            "merged_into_id"
-          ],
-          "columnsTo": [
-            "term_id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.normalization_decisions": {
-      "name": "normalization_decisions",
-      "schema": "",
-      "columns": {
-        "normalization_id": {
-          "name": "normalization_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "term_id": {
-          "name": "term_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "original_value": {
-          "name": "original_value",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "method": {
-          "name": "method",
-          "type": "normalization_method",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "confidence_score": {
-          "name": "confidence_score",
-          "type": "numeric(3, 2)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "actor_type": {
-          "name": "actor_type",
-          "type": "actor_type",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rule_version": {
-          "name": "rule_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "normalization_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "normalization_decisions_claim_id_idx": {
-          "name": "normalization_decisions_claim_id_idx",
-          "columns": [
-            {
-              "expression": "claim_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "normalization_decisions_claim_id_claims_claim_id_fk": {
-          "name": "normalization_decisions_claim_id_claims_claim_id_fk",
-          "tableFrom": "normalization_decisions",
-          "tableTo": "claims",
-          "columnsFrom": [
-            "claim_id"
-          ],
-          "columnsTo": [
-            "claim_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "normalization_decisions_term_id_canonical_terms_term_id_fk": {
-          "name": "normalization_decisions_term_id_canonical_terms_term_id_fk",
-          "tableFrom": "normalization_decisions",
-          "tableTo": "canonical_terms",
-          "columnsFrom": [
-            "term_id"
-          ],
-          "columnsTo": [
-            "term_id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.document_extractions": {
@@ -1556,6 +1365,17 @@
         "project"
       ]
     },
+    "public.processing_job_status": {
+      "name": "processing_job_status",
+      "schema": "public",
+      "values": [
+        "queued",
+        "processing",
+        "retrying",
+        "completed",
+        "failed"
+      ]
+    },
     "public.document_purpose": {
       "name": "document_purpose",
       "schema": "public",
@@ -1573,80 +1393,6 @@
         "ready",
         "failed",
         "deleting"
-      ]
-    },
-    "public.actor_type": {
-      "name": "actor_type",
-      "schema": "public",
-      "values": [
-        "system",
-        "ai",
-        "candidate",
-        "reviewer"
-      ]
-    },
-    "public.alias_origin": {
-      "name": "alias_origin",
-      "schema": "public",
-      "values": [
-        "seed",
-        "ai",
-        "candidate",
-        "reviewer"
-      ]
-    },
-    "public.alias_scope": {
-      "name": "alias_scope",
-      "schema": "public",
-      "values": [
-        "global",
-        "candidate"
-      ]
-    },
-    "public.alias_status": {
-      "name": "alias_status",
-      "schema": "public",
-      "values": [
-        "pending",
-        "approved",
-        "rejected"
-      ]
-    },
-    "public.canonical_category": {
-      "name": "canonical_category",
-      "schema": "public",
-      "values": [
-        "skill",
-        "job_title",
-        "degree"
-      ]
-    },
-    "public.canonical_status": {
-      "name": "canonical_status",
-      "schema": "public",
-      "values": [
-        "active",
-        "merged"
-      ]
-    },
-    "public.normalization_method": {
-      "name": "normalization_method",
-      "schema": "public",
-      "values": [
-        "canonical",
-        "alias",
-        "fuzzy",
-        "ai",
-        "candidate"
-      ]
-    },
-    "public.normalization_status": {
-      "name": "normalization_status",
-      "schema": "public",
-      "values": [
-        "matched",
-        "unmatched",
-        "ambiguous"
       ]
     },
     "public.document_format": {

@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import type { DocumentPurpose } from './documents.formats.js';
@@ -28,6 +28,11 @@ export interface FindDocumentByChecksumInput {
   sha256: string;
 }
 
+export interface MarkDocumentFailedInput {
+  documentId: string;
+  failureCode: string;
+}
+
 export interface DocumentsRepository {
   createDocument(input: CreateDocumentInput): Promise<DocumentRecord | null>;
   listDeletingDocuments(): Promise<DocumentRecord[]>;
@@ -40,8 +45,14 @@ export interface DocumentsRepository {
     ownerUserId: string,
     documentId: string
   ): Promise<DocumentRecord | null>;
+  findDocumentById(documentId: string): Promise<DocumentRecord | null>;
   findDocumentByChecksum(
     input: FindDocumentByChecksumInput
+  ): Promise<DocumentRecord | null>;
+  markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  markDocumentFailed(
+    input: MarkDocumentFailedInput
   ): Promise<DocumentRecord | null>;
   updateDocumentStatus(
     input: UpdateDocumentStatusInput
@@ -126,6 +137,18 @@ export function createDocumentsRepository(
       });
     },
 
+    async findDocumentById(documentId) {
+      return withDbErrors('Document', async () => {
+        const [document] = await database.db
+          .select()
+          .from(documents)
+          .where(eq(documents.documentId, documentId))
+          .limit(1);
+
+        return document ?? null;
+      });
+    },
+
     async findDocumentByChecksum(input) {
       return withDbErrors('Document', async () => {
         const [document] = await database.db
@@ -141,6 +164,57 @@ export function createDocumentsRepository(
           .limit(1);
 
         return document ?? null;
+      });
+    },
+
+    async markDocumentProcessing(documentId) {
+      return withDbErrors('Document', async () => {
+        const [processingDocument] = await database.db
+          .update(documents)
+          .set({ status: 'processing', failureCode: null })
+          .where(
+            and(
+              eq(documents.documentId, documentId),
+              inArray(documents.status, ['stored', 'processing'])
+            )
+          )
+          .returning();
+
+        return processingDocument ?? null;
+      });
+    },
+
+    async markDocumentReady(documentId) {
+      return withDbErrors('Document', async () => {
+        const [readyDocument] = await database.db
+          .update(documents)
+          .set({ status: 'ready', failureCode: null })
+          .where(
+            and(
+              eq(documents.documentId, documentId),
+              eq(documents.status, 'processing')
+            )
+          )
+          .returning();
+
+        return readyDocument ?? null;
+      });
+    },
+
+    async markDocumentFailed({ documentId, failureCode }) {
+      return withDbErrors('Document', async () => {
+        const [failedDocument] = await database.db
+          .update(documents)
+          .set({ status: 'failed', failureCode })
+          .where(
+            and(
+              eq(documents.documentId, documentId),
+              eq(documents.status, 'processing')
+            )
+          )
+          .returning();
+
+        return failedDocument ?? null;
       });
     },
 

@@ -162,11 +162,23 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    DOCUMENT_PROCESSING_JOBS {
+        uuid job_id PK
+        uuid document_id FK
+        processing_job_status status
+        integer attempt_count
+        text failure_code "nullable"
+        timestamptz available_at
+        timestamptz locked_until "nullable"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
     USERS ||--o| CANDIDATES : "has profile"
     USERS ||--o{ DOCUMENTS : owns
     DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
+    DOCUMENTS ||--o{ DOCUMENT_PROCESSING_JOBS : schedules
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
     CLAIMS ||--o| EMPLOYMENT_DETAILS : "type employment"
@@ -462,6 +474,35 @@ storage key. Document rows cascade when their owning user is deleted.
 
 - `document_purpose`: `source`, `evidence`
 - `document_status`: `stored`, `processing`, `ready`, `failed`, `deleting`
+
+## Document processing jobs
+
+Owned by the `document-processing` module and defined in
+`src/modules/document-processing/document-processing.table.ts`. See
+[Asynchronous document processing](../modules/document-processing.md) for the
+workflow design.
+
+`document_processing_jobs` stores durable scheduling, retry, and lease state
+for asynchronous parsing. A document may have multiple jobs over its lifetime;
+the job ID is the idempotency key carried by queue messages. Deleting a
+document deletes its processing history.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `job_id` | UUID | Primary key, generated | Stable job and message idempotency identifier |
+| `document_id` | UUID | Required, document FK, cascade delete, indexed | Document to process |
+| `status` | `processing_job_status` | Required, defaults to `queued`, indexed | Processing lifecycle state |
+| `attempt_count` | Integer | Required, nonnegative, defaults to `0` | Number of processing attempts |
+| `failure_code` | Text | Nullable | Machine-readable reason for a retry or terminal failure |
+| `available_at` | Timestamp with time zone | Required, generated, indexed with status | Earliest time the job may run |
+| `locked_until` | Timestamp with time zone | Nullable, indexed with status | Processing lease expiration |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Last lifecycle update |
+
+### Processing job enumeration
+
+- `processing_job_status`: `queued`, `processing`, `retrying`, `completed`,
+  `failed`
 
 ### Not yet implemented
 

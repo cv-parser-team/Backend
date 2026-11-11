@@ -4,9 +4,18 @@ import fastifyPlugin from 'fastify-plugin';
 import { config } from '../../config/config.js';
 import { createDocumentsRepository } from './documents.repository.js';
 import { documentsRoutes } from './documents.routes.js';
-import { createDocumentsService } from './documents.service.js';
+import {
+  createDocumentsService,
+  type ProcessingDocumentsService
+} from './documents.service.js';
 import { createLocalDocumentStorage } from './documents.storage.js';
 import { createDocumentValidator } from './documents.validator.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    processingDocumentsService: ProcessingDocumentsService;
+  }
+}
 
 const registerDocuments: FastifyPluginAsync = async (fastify) => {
   const repository = createDocumentsRepository(fastify.database);
@@ -16,6 +25,8 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   });
   const validator = createDocumentValidator();
   const service = createDocumentsService({ repository, storage, validator });
+
+  fastify.decorate('processingDocumentsService', service);
 
   fastify.addHook('onListen', async () => {
     const stagingCutoff = new Date(
@@ -98,6 +109,11 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   await fastify.register(documentsRoutes, {
     prefix: '/api/candidates/me/documents',
     service,
+    processingScheduler: {
+      async schedule(documentId) {
+        await fastify.documentProcessingService.schedule(documentId);
+      }
+    },
     guards: fastify.authGuards,
     maximumUploadFiles: config.documents.maximumUploadFiles
   });
@@ -107,3 +123,8 @@ export const documentsModule = fastifyPlugin(registerDocuments, {
   name: 'documents',
   dependencies: ['database', 'auth']
 });
+
+export type {
+  DocumentContent,
+  ProcessingDocumentsService
+} from './documents.service.js';

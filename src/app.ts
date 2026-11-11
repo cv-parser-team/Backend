@@ -7,8 +7,11 @@ import swaggerUI from '@fastify/swagger-ui';
 import { databasePlugin } from './infrastructure/database/database.plugin.js';
 import { AppDatabase } from './infrastructure/database/database.js';
 import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.js';
+import type { ManagedMessageBroker } from './infrastructure/messaging/message-broker.js';
+import { messagingPlugin } from './infrastructure/messaging/messaging.plugin.js';
 import { authModule } from './modules/auth/index.js';
 import { candidatesModule } from './modules/candidates/index.js';
+import { documentProcessingModule } from './modules/document-processing/index.js';
 import { documentsModule } from './modules/documents/index.js';
 import { normalizationModule } from './modules/normalization/index.js';
 import { parsingModule } from './modules/parsing/index.js';
@@ -16,6 +19,7 @@ import { usersModule } from './modules/users/index.js';
 
 export interface CreateAppOptions {
   database?: AppDatabase;
+  messageBroker?: ManagedMessageBroker;
 }
 
 export async function createApp(
@@ -52,6 +56,11 @@ export async function createApp(
     database: options.database
   });
 
+  // Messaging
+  await app.register(messagingPlugin, {
+    broker: options.messageBroker
+  });
+
   // Error handling
   await app.register(errorHandlerPlugin);
 
@@ -64,6 +73,7 @@ export async function createApp(
     prefix: '/api/candidates'
   });
   await app.register(parsingModule);
+  await app.register(documentProcessingModule);
 
   return app;
 }
