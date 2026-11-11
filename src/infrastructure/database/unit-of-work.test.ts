@@ -26,6 +26,18 @@ describe('unit of work', () => {
     expect(work).toHaveBeenCalledWith(transaction);
   });
 
+  it('runs the whole transaction again after a deadlock', async () => {
+    const { database, runTransaction } = createDatabase(transaction);
+    runTransaction.mockRejectedValueOnce({ code: '40P01', message: 'deadlock detected' });
+    const work = vi.fn().mockResolvedValue('saved');
+
+    await expect(
+      createUnitOfWork(database, { wait: () => Promise.resolve() }).run(work)
+    ).resolves.toBe('saved');
+
+    expect(runTransaction).toHaveBeenCalledTimes(2);
+  });
+
   it('passes the work error on unchanged, so the transaction rolls back', async () => {
     const { database } = createDatabase(transaction);
     const failure = new Error('document could not transition');

@@ -1,6 +1,7 @@
 import { and, asc, eq, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
+import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import {
   candidates,
@@ -397,8 +398,10 @@ export function createCandidatesRepository(
       });
     },
 
+    // Both claim writes are whole transactions, so a transient failure rolls
+    // back and the transaction runs again.
     async createClaim(input) {
-      return withDbErrors('Claim', () => {
+      return withTransientRetry(() => withDbErrors('Claim', () => {
         return database.db.transaction(async (transaction) => {
           const [createdClaim] = await transaction
             .insert(claims)
@@ -430,7 +433,7 @@ export function createCandidatesRepository(
           }
           return claim;
         });
-      });
+      }));
     },
 
     async listClaims(candidateId, filters = {}) {
@@ -457,7 +460,7 @@ export function createCandidatesRepository(
     },
 
     async updateClaimValues(input) {
-      return withDbErrors('Claim', () => {
+      return withTransientRetry(() => withDbErrors('Claim', () => {
         return database.db.transaction(async (transaction) => {
           const ownedClaim = and(
             eq(claims.claimId, input.claimId),
@@ -485,7 +488,7 @@ export function createCandidatesRepository(
           const [updated] = await selectClaims(transaction, ownedClaim);
           return updated ?? null;
         });
-      });
+      }));
     },
 
     async deleteClaim(candidateId, claimId) {
