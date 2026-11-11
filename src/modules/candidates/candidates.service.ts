@@ -1,10 +1,12 @@
 import { FastifyBaseLogger } from 'fastify';
+import { UniqueConstraintViolationError } from '../../infrastructure/database/database.errors.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
   ClaimTypeMismatchError,
-  InvalidClaimDatesError
+  InvalidClaimDatesError,
+  VersionConflictError
 } from './candidates.errors.js';
 import {
   CandidateRecord,
@@ -31,6 +33,7 @@ export interface CandidateProfile {
   location: string | null;
   contactEmail: string | null;
   profileLinks: ProfileLink[];
+  version: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -49,7 +52,10 @@ export type ExportedClaim = ClaimValues & {
 };
 
 export interface ExportedProfile {
-  personalInfo: Omit<CandidateProfile, 'candidateId' | 'createdAt' | 'updatedAt'>;
+  personalInfo: Omit<
+    CandidateProfile,
+    'candidateId' | 'version' | 'createdAt' | 'updatedAt'
+  >;
   skills: ExportedClaim[];
   employment: ExportedClaim[];
   education: ExportedClaim[];
@@ -61,11 +67,22 @@ export interface ExportedProfile {
 export interface CandidatesService {
   createProfile(userId: string, input: CreateCandidateBody): Promise<CandidateProfile>;
   getProfile(userId: string): Promise<CandidateProfile>;
-  updateProfile(userId: string, input: UpdateCandidateBody): Promise<CandidateProfile>;
+  // `expectedVersion` is the version the client last read; when given, a
+  // record that changed since is refused with VersionConflictError.
+  updateProfile(
+    userId: string,
+    input: UpdateCandidateBody,
+    expectedVersion?: number
+  ): Promise<CandidateProfile>;
   createClaim(userId: string, input: ClaimBody): Promise<ClaimRecord>;
   listClaims(userId: string, query: ListClaimsQuery): Promise<ClaimRecord[]>;
-  updateClaim(userId: string, claimId: string, input: ClaimBody): Promise<ClaimRecord>;
-  deleteClaim(userId: string, claimId: string): Promise<void>;
+  updateClaim(
+    userId: string,
+    claimId: string,
+    input: ClaimBody,
+    expectedVersion?: number
+  ): Promise<ClaimRecord>;
+  deleteClaim(userId: string, claimId: string, expectedVersion?: number): Promise<void>;
   exportProfile(userId: string): Promise<ExportedProfile>;
 }
 
@@ -104,6 +121,7 @@ function toCandidateProfile(
     location: candidate.location,
     contactEmail: candidate.contactEmail,
     profileLinks: candidate.profileLinks,
+    version: candidate.version,
     createdAt: candidate.createdAt,
     updatedAt: candidate.updatedAt
   };
@@ -216,16 +234,26 @@ export function createCandidatesService({
         throw new CandidateProfileExistsError();
       }
 
-      const candidate = await repository.createCandidate({
-        userId,
-        fullName: input.fullName.trim(),
-        headline: trimOptional(input.headline),
-        summary: trimOptional(input.summary),
-        phone: trimOptional(input.phone),
-        location: trimOptional(input.location),
-        contactEmail: trimOptional(input.contactEmail),
-        profileLinks: normalizeProfileLinks(input.profileLinks ?? [])
-      });
+      let candidate: CandidateRecord;
+      try {
+        candidate = await repository.createCandidate({
+          userId,
+          fullName: input.fullName.trim(),
+          headline: trimOptional(input.headline),
+          summary: trimOptional(input.summary),
+          phone: trimOptional(input.phone),
+          location: trimOptional(input.location),
+          contactEmail: trimOptional(input.contactEmail),
+          profileLinks: normalizeProfileLinks(input.profileLinks ?? [])
+        });
+      } catch (error) {
+        // A concurrent request created the profile after the check above; the
+        // unique user index refused this one. Both requests get the same error.
+        if (error instanceof UniqueConstraintViolationError) {
+          throw new CandidateProfileExistsError();
+        }
+        throw error;
+      }
 
       return toCandidateProfile(candidate, await getEmail(userId));
     },
@@ -235,7 +263,7 @@ export function createCandidatesService({
       return toCandidateProfile(candidate, await getEmail(userId));
     },
 
-    async updateProfile(userId, input) {
+    async updateProfile(userId, input, expectedVersion) {
       const candidate = await requireCandidate(userId);
       const changes: UpdateCandidateInput = {};
 
@@ -261,8 +289,23 @@ export function createCandidatesService({
         changes.profileLinks = normalizeProfileLinks(input.profileLinks);
       }
 
-      const updated = await repository.updateCandidate(candidate.candidateId, changes);
-      return toCandidateProfile(updated, await getEmail(userId));
+      const result = await repository.updateCandidate(
+        candidate.candidateId,
+        changes,
+        expectedVersion
+      );
+      const email = await getEmail(userId);
+      switch (result.status) {
+        case 'saved':
+          return toCandidateProfile(result.record, email);
+        case 'conflict':
+          throw new VersionConflictError(
+            'Candidate profile',
+            toCandidateProfile(result.current, email)
+          );
+        case 'missing':
+          throw new RecordNotFoundError('Candidate profile');
+      }
     },
 
     async createClaim(userId, input) {
@@ -289,10 +332,15 @@ export function createCandidatesService({
       });
     },
 
-    async updateClaim(userId, claimId, input) {
+    async updateClaim(userId, claimId, input, expectedVersion) {
       const candidate = await requireCandidate(userId);
       const claim = await requireClaim(candidate.candidateId, claimId);
 
+      // Checked first: the client decided on values it read from an older
+      // version, even when its values happen to equal the current ones.
+      if (expectedVersion !== undefined && claim.version !== expectedVersion) {
+        throw new VersionConflictError('Claim', claim);
+      }
       if (claim.claimType !== input.type) {
         throw new ClaimTypeMismatchError();
       }
@@ -303,23 +351,37 @@ export function createCandidatesService({
         return claim;
       }
 
-      const updated = await repository.updateClaimValues({
+      const result = await repository.updateClaimValues({
         candidateId: candidate.candidateId,
         claimId,
-        values
+        values,
+        expectedVersion
       });
-      if (!updated) {
-        throw new RecordNotFoundError('Claim', claimId);
+      switch (result.status) {
+        case 'saved':
+          await normalize(result.record);
+          return result.record;
+        case 'conflict':
+          throw new VersionConflictError('Claim', result.current);
+        case 'missing':
+          throw new RecordNotFoundError('Claim', claimId);
       }
-      await normalize(updated);
-      return updated;
     },
 
-    async deleteClaim(userId, claimId) {
+    async deleteClaim(userId, claimId, expectedVersion) {
       const candidate = await requireCandidate(userId);
-      const deleted = await repository.deleteClaim(candidate.candidateId, claimId);
-      if (!deleted) {
-        throw new RecordNotFoundError('Claim', claimId);
+      const result = await repository.deleteClaim(
+        candidate.candidateId,
+        claimId,
+        expectedVersion
+      );
+      switch (result.status) {
+        case 'deleted':
+          return;
+        case 'conflict':
+          throw new VersionConflictError('Claim', result.current);
+        case 'missing':
+          throw new RecordNotFoundError('Claim', claimId);
       }
     },
 

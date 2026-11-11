@@ -1,20 +1,25 @@
 import { eq } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { documentExtractions, EXTRACTION_CONTENT_VERSION } from './parsing.table.js';
 import { ExtractionResult } from './parsing.types.js';
 
 export type ExtractionRecord = typeof documentExtractions.$inferSelect;
 
 export interface ParsingRepository {
-  saveExtraction(documentId: string, result: ExtractionResult): Promise<ExtractionRecord>;
+  saveExtraction(
+    documentId: string,
+    result: ExtractionResult,
+    transaction?: DatabaseExecutor
+  ): Promise<ExtractionRecord>;
   findByDocumentId(documentId: string): Promise<ExtractionRecord | null>;
 }
 
 export function createParsingRepository(database: AppDatabase): ParsingRepository {
   return {
     // A document keeps one extraction; parsing it again replaces the result.
-    async saveExtraction(documentId, result) {
+    async saveExtraction(documentId, result, transaction = database.db) {
       return withDbErrors('Document extraction', async () => {
         const values = {
           status: result.status,
@@ -28,7 +33,7 @@ export function createParsingRepository(database: AppDatabase): ParsingRepositor
           failures: result.failures,
           parserVersion: result.parserVersion
         };
-        const [saved] = await database.db
+        const [saved] = await transaction
           .insert(documentExtractions)
           .values({ documentId, ...values })
           .onConflictDoUpdate({

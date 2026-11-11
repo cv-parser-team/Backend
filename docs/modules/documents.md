@@ -50,6 +50,17 @@ the API keeps the first permitted files and returns `207 Multi-Status` with
 An upload matching an existing owner, purpose, and SHA-256 returns that document
 with `deduplicated: true` instead of creating another row or storage object.
 
+An upload matching a document that is being deleted fails for that file with
+`409 DOCUMENT_BEING_DELETED`, instead of returning a document about to
+disappear. Deleting is idempotent: when two deletes of the same document run
+at once, the one that finds the row already removed also returns `204`.
+
+A source document is scheduled for processing whenever an upload returns it
+`stored` or `failed`, new or deduplicated. Re-uploading therefore schedules a
+document whose earlier scheduling failed or whose processing failed. Scheduling
+twice is harmless: a document has at most one active processing job. See
+[Document processing](document-processing.md).
+
 ## Validation and integrity requirements
 
 Reject a file before committing it to storage when any upload requirement
@@ -182,12 +193,18 @@ stateDiagram-v2
     stored --> processing: Workflow claims document
     processing --> ready: Processing succeeds
     processing --> failed: Processing fails
-    failed --> processing: Retry
+    failed --> processing: Re-uploaded and scheduled again
     stored --> deleting: Delete requested
+    processing --> deleting: Delete requested
     ready --> deleting: Delete requested
     failed --> deleting: Delete requested
     deleting --> [*]: File and row removed
 ```
+
+A processing attempt locks the document while it finishes, so a delete
+requested at that moment waits for it. A document that is deleted or being
+deleted ends its processing job with `DOCUMENT_DELETED` instead of being
+retried.
 
 ## Implementation
 

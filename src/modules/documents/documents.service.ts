@@ -3,7 +3,9 @@ import {
   DocumentRecord,
   DocumentsRepository
 } from './documents.repository.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
+import { DocumentBeingDeletedError } from './documents.errors.js';
 import type { Readable } from 'node:stream';
 import type { DocumentPurpose } from './documents.formats.js';
 import type { DocumentStorage } from './documents.storage.js';
@@ -48,10 +50,22 @@ export interface OrphanCleanupResult {
 
 export interface ProcessingDocumentsService {
   markDocumentProcessing(documentId: string): Promise<DocumentRecord | null>;
-  markDocumentReady(documentId: string): Promise<DocumentRecord | null>;
+  // Locks the document in the transaction so a delete waits until the
+  // processing attempt has finished. Returns null when it no longer exists.
+  lockDocumentForProcessing(
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<DocumentRecord | null>;
+  // Ready and failed are reached only from processing; inside the given
+  // transaction, if any.
+  markDocumentReady(
+    documentId: string,
+    transaction?: DatabaseExecutor
+  ): Promise<DocumentRecord | null>;
   markDocumentFailed(
     documentId: string,
-    failureCode: string
+    failureCode: string,
+    transaction?: DatabaseExecutor
   ): Promise<DocumentRecord | null>;
   openDocumentForProcessing(documentId: string): Promise<DocumentContent>;
 }
@@ -76,6 +90,16 @@ export interface DocumentsServiceDependencies {
   repository: DocumentsRepository;
   storage: DocumentStorage;
   validator: DocumentValidator;
+}
+
+// An identical upload returns the existing document, unless that document is
+// being deleted: returning it would hand back a document about to disappear.
+function deduplicatedUpload(document: DocumentRecord): UploadDocumentResult {
+  if (document.status === 'deleting') {
+    throw new DocumentBeingDeletedError(document.documentId);
+  }
+
+  return { document, deduplicated: true };
 }
 
 export function createDocumentsService({
@@ -145,6 +169,8 @@ export function createDocumentsService({
 
       return document;
     },
+    // Deleting is idempotent: once the document was found, a concurrent delete
+    // that removes the row first counts as success, not as a missing document.
     async deleteDocument(ownerUserId, documentId) {
       const document = await repository.findDocument(ownerUserId, documentId);
 
@@ -160,16 +186,11 @@ export function createDocumentsService({
       });
 
       if (!deletingDocument) {
-        throw new RecordNotFoundError('Document', documentId);
+        return;
       }
 
       await storage.delete(document.storageKey);
-
-      const deleted = await repository.deleteDocument(ownerUserId, documentId);
-
-      if (!deleted) {
-        throw new RecordNotFoundError('Document', documentId);
-      }
+      await repository.deleteDocument(ownerUserId, documentId);
     },
     async uploadDocument(input) {
       const staged = await storage.stage(input.stream);
@@ -194,7 +215,7 @@ export function createDocumentsService({
 
         if (existingDocument) {
           await storage.discard(staged.stagingKey);
-          return { document: existingDocument, deduplicated: true };
+          return deduplicatedUpload(existingDocument);
         }
 
         storageKey = await storage.commit(staged.stagingKey);
@@ -225,7 +246,7 @@ export function createDocumentsService({
           );
         }
 
-        return { document: concurrentDocument, deduplicated: true };
+        return deduplicatedUpload(concurrentDocument);
       } catch (error) {
         try {
           if (storageKey === undefined) {
@@ -257,20 +278,23 @@ export function createDocumentsService({
     markDocumentProcessing(documentId) {
       return repository.markDocumentProcessing(documentId);
     },
-    markDocumentReady(documentId) {
-      return repository.markDocumentReady(documentId);
+    lockDocumentForProcessing(documentId, transaction) {
+      return repository.lockDocument(documentId, transaction);
     },
-    async markDocumentFailed(documentId, failureCode) {
+    markDocumentReady(documentId, transaction) {
+      return repository.markDocumentReady(documentId, transaction);
+    },
+    async markDocumentFailed(documentId, failureCode, transaction) {
       const normalizedFailureCode = failureCode.trim();
 
       if (!normalizedFailureCode) {
         throw new Error('Document failure code is required');
       }
 
-      return repository.markDocumentFailed({
-        documentId,
-        failureCode: normalizedFailureCode
-      });
+      return repository.markDocumentFailed(
+        { documentId, failureCode: normalizedFailureCode },
+        transaction
+      );
     },
     async openDocumentForProcessing(documentId) {
       const document = await repository.findDocumentById(documentId);

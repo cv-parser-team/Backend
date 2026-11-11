@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import type { DatabaseExecutor } from '../infrastructure/database/unit-of-work.js';
 import type { ProcessingDocumentsService } from '../modules/documents/index.js';
 import type { DocumentRecord } from '../modules/documents/documents.repository.js';
 import type {
@@ -13,6 +14,7 @@ import {
 } from '../modules/document-processing/index.js';
 import type { ParsingService } from '../modules/parsing/index.js';
 import type { ExtractionRecord } from '../modules/parsing/parsing.repository.js';
+import type { ExtractionResult } from '../modules/parsing/parsing.types.js';
 import { createFakeMessageBroker } from '../testing/fake-message-broker.js';
 import { startDocumentProcessingWorker } from './document-processing.worker.js';
 
@@ -22,6 +24,7 @@ const ownerUserId = '33333333-3333-4333-8333-333333333333';
 const extractionId = '44444444-4444-4444-8444-444444444444';
 const timestamp = new Date('2026-01-01T00:00:00.000Z');
 const documentBytes = Buffer.from('source document bytes');
+const transaction = {} as DatabaseExecutor;
 
 function createJobRepository(statuses: ProcessingJobRecord['status'][]) {
   let job: ProcessingJobRecord | undefined;
@@ -60,6 +63,13 @@ function createJobRepository(statuses: ProcessingJobRecord['status'][]) {
       };
       statuses.push(job.status);
       return job;
+    },
+    async lockClaimedJob(claim) {
+      return job?.status === 'processing' &&
+        job.jobId === claim.jobId &&
+        job.attemptCount === claim.attemptCount
+        ? job
+        : null;
     },
     async completeJob(input) {
       if (
@@ -128,6 +138,9 @@ function createDocumentsService(statuses: DocumentRecord['status'][]) {
       statuses.push(document.status);
       return document;
     },
+    async lockDocumentForProcessing(requestedDocumentId) {
+      return requestedDocumentId === document.documentId ? document : null;
+    },
     async markDocumentReady(requestedDocumentId) {
       if (
         requestedDocumentId !== document.documentId ||
@@ -180,13 +193,24 @@ describe('document processing pipeline', () => {
       createdAt: timestamp,
       updatedAt: timestamp
     };
-    const parser: Pick<ParsingService, 'extract'> = {
-      extract: vi.fn().mockResolvedValue(extraction)
+    const result: ExtractionResult = {
+      status: 'succeeded',
+      format: 'pdf',
+      pageCount: 1,
+      pages: [],
+      blocks: [],
+      failures: [],
+      parserVersion: 'fake-parser'
+    };
+    const parser: Pick<ParsingService, 'parse' | 'saveExtraction'> = {
+      parse: vi.fn().mockResolvedValue(result),
+      saveExtraction: vi.fn().mockResolvedValue(extraction)
     };
     const handler = createParseDocumentHandler({
       documentsService: createDocumentsService(documentStatuses),
       parsingService: parser,
-      processingService
+      processingService,
+      unitOfWork: { run: (work) => work(transaction) }
     });
     const log = { info: vi.fn(), warn: vi.fn() };
 
@@ -208,11 +232,11 @@ describe('document processing pipeline', () => {
 
     expect(jobStatuses).toEqual(['queued', 'processing', 'completed']);
     expect(documentStatuses).toEqual(['stored', 'processing', 'ready']);
-    expect(parser.extract).toHaveBeenCalledWith({
-      documentId,
+    expect(parser.parse).toHaveBeenCalledWith({
       mediaType: 'application/pdf',
       content: documentBytes
     });
+    expect(parser.saveExtraction).toHaveBeenCalledWith(documentId, result, transaction);
     expect(log.info).toHaveBeenLastCalledWith(
       { jobId, documentId, outcome: 'processed' },
       'Handled document processing job'

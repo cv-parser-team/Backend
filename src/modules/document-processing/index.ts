@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import fastifyPlugin from 'fastify-plugin';
+import { createUnitOfWork } from '../../infrastructure/database/unit-of-work.js';
 import { createDocumentProcessingRepository } from './document-processing.repository.js';
 import {
   createDocumentProcessingService,
@@ -30,7 +31,8 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
     createParseDocumentHandler({
       documentsService: fastify.processingDocumentsService,
       parsingService: fastify.parsingService,
-      processingService: service
+      processingService: service,
+      unitOfWork: createUnitOfWork(fastify.database)
     })
   );
 };

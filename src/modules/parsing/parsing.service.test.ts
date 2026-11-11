@@ -1,6 +1,7 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { createTestApp } from '../../testing/create-test-app.js';
 import { createDocxParser } from './docx-parser.js';
 import { UnsupportedDocumentTypeError } from './parsing.errors.js';
@@ -63,7 +64,8 @@ describe('parsing module', () => {
     try {
       await app.ready();
       expect(app.hasDecorator('parsingService')).toBe(true);
-      expect(typeof app.parsingService.extract).toBe('function');
+      expect(typeof app.parsingService.parse).toBe('function');
+      expect(typeof app.parsingService.saveExtraction).toBe('function');
     } finally {
       await app.close();
     }
@@ -105,8 +107,8 @@ describe('parsing service', () => {
     });
     const content = new Uint8Array([1, 2, 3]);
 
-    const pdfResult = await service.extract({ documentId, content, mediaType: pdfMediaType });
-    const docxResult = await service.extract({ documentId, content, mediaType: docxMediaType });
+    const pdfResult = await service.parse({ content, mediaType: pdfMediaType });
+    const docxResult = await service.parse({ content, mediaType: docxMediaType });
 
     expect(pdfResult.format).toBe('pdf');
     expect(docxResult.format).toBe('docx');
@@ -115,56 +117,61 @@ describe('parsing service', () => {
     expect(docxParser.parse).toHaveBeenCalledOnce();
   });
 
-  it('saves the extraction for the document', async () => {
-    const pdfParser = createParserDouble('pdf', pdfMediaType);
+  it('parses without saving anything', async () => {
     const repository = createRepositoryDouble();
-    const service = createParsingService({ parsers: [pdfParser], repository });
-
-    const saved = await service.extract({
-      documentId,
-      content: new Uint8Array(),
-      mediaType: pdfMediaType
+    const service = createParsingService({
+      parsers: [createParserDouble('pdf', pdfMediaType)],
+      repository
     });
 
-    expect(repository.saveExtraction).toHaveBeenCalledWith(
-      documentId,
-      expect.objectContaining({ status: 'succeeded', format: 'pdf' })
-    );
-    expect(saved.documentId).toBe(documentId);
-  });
+    await service.parse({ content: new Uint8Array(), mediaType: pdfMediaType });
 
-  it('rejects media types without a parser and saves nothing', async () => {
-    const pdfParser = createParserDouble('pdf', pdfMediaType);
-    const repository = createRepositoryDouble();
-    const service = createParsingService({ parsers: [pdfParser], repository });
-
-    await expect(
-      service.extract({ documentId, content: new Uint8Array(), mediaType: 'image/png' })
-    ).rejects.toBeInstanceOf(UnsupportedDocumentTypeError);
-    expect(pdfParser.parse).not.toHaveBeenCalled();
     expect(repository.saveExtraction).not.toHaveBeenCalled();
   });
 
-  it('parses and saves real PDF and DOCX files', async () => {
+  it('saves the extraction for the document, in the given transaction', async () => {
+    const repository = createRepositoryDouble();
+    const service = createParsingService({ parsers: [], repository });
+    const result = await createParserDouble('pdf', pdfMediaType).parse(new Uint8Array());
+    const transaction = {} as DatabaseExecutor;
+
+    const saved = await service.saveExtraction(documentId, result, transaction);
+
+    expect(repository.saveExtraction).toHaveBeenCalledWith(documentId, result, transaction);
+    expect(saved.documentId).toBe(documentId);
+  });
+
+  it('rejects media types without a parser', async () => {
+    const pdfParser = createParserDouble('pdf', pdfMediaType);
+    const service = createParsingService({
+      parsers: [pdfParser],
+      repository: createRepositoryDouble()
+    });
+
+    await expect(
+      service.parse({ content: new Uint8Array(), mediaType: 'image/png' })
+    ).rejects.toBeInstanceOf(UnsupportedDocumentTypeError);
+    expect(pdfParser.parse).not.toHaveBeenCalled();
+  });
+
+  it('parses real PDF and DOCX files', async () => {
     const service = createParsingService({
       parsers: [createPdfParser(), createDocxParser()],
       repository: createRepositoryDouble()
     });
 
-    const pdf = await service.extract({
-      documentId,
+    const pdf = await service.parse({
       content: await readFixture('multi-page.pdf'),
       mediaType: pdfMediaType
     });
-    const docx = await service.extract({
-      documentId,
+    const docx = await service.parse({
       content: await readFixture('resume.docx'),
       mediaType: docxMediaType
     });
 
     expect(pdf).toMatchObject({ status: 'succeeded', format: 'pdf', pageCount: 3 });
-    expect(pdf.content.pages).toHaveLength(3);
+    expect(pdf.pages).toHaveLength(3);
     expect(docx).toMatchObject({ status: 'succeeded', format: 'docx', pageCount: null });
-    expect(docx.content.blocks[0]).toMatchObject({ type: 'paragraph', text: 'Sample Candidate' });
+    expect(docx.blocks[0]).toMatchObject({ type: 'paragraph', text: 'Sample Candidate' });
   });
 });

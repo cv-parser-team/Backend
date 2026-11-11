@@ -3,6 +3,7 @@ import {
   check,
   date,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -56,6 +57,9 @@ export const candidates = pgTable(
       .$type<ProfileLink[]>()
       .default([])
       .notNull(),
+    // Increases on every change, so an edit based on an older version can be
+    // refused instead of silently overwriting the newer one.
+    version: integer('version').default(1).notNull(),
     createdAt: timestamp('created_at', {
       withTimezone: true,
       mode: 'date'
@@ -89,6 +93,8 @@ export const claims = pgTable(
     claimType: claimType('claim_type').notNull(),
     origin: claimOrigin('origin').notNull(),
     status: claimStatus('status').default('pending').notNull(),
+    // Increases on every change of the claim's values.
+    version: integer('version').default(1).notNull(),
     createdAt: timestamp('created_at', {
       withTimezone: true,
       mode: 'date'

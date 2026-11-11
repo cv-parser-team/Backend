@@ -63,10 +63,13 @@ routes malformed messages and permanent failures there.
 
 ## Upload scheduling
 
-After a source document is stored successfully, the documents upload route
-calls `documentProcessingService.schedule(documentId)`. The service persists a
-queued job before publishing its versioned message. Evidence documents and
-deduplicated source uploads do not create another processing job.
+When an upload returns a source document that is `stored` or `failed`, new or
+deduplicated, the documents upload route calls
+`documentProcessingService.schedule(documentId)`. The service persists a
+queued job before publishing its versioned message. A document has at most one
+active (`queued`, `processing`, or `retrying`) job: scheduling it again returns
+that job instead of creating a second one. Evidence documents and source
+documents that are `processing`, `ready`, or `deleting` are not scheduled.
 
 Each file in a multipart upload is handled independently. A scheduling failure
 is reported for that file without rolling back other successful uploads. The
@@ -111,13 +114,14 @@ sequenceDiagram
     Processing-->>Handler: Job claimed
     Handler->>Documents: Mark processing and open content
     Documents-->>Handler: Document stream and metadata
-    Handler->>Parsing: Parse and store document content
-    Parsing->>Database: Replace parsed output
-    Parsing-->>Handler: Parsing completed
-    Handler->>Documents: Mark document ready
-    Documents->>Database: Update document status
-    Handler->>Processing: Complete job
-    Processing->>Database: Mark job completed
+    Handler->>Parsing: Parse content (nothing saved)
+    Parsing-->>Handler: Extraction result
+    Note over Handler,Database: One transaction
+    Handler->>Processing: Lock the job under this claim
+    Handler->>Documents: Lock the document
+    Handler->>Parsing: Save the extraction
+    Handler->>Processing: Complete the job
+    Handler->>Documents: Mark the document ready
     Handler-->>Worker: Processing completed
     Worker->>RabbitMQ: Acknowledge message
 ```
@@ -138,19 +142,69 @@ stateDiagram-v2
 ```
 
 In the normal failure path, the handler allows three claimed parsing attempts.
-Thrown parser errors and persisted extraction results with `status = failed`
-use the same failure path. Failures on attempts one and two move the job to
-`retrying` for 30 seconds. The current RabbitMQ delivery is acknowledged after
-that durable transition; the retry publisher later releases and republishes
-the job. A failure on attempt three or later marks both the document and job
-failed and rejects the message without requeueing, which sends it to the
-dead-letter queue. Persisted `succeeded` and `partial` extractions complete the
-job and mark the document ready.
+Thrown parser errors and extraction results with `status = failed` use the
+same failure path; a failed result is still saved. Failures on attempts one
+and two move the job to `retrying` for 30 seconds. The current RabbitMQ
+delivery is acknowledged after that durable transition; the retry publisher
+later releases and republishes the job. A failure on attempt three marks both
+the document and job failed and rejects the message without requeueing, which
+sends it to the dead-letter queue. `succeeded` and `partial` extractions
+complete the job and mark the document ready.
 
 Every claim creates a five-minute processing lease. If a worker exits before
 settling the job, the recovery publisher moves the expired `processing` job
 back to `queued` and republishes it. Document processing transitions accept an
 already-`processing` document so the recovered delivery can resume safely.
+
+## Concurrency and duplicates
+
+The rules below follow the
+[duplicate and conflict resolution design](../duplicates-and-conflicts.md).
+
+**One active job per document.** The partial unique index
+`document_processing_jobs_active_document_unique` allows one job per document
+in `queued`, `processing`, or `retrying`. `createQueuedJob` inserts with
+`ON CONFLICT DO NOTHING` and otherwise returns the active job.
+
+**Each claim is fenced by its attempt.** `claimJob` increases `attempt_count`.
+The handler keeps the claimed record, and completing, retrying, or failing the
+job only matches it while it is still `processing` with that attempt count.
+After a lease expires and another worker claims the job, the older attempt
+matches nothing and stops with the outcome `stale`.
+
+**An attempt ends in one transaction.** The document is read and parsed outside
+any transaction. The attempt then ends in one transaction (the `UnitOfWork` in
+`infrastructure/database`) that:
+
+1. locks the job row under this claim (`SELECT … FOR UPDATE`), or stops with
+   `stale` without writing anything;
+2. locks the document row, so a delete requested now waits for this attempt;
+3. saves the extraction, then completes, retries, or fails the job, and marks
+   the document `ready` or `failed`.
+
+If any write fails, nothing is saved and the job stays `processing` until its
+lease expires. A completed job therefore always has its extraction and a
+`ready` document.
+
+**Deleted documents.** When the locked document is gone or `deleting`, the job
+is failed with `DOCUMENT_DELETED` and the outcome is `cancelled`; the message is
+acknowledged, not dead-lettered. This also applies when the document could not
+move to `processing`, so a deleted document never loops through lease
+recovery.
+
+**Attempt limit after crashes.** A worker that keeps crashing never reaches the
+retry logic, while every lease recovery adds an attempt. A job claimed with an
+attempt count above three is failed with `MAX_ATTEMPTS_EXCEEDED` before the
+document is read again.
+
+| Outcome | Meaning | Message |
+| --- | --- | --- |
+| `processed` | Extraction saved, job completed, document ready | Acknowledged |
+| `retrying` | Job scheduled for another attempt | Acknowledged |
+| `failed` | Job and document failed | Dead-lettered |
+| `cancelled` | Document deleted; job failed with `DOCUMENT_DELETED` | Acknowledged |
+| `skipped` | Job was not claimable, such as a duplicate delivery | Acknowledged |
+| `stale` | Another attempt owns the job; nothing was written | Acknowledged |
 
 ## Implemented data model
 
@@ -181,7 +235,8 @@ The processing-job table provides durable idempotency, leasing, and retry state.
 
 | Policy | Implemented value |
 | --- | ---: |
-| Permanent parsing-failure cutoff | Attempt 3 or later |
+| Permanent parsing-failure cutoff | Attempt 3 |
+| Claims allowed before failing without parsing | 3 |
 | Retry delay | 30 seconds |
 | Processing lease | 5 minutes |
 | Retry and lease-recovery poll interval | 5 seconds |
@@ -234,6 +289,8 @@ be retained for inspection.
 - Publish a versioned job containing only `jobId` and `documentId`.
 - Move documents through `stored -> processing -> ready | failed`.
 - Claim jobs atomically so duplicate deliveries cannot process concurrently.
+- Keep one active job per document and fence every write by the claim's attempt.
+- End each attempt in one transaction; never retry a deleted document.
 - Use bounded retries followed by dead-lettering.
 - Recover jobs abandoned after a worker crash by using a processing lease.
 - Support graceful shutdown and structured job logging.

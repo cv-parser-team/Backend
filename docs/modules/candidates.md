@@ -32,6 +32,15 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     and degrees are linked to canonical terms by the normalization module,
     without changing the claim. If normalization fails, the claim is still
     saved. See [Normalization](normalization.md).
+11. **Edits never silently overwrite each other.** The profile and every claim
+    have a `version` that increases on each change, returned in the body and as
+    an `ETag`. A client sends the version it read in `If-Match`; if the record
+    changed since, the edit or delete is refused with `409 VERSION_CONFLICT`
+    and the current record in `error.details.current`. `If-Match` is optional
+    for now, so existing clients keep working. Claim edits also lock the claim
+    row, so concurrent edits run one after the other and each revision holds
+    the values it replaced. See
+    [Duplicate and conflict resolution](../duplicates-and-conflicts.md).
 
 ## Editing a claim
 
@@ -42,20 +51,27 @@ sequenceDiagram
     participant Repository
     participant Database
 
-    Candidate->>Service: PUT /api/candidates/me/claims/:claimId
+    Candidate->>Service: PUT /api/candidates/me/claims/:claimId (If-Match: "2")
     Service->>Repository: findClaim(candidateId, claimId)
     alt Claim not found or owned by another candidate
         Service-->>Candidate: 404
+    else Version is not 2
+        Service-->>Candidate: 409 VERSION_CONFLICT with the current claim
     else Claim type changed
         Service-->>Candidate: 400
     else Values unchanged
         Service-->>Candidate: 200, nothing written
     else Values changed
-        Service->>Repository: updateClaimValues(values)
-        Note over Repository,Database: One transaction
-        Repository->>Database: Save current values in claim_revisions
-        Repository->>Database: Update the type's details table
-        Repository-->>Candidate: 200 with the new values
+        Service->>Repository: updateClaimValues(values, expectedVersion 2)
+        Note over Repository,Database: One transaction, retried on a deadlock
+        Repository->>Database: Lock the claim row
+        alt Changed meanwhile by another request
+            Repository-->>Candidate: 409 VERSION_CONFLICT with the current claim
+        else Still version 2
+            Repository->>Database: Save current values in claim_revisions
+            Repository->>Database: Update the details and set version 3
+            Repository-->>Candidate: 200 with the new values, ETag "3"
+        end
     end
 ```
 

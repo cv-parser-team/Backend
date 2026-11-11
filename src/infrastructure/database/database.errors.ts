@@ -17,6 +17,48 @@ export class DatabaseConnectionError extends DatabaseError {
   }
 }
 
+// A failure caused by another transaction at the same moment, such as a
+// deadlock. Running the same work again usually succeeds.
+export class TransientDatabaseError extends DatabaseError {
+  override readonly statusCode = 503;
+  override readonly code = 'TRANSIENT_DATABASE_ERROR';
+
+  constructor(
+    message = 'The database was busy with a conflicting operation. Try again.',
+    details?: unknown
+  ) {
+    super(message, details);
+  }
+}
+
+const TRANSIENT_DRIVER_CODES = new Set([
+  '40001',
+  '40P01',
+  '55P03',
+  'ECONNREFUSED',
+  '57P01',
+  '57P02',
+  '57P03'
+]);
+
+// Errors worth retrying: concurrent conflicts and a lost connection. Driver
+// errors are recognized too, because a transaction can fail while committing,
+// before any repository maps the error.
+export function isTransientDatabaseError(error: unknown): boolean {
+  if (
+    error instanceof TransientDatabaseError ||
+    error instanceof DatabaseConnectionError
+  ) {
+    return true;
+  }
+
+  if (error instanceof AppError || !isDatabaseDriverError(error)) {
+    return false;
+  }
+
+  return error.code !== undefined && TRANSIENT_DRIVER_CODES.has(error.code);
+}
+
 export class UniqueConstraintViolationError extends DatabaseError {
   override readonly statusCode = 409;
   override readonly code = 'UNIQUE_CONSTRAINT_VIOLATION';
@@ -64,6 +106,10 @@ export function mapDatabaseError(error: unknown, entityName = 'Record'): never {
         `A required field is missing for ${entityName}.`,
         driverError
       );
+    case '40001':
+    case '40P01':
+    case '55P03':
+      throw new TransientDatabaseError(undefined, driverError);
     case 'ECONNREFUSED':
     case '57P01':
     case '57P02':

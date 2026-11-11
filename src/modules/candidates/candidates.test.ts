@@ -1,6 +1,10 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import Fastify, { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  ForeignKeyViolationError,
+  UniqueConstraintViolationError
+} from '../../infrastructure/database/database.errors.js';
 import { errorHandlerPlugin } from '../../infrastructure/http/error-handler.plugin.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { createAuthGuards } from '../auth/auth.guards.js';
@@ -10,7 +14,8 @@ import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
   ClaimTypeMismatchError,
-  InvalidClaimDatesError
+  InvalidClaimDatesError,
+  VersionConflictError
 } from './candidates.errors.js';
 import {
   CandidateRecord,
@@ -19,6 +24,7 @@ import {
 } from './candidates.repository.js';
 import { candidatesRoutes } from './candidates.routes.js';
 import {
+  CandidateProfile,
   CandidatesService,
   ClaimNormalizer,
   createCandidatesService
@@ -53,6 +59,7 @@ const candidateRecord: CandidateRecord = {
   location: 'Amman',
   contactEmail: null,
   profileLinks: [],
+  version: 1,
   createdAt: timestamp,
   updatedAt: timestamp
 };
@@ -64,6 +71,7 @@ function claimRecord(overrides: Partial<ClaimRecord> = {}): ClaimRecord {
     origin: 'manual',
     status: 'accepted',
     values: { name: 'Python' },
+    version: 1,
     createdAt: timestamp,
     updatedAt: timestamp,
     ...overrides
@@ -76,12 +84,16 @@ function createRepositoryDouble(
   return {
     findCandidateByUserId: vi.fn().mockResolvedValue(candidate),
     createCandidate: vi.fn().mockResolvedValue(candidateRecord),
-    updateCandidate: vi.fn().mockResolvedValue(candidateRecord),
+    updateCandidate: vi
+      .fn()
+      .mockResolvedValue({ status: 'saved', record: candidateRecord }),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     listClaims: vi.fn().mockResolvedValue([]),
     findClaim: vi.fn().mockResolvedValue(claimRecord()),
-    updateClaimValues: vi.fn().mockResolvedValue(claimRecord()),
-    deleteClaim: vi.fn().mockResolvedValue(true)
+    updateClaimValues: vi
+      .fn()
+      .mockResolvedValue({ status: 'saved', record: claimRecord() }),
+    deleteClaim: vi.fn().mockResolvedValue({ status: 'deleted' })
   };
 }
 
@@ -129,6 +141,13 @@ describe('candidates tables', () => {
     ]);
     expect(claimOrigin.enumValues).toEqual(['manual', 'extracted']);
     expect(claimStatus.enumValues).toEqual(['pending', 'accepted', 'rejected']);
+  });
+
+  it('versions profiles and claims, starting at 1', () => {
+    for (const column of [candidates.version, claims.version]) {
+      expect(column.notNull).toBe(true);
+      expect(column.default).toBe(1);
+    }
   });
 
   it('links profiles to users and claims to their owners', () => {
@@ -210,6 +229,29 @@ describe('candidates service', () => {
     expect(repository.createCandidate).not.toHaveBeenCalled();
   });
 
+  it('rejects a profile created at the same moment by another request', async () => {
+    const repository = createRepositoryDouble(null);
+    vi.mocked(repository.createCandidate).mockRejectedValue(
+      new UniqueConstraintViolationError('Candidate already exists')
+    );
+    const service = createService(repository);
+
+    await expect(
+      service.createProfile(userId, { fullName: 'Example Candidate' })
+    ).rejects.toBeInstanceOf(CandidateProfileExistsError);
+  });
+
+  it('passes other profile creation errors on unchanged', async () => {
+    const failure = new ForeignKeyViolationError('Candidate references a missing user');
+    const repository = createRepositoryDouble(null);
+    vi.mocked(repository.createCandidate).mockRejectedValue(failure);
+    const service = createService(repository);
+
+    await expect(
+      service.createProfile(userId, { fullName: 'Example Candidate' })
+    ).rejects.toBe(failure);
+  });
+
   it('requires a profile before managing claims', async () => {
     const service = createService(createRepositoryDouble(null));
 
@@ -231,11 +273,11 @@ describe('candidates service', () => {
       contactEmail: null
     });
 
-    expect(repository.updateCandidate).toHaveBeenCalledWith(candidateId, {
-      headline: null,
-      summary: 'APIs',
-      contactEmail: null
-    });
+    expect(repository.updateCandidate).toHaveBeenCalledWith(
+      candidateId,
+      { headline: null, summary: 'APIs', contactEmail: null },
+      undefined
+    );
   });
 
   it('stores manual claims as accepted with normalized values', async () => {
@@ -467,7 +509,7 @@ describe('candidates service', () => {
   it('hides claims owned by another candidate', async () => {
     const repository = createRepositoryDouble();
     vi.mocked(repository.findClaim).mockResolvedValue(null);
-    vi.mocked(repository.deleteClaim).mockResolvedValue(false);
+    vi.mocked(repository.deleteClaim).mockResolvedValue({ status: 'missing' });
     const service = createService(repository);
 
     await expect(
@@ -480,7 +522,99 @@ describe('candidates service', () => {
       RecordNotFoundError
     );
     expect(repository.findClaim).toHaveBeenCalledWith(candidateId, claimId);
-    expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId);
+    expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId, undefined);
+  });
+
+  describe('versions', () => {
+    it('refuses a claim edit based on an older version, even with equal values', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.findClaim).mockResolvedValue(claimRecord({ version: 2 }));
+      const service = createService(repository);
+
+      const error = await service
+        .updateClaim(userId, claimId, { type: 'skill', values: { name: 'Python' } }, 1)
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(VersionConflictError);
+      expect(error).toMatchObject({
+        statusCode: 409,
+        code: 'VERSION_CONFLICT',
+        details: { current: claimRecord({ version: 2 }) }
+      });
+      expect(repository.updateClaimValues).not.toHaveBeenCalled();
+    });
+
+    it('passes the expected version on to the claim edit', async () => {
+      const repository = createRepositoryDouble();
+      const service = createService(repository);
+
+      await service.updateClaim(
+        userId,
+        claimId,
+        { type: 'skill', values: { name: 'Go' } },
+        1
+      );
+
+      expect(repository.updateClaimValues).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedVersion: 1 })
+      );
+    });
+
+    it('reports a claim changed between reading and writing', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.updateClaimValues).mockResolvedValue({
+        status: 'conflict',
+        current: claimRecord({ version: 2 })
+      });
+      const service = createService(repository);
+
+      await expect(
+        service.updateClaim(userId, claimId, { type: 'skill', values: { name: 'Go' } }, 1)
+      ).rejects.toBeInstanceOf(VersionConflictError);
+    });
+
+    it('reports a profile conflict with the current profile', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.updateCandidate).mockResolvedValue({
+        status: 'conflict',
+        current: { ...candidateRecord, version: 3 }
+      });
+      const service = createService(repository);
+
+      const error = await service
+        .updateProfile(userId, { headline: 'Engineer' }, 2)
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(VersionConflictError);
+      expect(error).toMatchObject({
+        details: { current: { candidateId, version: 3, email: 'candidate@example.com' } }
+      });
+      expect(repository.updateCandidate).toHaveBeenCalledWith(
+        candidateId,
+        { headline: 'Engineer' },
+        2
+      );
+    });
+
+    it('refuses to delete a claim that changed', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.deleteClaim).mockResolvedValue({
+        status: 'conflict',
+        current: claimRecord({ version: 2 })
+      });
+      const service = createService(repository);
+
+      await expect(service.deleteClaim(userId, claimId, 1)).rejects.toBeInstanceOf(
+        VersionConflictError
+      );
+      expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId, 1);
+    });
+
+    it('returns the profile version', async () => {
+      const service = createService(createRepositoryDouble());
+
+      await expect(service.getProfile(userId)).resolves.toMatchObject({ version: 1 });
+    });
   });
 
   it('exports only accepted claims grouped by type', async () => {
@@ -558,11 +692,26 @@ function createJwtDouble(role: UserRole): JwtService {
   };
 }
 
+const profile: CandidateProfile = {
+  candidateId,
+  fullName: 'Example Candidate',
+  email: 'candidate@example.com',
+  headline: null,
+  summary: null,
+  phone: null,
+  location: null,
+  contactEmail: null,
+  profileLinks: [],
+  version: 4,
+  createdAt: timestamp,
+  updatedAt: timestamp
+};
+
 function createServiceDouble(): CandidatesService {
   return {
     createProfile: vi.fn(),
-    getProfile: vi.fn(),
-    updateProfile: vi.fn(),
+    getProfile: vi.fn().mockResolvedValue(profile),
+    updateProfile: vi.fn().mockResolvedValue(profile),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     listClaims: vi.fn().mockResolvedValue([claimRecord()]),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
@@ -640,7 +789,11 @@ describe('candidates routes', () => {
     expect(invalid.statusCode).toBe(400);
     expect(service.createProfile).not.toHaveBeenCalled();
     expect(cleared.statusCode).toBe(200);
-    expect(service.updateProfile).toHaveBeenCalledWith(userId, { contactEmail: null });
+    expect(service.updateProfile).toHaveBeenCalledWith(
+      userId,
+      { contactEmail: null },
+      undefined
+    );
   });
 
   it('creates a claim for the authenticated user', async () => {
@@ -787,7 +940,7 @@ describe('candidates routes', () => {
     });
 
     expect(response.statusCode).toBe(204);
-    expect(service.deleteClaim).toHaveBeenCalledWith(userId, claimId);
+    expect(service.deleteClaim).toHaveBeenCalledWith(userId, claimId, undefined);
   });
 
   it('filters listed claims by type and status', async () => {
@@ -814,5 +967,104 @@ describe('candidates routes', () => {
 
     expect(languages.statusCode).toBe(200);
     expect(service.listClaims).toHaveBeenCalledWith(userId, { type: 'language' });
+  });
+
+  describe('versions', () => {
+    const claimUrl = `/api/candidates/me/claims/${claimId}`;
+    const skill = { type: 'skill', values: { name: 'Go' } };
+
+    it('returns the profile version as an entity tag', async () => {
+      app = await createCandidatesApp(createServiceDouble());
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/candidates/me',
+        headers: authorization
+      });
+
+      expect(response.headers.etag).toBe('"4"');
+      expect(response.json()).toMatchObject({ data: { version: 4 } });
+    });
+
+    it('passes If-Match to a claim edit and returns the new entity tag', async () => {
+      const service = createServiceDouble();
+      vi.mocked(service.updateClaim).mockResolvedValue(claimRecord({ version: 3 }));
+      app = await createCandidatesApp(service);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: claimUrl,
+        headers: { ...authorization, 'if-match': '"2"' },
+        payload: skill
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers.etag).toBe('"3"');
+      expect(service.updateClaim).toHaveBeenCalledWith(userId, claimId, skill, 2);
+    });
+
+    it('passes If-Match to profile edits and claim deletes', async () => {
+      const service = createServiceDouble();
+      app = await createCandidatesApp(service);
+
+      await app.inject({
+        method: 'PATCH',
+        url: '/api/candidates/me',
+        headers: { ...authorization, 'if-match': 'W/"4"' },
+        payload: { headline: 'Engineer' }
+      });
+      await app.inject({
+        method: 'DELETE',
+        url: claimUrl,
+        headers: { ...authorization, 'if-match': '5' }
+      });
+
+      expect(service.updateProfile).toHaveBeenCalledWith(
+        userId,
+        { headline: 'Engineer' },
+        4
+      );
+      expect(service.deleteClaim).toHaveBeenCalledWith(userId, claimId, 5);
+    });
+
+    it('rejects an invalid If-Match without editing', async () => {
+      const service = createServiceDouble();
+      app = await createCandidatesApp(service);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: claimUrl,
+        headers: { ...authorization, 'if-match': 'latest' },
+        payload: skill
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: 'INVALID_IF_MATCH' } });
+      expect(service.updateClaim).not.toHaveBeenCalled();
+    });
+
+    it('answers a version conflict with 409 and the current claim', async () => {
+      const service = createServiceDouble();
+      vi.mocked(service.updateClaim).mockRejectedValue(
+        new VersionConflictError('Claim', claimRecord({ version: 3 }))
+      );
+      app = await createCandidatesApp(service);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: claimUrl,
+        headers: { ...authorization, 'if-match': '"2"' },
+        payload: skill
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        success: false,
+        error: {
+          code: 'VERSION_CONFLICT',
+          details: { current: { claimId, version: 3 } }
+        }
+      });
+    });
   });
 });
