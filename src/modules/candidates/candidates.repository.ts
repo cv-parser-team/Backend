@@ -2,6 +2,7 @@ import { and, asc, eq, sql, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import {
   candidates,
   certificationDetails,
@@ -60,9 +61,9 @@ interface CreateClaimBase {
 export type CreateClaimInput =
   | (CreateClaimBase & { origin: 'manual'; extraction?: never })
   | (CreateClaimBase & {
-      origin: 'extracted';
-      extraction: ClaimExtractionMetadata;
-    });
+    origin: 'extracted';
+    extraction: ClaimExtractionMetadata;
+  });
 
 export interface ClaimFilters {
   claimType?: ClaimRow['claimType'];
@@ -91,14 +92,20 @@ export type VersionedDelete<T> =
   | { status: 'missing' };
 
 export interface CandidatesRepository {
-  findCandidateByUserId(userId: string): Promise<CandidateRecord | null>;
+  findCandidateByUserId(
+    userId: string,
+    transaction?: DatabaseExecutor
+  ): Promise<CandidateRecord | null>;
   createCandidate(input: CreateCandidateInput): Promise<CandidateRecord>;
   updateCandidate(
     candidateId: string,
     input: UpdateCandidateInput,
     expectedVersion?: number
   ): Promise<VersionedWrite<CandidateRecord>>;
-  createClaim(input: CreateClaimInput): Promise<ClaimRecord>;
+  createClaim(
+    input: CreateClaimInput,
+    transaction?: DatabaseExecutor
+  ): Promise<ClaimRecord>;
   listClaims(candidateId: string, filters?: ClaimFilters): Promise<ClaimRecord[]>;
   findClaim(candidateId: string, claimId: string): Promise<ClaimRecord | null>;
   updateClaimValues(input: UpdateClaimValuesInput): Promise<VersionedWrite<ClaimRecord>>;
@@ -375,16 +382,16 @@ async function selectClaims(
       values,
       extraction:
         claim.origin === 'extracted' &&
-        claim.extractionInvocationId !== null &&
-        claim.extractionRawValues !== null &&
-        claim.extractionFieldSources !== null &&
-        claim.extractionCurrent !== null
+          claim.extractionInvocationId !== null &&
+          claim.extractionRawValues !== null &&
+          claim.extractionFieldSources !== null &&
+          claim.extractionCurrent !== null
           ? {
-              invocationId: claim.extractionInvocationId,
-              rawValues: claim.extractionRawValues,
-              fieldSources: claim.extractionFieldSources,
-              current: claim.extractionCurrent
-            }
+            invocationId: claim.extractionInvocationId,
+            rawValues: claim.extractionRawValues,
+            fieldSources: claim.extractionFieldSources,
+            current: claim.extractionCurrent
+          }
           : null,
       version: claim.version,
       createdAt: claim.createdAt,
@@ -393,13 +400,56 @@ async function selectClaims(
   });
 }
 
+async function insertClaim(
+  executor: QueryExecutor,
+  input: CreateClaimInput
+): Promise<ClaimRecord> {
+  const [createdClaim] = await executor
+    .insert(claims)
+    .values({
+      candidateId: input.candidateId,
+      claimType: input.claimType,
+      origin: input.origin,
+      status: input.status,
+      extractionInvocationId:
+        input.origin === 'extracted' ? input.extraction.invocationId : null,
+      extractionRawValues:
+        input.origin === 'extracted' ? input.extraction.rawValues : null,
+      extractionFieldSources:
+        input.origin === 'extracted' ? input.extraction.fieldSources : null,
+      extractionCurrent:
+        input.origin === 'extracted' ? input.extraction.current : null
+    })
+    .returning({ claimId: claims.claimId });
+
+  if (!createdClaim) {
+    throw new Error('Claim creation did not return a record');
+  }
+
+  await insertDetails(
+    executor,
+    createdClaim.claimId,
+    input.claimType,
+    input.values
+  );
+
+  const [claim] = await selectClaims(
+    executor,
+    eq(claims.claimId, createdClaim.claimId)
+  );
+  if (!claim) {
+    throw new Error('Created claim could not be read');
+  }
+  return claim;
+}
+
 export function createCandidatesRepository(
   database: AppDatabase
 ): CandidatesRepository {
   return {
-    async findCandidateByUserId(userId) {
+    async findCandidateByUserId(userId, transaction = database.db) {
       return withDbErrors('Candidate', async () => {
-        const [candidate] = await database.db
+        const [candidate] = await transaction
           .select()
           .from(candidates)
           .where(eq(candidates.userId, userId))
@@ -455,50 +505,20 @@ export function createCandidatesRepository(
       });
     },
 
-    // Both claim writes are whole transactions, so a transient failure rolls
-    // back and the transaction runs again.
-    async createClaim(input) {
-      return withTransientRetry(() => withDbErrors('Claim', () => {
-        return database.db.transaction(async (transaction) => {
-          const [createdClaim] = await transaction
-            .insert(claims)
-            .values({
-              candidateId: input.candidateId,
-              claimType: input.claimType,
-              origin: input.origin,
-              status: input.status,
-              extractionInvocationId:
-                input.origin === 'extracted' ? input.extraction.invocationId : null,
-              extractionRawValues:
-                input.origin === 'extracted' ? input.extraction.rawValues : null,
-              extractionFieldSources:
-                input.origin === 'extracted' ? input.extraction.fieldSources : null,
-              extractionCurrent:
-                input.origin === 'extracted' ? input.extraction.current : null
-            })
-            .returning({ claimId: claims.claimId });
+    // A caller-owned transaction lets extraction save all claims and unmapped
+    // data atomically. Manual creation keeps its own retried transaction.
+    async createClaim(input, transaction) {
+      if (transaction) {
+        return withDbErrors('Claim', () => insertClaim(transaction, input));
+      }
 
-          if (!createdClaim) {
-            throw new Error('Claim creation did not return a record');
-          }
-
-          await insertDetails(
-            transaction,
-            createdClaim.claimId,
-            input.claimType,
-            input.values
-          );
-
-          const [claim] = await selectClaims(
-            transaction,
-            eq(claims.claimId, createdClaim.claimId)
-          );
-          if (!claim) {
-            throw new Error('Created claim could not be read');
-          }
-          return claim;
-        });
-      }));
+      return withTransientRetry(() =>
+        withDbErrors('Claim', () =>
+          database.db.transaction((createdTransaction) =>
+            insertClaim(createdTransaction, input)
+          )
+        )
+      );
     },
 
     async listClaims(candidateId, filters = {}) {

@@ -289,6 +289,11 @@ by the candidate are stored as `manual` and `accepted`. Only accepted claims
 appear in the exported profile; pending and rejected claims are excluded.
 Claims cascade on profile deletion.
 
+Creating a claim and its type-specific details is atomic. The candidates
+repository can join a caller-owned transaction, allowing extraction to save
+multiple claims and document `unmapped_data` as one unit; manual creation uses
+its own transaction with transient-failure retries.
+
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |
 | `claim_id` | UUID | Primary key, generated | Stable claim identifier |

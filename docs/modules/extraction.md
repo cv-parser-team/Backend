@@ -249,3 +249,17 @@ Listed under "Revisit later" on the task:
   new parse clears old unmapped data.
 - Normalize aliases and detect conflicts.
 - Accept year-only dates and grades.
+
+## Manual inspection
+
+With PostgreSQL migrated and `LLM_API_KEY` configured, run:
+
+```bash
+npm run llm:inspect
+```
+
+The command sends a deterministic referenced CV sample through the configured
+provider, prints the mapped profile, pending claim drafts, unmapped items, and
+invocation ID, and records the provider invocation in `llm_invocations`.
+Extracted claims and `unmapped_data` are not written by this command yet; that
+requires the atomic extraction coordinator planned next.

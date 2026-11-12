@@ -2,6 +2,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import {
   type CandidateRecord,
   type ClaimRecord,
@@ -340,7 +341,7 @@ describe('retrying claim transactions', () => {
 });
 
 describe('creating an extracted claim', () => {
-  it('stores and returns its original evidence metadata', async () => {
+  it('stores and returns its evidence in the caller transaction', async () => {
     const extraction = {
       invocationId: '33333333-3333-4333-8333-333333333333',
       rawValues: { name: 'TypeScript' },
@@ -370,19 +371,24 @@ describe('creating an extracted claim', () => {
       where: () => ({ orderBy: () => Promise.resolve([extractedRow]) })
     };
     const select = vi.fn(() => ({ from: () => readQuery }));
-    const repository = createCandidatesRepository(
-      databaseWith({ insert, select })
-    );
+    const databaseTransaction = vi.fn();
+    const repository = createCandidatesRepository({
+      db: { transaction: databaseTransaction }
+    } as unknown as AppDatabase);
+    const transaction = { insert, select } as unknown as DatabaseExecutor;
 
     await expect(
-      repository.createClaim({
-        candidateId,
-        claimType: 'skill',
-        origin: 'extracted',
-        status: 'pending',
-        values: { name: 'TypeScript' },
-        extraction
-      })
+      repository.createClaim(
+        {
+          candidateId,
+          claimType: 'skill',
+          origin: 'extracted',
+          status: 'pending',
+          values: { name: 'TypeScript' },
+          extraction
+        },
+        transaction
+      )
     ).resolves.toMatchObject({
       origin: 'extracted',
       extraction
@@ -397,5 +403,6 @@ describe('creating an extracted claim', () => {
       extractionFieldSources: extraction.fieldSources,
       extractionCurrent: false
     });
+    expect(databaseTransaction).not.toHaveBeenCalled();
   });
 });
