@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   date,
   index,
@@ -21,6 +22,12 @@ export interface ProfileLink {
 
 export type ClaimFieldValue = string | string[];
 export type ClaimSnapshot = Record<string, ClaimFieldValue>;
+export interface ClaimExtractionMetadata {
+  invocationId: string;
+  rawValues: Record<string, string>;
+  fieldSources: Record<string, string[]>;
+  current: boolean;
+}
 
 export const claimType = pgEnum('claim_type', [
   'skill',
@@ -93,6 +100,13 @@ export const claims = pgTable(
     claimType: claimType('claim_type').notNull(),
     origin: claimOrigin('origin').notNull(),
     status: claimStatus('status').default('pending').notNull(),
+    // Original AI evidence stays separate from the reviewed claim values.
+    extractionInvocationId: uuid('extraction_invocation_id'),
+    extractionRawValues: jsonb('extraction_raw_values').$type<Record<string, string>>(),
+    extractionFieldSources: jsonb('extraction_field_sources').$type<
+      Record<string, string[]>
+    >(),
+    extractionCurrent: boolean('extraction_current'),
     // Increases on every change of the claim's values.
     version: integer('version').default(1).notNull(),
     createdAt: timestamp('created_at', {
@@ -109,7 +123,25 @@ export const claims = pgTable(
       .$onUpdate(() => new Date())
       .notNull()
   },
-  (table) => [index('claims_candidate_id_idx').on(table.candidateId)]
+  (table) => [
+    index('claims_candidate_id_idx').on(table.candidateId),
+    check(
+      'claims_extraction_metadata_matches_origin',
+      sql`(
+        ${table.origin} = 'manual'
+        and ${table.extractionInvocationId} is null
+        and ${table.extractionRawValues} is null
+        and ${table.extractionFieldSources} is null
+        and ${table.extractionCurrent} is null
+      ) or (
+        ${table.origin} = 'extracted'
+        and ${table.extractionInvocationId} is not null
+        and ${table.extractionRawValues} is not null
+        and ${table.extractionFieldSources} is not null
+        and ${table.extractionCurrent} is not null
+      )`
+    )
+  ]
 );
 
 // Each claim has exactly one details row, in the table that matches its type.

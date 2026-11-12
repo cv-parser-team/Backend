@@ -152,6 +152,9 @@ reading order is known and is unique across all successfully parsed pages.
   DOCX `pageCount` is `null`.
 - A reparse upserts by `documentId`. Changing stored JSON shape requires
   incrementing `EXTRACTION_CONTENT_VERSION` and considering existing readers.
+- `saveUnmappedData` replaces only `unmapped_data` for an existing extraction.
+  It preserves parsed content, failures, format, and parser version, and can
+  join a caller-owned transaction.
 
 ## Non-negotiable invariants
 

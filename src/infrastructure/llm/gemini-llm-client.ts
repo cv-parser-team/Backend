@@ -1,7 +1,6 @@
+import { ApiError, GoogleGenAI } from '@google/genai';
 import { LlmClient, LlmRequest, LlmResponse } from './llm-client.js';
 import { LlmError, LlmErrorCategory } from './llm.errors.js';
-
-const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
 
 type Fetch = typeof fetch;
 
@@ -11,19 +10,10 @@ export interface GeminiLlmClientOptions {
   fetch?: Fetch;
 }
 
-interface GeminiErrorBody {
+interface ProviderErrorBody {
   error?: {
     status?: unknown;
     details?: unknown;
-  };
-}
-
-interface GeminiResponseBody {
-  responseId?: unknown;
-  candidates?: unknown;
-  usageMetadata?: {
-    promptTokenCount?: unknown;
-    candidatesTokenCount?: unknown;
   };
 }
 
@@ -37,8 +27,19 @@ function optionalNonnegativeInteger(value: unknown): number | undefined {
     : undefined;
 }
 
-function providerErrorCode(body: GeminiErrorBody): string | undefined {
-  const details = body.error?.details;
+function providerErrorCode(error: ApiError): string | undefined {
+  let body: unknown;
+  try {
+    body = JSON.parse(error.message);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(body) || !isRecord(body.error)) {
+    return undefined;
+  }
+
+  const providerError = body as ProviderErrorBody;
+  const details = providerError.error?.details;
   if (Array.isArray(details)) {
     for (const detail of details) {
       if (isRecord(detail) && typeof detail.reason === 'string') {
@@ -47,7 +48,7 @@ function providerErrorCode(body: GeminiErrorBody): string | undefined {
     }
   }
 
-  const status = body.error?.status;
+  const status = providerError.error?.status;
   return typeof status === 'string' ? status : undefined;
 }
 
@@ -70,53 +71,11 @@ function categoryForStatus(status: number, code?: string): LlmErrorCategory {
   return 'invalid_request';
 }
 
-async function readBody(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch (cause) {
-    if (!response.ok) {
-      throw new LlmError(
-        'The LLM provider rejected the request',
-        categoryForStatus(response.status),
-        undefined,
-        { cause }
-      );
-    }
-    throw new LlmError(
-      'The LLM provider returned unreadable JSON',
-      'invalid_output',
-      undefined,
-      { cause }
-    );
-  }
-}
-
-function candidateText(body: GeminiResponseBody): string | undefined {
-  if (!Array.isArray(body.candidates)) {
-    return undefined;
-  }
-
-  for (const candidate of body.candidates) {
-    if (!isRecord(candidate) || !isRecord(candidate.content)) {
-      continue;
-    }
-    const parts = candidate.content.parts;
-    if (!Array.isArray(parts)) {
-      continue;
-    }
-    const text = parts
-      .filter(isRecord)
-      .map((part) => part.text)
-      .filter((part): part is string => typeof part === 'string')
-      .join('');
-    return text || undefined;
-  }
-
-  return undefined;
-}
-
-function modelName(model: string): string {
-  return model.startsWith('models/') ? model.slice('models/'.length) : model;
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.name === 'TimeoutError')
+  );
 }
 
 export function createGeminiLlmClient(
@@ -141,7 +100,13 @@ export function createGeminiLlmClient(
     );
   }
 
-  const fetchRequest = options.fetch ?? globalThis.fetch;
+  const gemini = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      fetch: options.fetch,
+      retryOptions: { attempts: 1 }
+    }
+  });
 
   return {
     async generate(request: LlmRequest): Promise<LlmResponse> {
@@ -162,34 +127,74 @@ export function createGeminiLlmClient(
 
       const abortController = new AbortController();
       const timeout = setTimeout(() => abortController.abort(), request.timeoutMs);
-      let response: Response;
 
       try {
-        const model = encodeURIComponent(modelName(request.model));
-        response = await fetchRequest(
-          `${GEMINI_API_ROOT}/models/${model}:generateContent`,
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-goog-api-key': apiKey
-            },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: request.prompt }] },
-              contents: [{ role: 'user', parts: [{ text: request.input }] }],
-              generationConfig: {
-                responseMimeType: 'application/json',
-                responseJsonSchema: request.outputSchema
-              }
-            }),
-            signal: abortController.signal
+        const response = await gemini.models.generateContent({
+          model: request.model,
+          contents: request.input,
+          config: {
+            systemInstruction: request.prompt,
+            responseMimeType: 'application/json',
+            responseJsonSchema: request.outputSchema,
+            automaticContinuation: false,
+            abortSignal: abortController.signal,
+            httpOptions: {
+              timeout: request.timeoutMs,
+              retryOptions: { attempts: 1 }
+            }
           }
-        );
+        });
+
+        const text = response.text;
+        if (text === undefined) {
+          throw new LlmError(
+            'The LLM provider returned no structured output',
+            'invalid_output',
+            'MISSING_OUTPUT'
+          );
+        }
+
+        let output: unknown;
+        try {
+          output = JSON.parse(text);
+        } catch (cause) {
+          throw new LlmError(
+            'The LLM provider returned invalid structured output',
+            'invalid_output',
+            'INVALID_JSON',
+            { cause }
+          );
+        }
+
+        return {
+          output,
+          providerRequestId: response.responseId,
+          inputTokens: optionalNonnegativeInteger(
+            response.usageMetadata?.promptTokenCount
+          ),
+          outputTokens: optionalNonnegativeInteger(
+            response.usageMetadata?.candidatesTokenCount
+          )
+        };
       } catch (cause) {
-        if (abortController.signal.aborted) {
-          throw new LlmError('The LLM provider request timed out', 'timeout', undefined, {
-            cause
-          });
+        if (cause instanceof LlmError) {
+          throw cause;
+        }
+        if (abortController.signal.aborted || isAbortError(cause)) {
+          throw new LlmError(
+            'The LLM provider request timed out',
+            'timeout',
+            undefined,
+            { cause }
+          );
+        }
+        if (cause instanceof ApiError) {
+          const code = providerErrorCode(cause);
+          throw new LlmError(
+            'The LLM provider rejected the request',
+            categoryForStatus(cause.status, code),
+            code
+          );
         }
         throw new LlmError(
           'The LLM provider could not be reached',
@@ -200,52 +205,6 @@ export function createGeminiLlmClient(
       } finally {
         clearTimeout(timeout);
       }
-
-      const rawBody = await readBody(response);
-      const body: GeminiResponseBody & GeminiErrorBody = isRecord(rawBody)
-        ? rawBody
-        : {};
-      if (!response.ok) {
-        const code = providerErrorCode(body);
-        throw new LlmError(
-          'The LLM provider rejected the request',
-          categoryForStatus(response.status, code),
-          code
-        );
-      }
-
-      const text = candidateText(body);
-      if (text === undefined) {
-        throw new LlmError(
-          'The LLM provider returned no structured output',
-          'invalid_output',
-          'MISSING_OUTPUT'
-        );
-      }
-
-      let output: unknown;
-      try {
-        output = JSON.parse(text);
-      } catch (cause) {
-        throw new LlmError(
-          'The LLM provider returned invalid structured output',
-          'invalid_output',
-          'INVALID_JSON',
-          { cause }
-        );
-      }
-
-      return {
-        output,
-        providerRequestId:
-          typeof body.responseId === 'string' ? body.responseId : undefined,
-        inputTokens: optionalNonnegativeInteger(
-          body.usageMetadata?.promptTokenCount
-        ),
-        outputTokens: optionalNonnegativeInteger(
-          body.usageMetadata?.candidatesTokenCount
-        )
-      };
     }
   };
 }

@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { InvalidAiOutputError } from './extraction.errors.js';
-import { mapAiOutput } from './extraction.mapper.js';
+import { collectAiInputReferences, mapAiOutput } from './extraction.mapper.js';
+import { aiGenerationSchema } from './extraction.schemas.js';
 import {
   validateClaim,
   validateEnvelope,
@@ -22,6 +23,31 @@ const employment = {
 };
 
 describe('AI output contract', () => {
+  it('uses a provider-compatible nested schema without weakening local mapping', () => {
+    const validateGenerationOutput = validatorFor(aiGenerationSchema);
+    const generatedOutput = {
+      version: 1,
+      profile: {},
+      claims: [employment],
+      unmapped: []
+    };
+
+    expect(validateGenerationOutput(generatedOutput).valid).toBe(true);
+    expect(
+      validateGenerationOutput({
+        ...generatedOutput,
+        claims: [{ type: 'employment', fields: { employer: employment.fields.employer } }]
+      }).valid
+    ).toBe(true);
+    expect(
+      validateGenerationOutput({
+        ...generatedOutput,
+        claims: [{ type: 'skill', notes: 'extra', fields: {} }]
+      }).valid
+    ).toBe(false);
+    expect(validateEnvelope({ version: 1, claims: generatedOutput.claims }).valid).toBe(true);
+  });
+
   it('accepts a version 1 output with claims', () => {
     expect(validateEnvelope({ version: 1, claims: [], unmapped: [] })).toEqual({
       valid: true,
@@ -121,6 +147,19 @@ function output(claims: unknown[], extra: Record<string, unknown> = {}) {
 }
 
 describe('AI output mapping', () => {
+  it('collects exact PDF and DOCX references while ignoring headers and table columns', () => {
+    expect(
+      [...collectAiInputReferences([
+        '[P1 R0 header]',
+        '## L5 Profile',
+        'L6-8,10 Experience spanning lines',
+        '## B3 Skills',
+        'Columns: Skill | Level',
+        'B4.1 TypeScript | Advanced'
+      ].join('\n'))]
+    ).toEqual(['L5', 'L6-8,10', 'B3', 'B4.1']);
+  });
+
   it('turns a valid claim into a pending extracted draft with its sources', () => {
     const result = mapAiOutput(output([employment]));
 
@@ -333,6 +372,96 @@ describe('AI output mapping', () => {
     );
 
     expect(result.claims[0]!.confidence).toBe(0.9);
+  });
+
+  it('rejects a claim when a required field cites an unknown source', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'employment',
+          fields: {
+            jobTitle: field('Developer', ['L1']),
+            employer: field('Example Corp', ['L99']),
+            startDate: field('2021-03', ['L2'])
+          }
+        }
+      ]),
+      new Set(['L1', 'L2'])
+    );
+
+    expect(result.claims).toEqual([]);
+    expect(result.unmapped).toEqual([
+      {
+        label: 'employment',
+        text: 'Developer; Example Corp; 2021-03',
+        sources: ['L1', 'L99', 'L2'],
+        reason: 'invalid_source'
+      }
+    ]);
+  });
+
+  it('sets aside only optional and profile fields with unknown sources', () => {
+    const result = mapAiOutput(
+      output(
+        [
+          {
+            type: 'project',
+            fields: {
+              name: field('Shop API', ['B3']),
+              description: field('Built payment APIs', ['B99'])
+            }
+          }
+        ],
+        {
+          profile: {
+            fullName: field('Emma Carter', ['L5-7']),
+            headline: field('Backend Developer', ['L8']),
+            summary: { raw: 'API specialist', confidence: 0.7, sources: ['L100'] }
+          },
+          unmapped: [
+            { label: 'Award', text: 'Best Graduate', sources: ['L50'] },
+            { label: 'Course', text: 'Advanced TypeScript', sources: ['B4.1'] }
+          ]
+        }
+      ),
+      new Set(['L5-7', 'B3', 'B4.1'])
+    );
+
+    expect(result.profile.values).toEqual({ fullName: 'Emma Carter' });
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0]!.values).toEqual({ name: 'Shop API' });
+    expect(result.unmapped).toEqual([
+      {
+        label: 'profile.headline',
+        text: 'Backend Developer',
+        sources: ['L8'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'profile.summary',
+        text: 'API specialist',
+        sources: ['L100'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'project.description',
+        text: 'Built payment APIs',
+        sources: ['B99'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'Award',
+        text: 'Best Graduate',
+        sources: ['L50'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'Course',
+        text: 'Advanced TypeScript',
+        sources: ['B4.1'],
+        reason: 'unsupported_section'
+      }
+    ]);
   });
 
   it('keeps valid claims when other items in the same output are invalid', () => {

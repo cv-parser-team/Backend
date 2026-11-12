@@ -71,6 +71,7 @@ function claimRecord(overrides: Partial<ClaimRecord> = {}): ClaimRecord {
     origin: 'manual',
     status: 'accepted',
     values: { name: 'Python' },
+    extraction: null,
     version: 1,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -148,6 +149,23 @@ describe('candidates tables', () => {
       expect(column.notNull).toBe(true);
       expect(column.default).toBe(1);
     }
+  });
+
+  it('keeps complete extraction evidence only on extracted claims', () => {
+    const config = getTableConfig(claims);
+    const evidenceColumns = [
+      claims.extractionInvocationId,
+      claims.extractionRawValues,
+      claims.extractionFieldSources,
+      claims.extractionCurrent
+    ];
+
+    expect(evidenceColumns.every((column) => !column.notNull)).toBe(true);
+    expect(
+      config.checks.some(
+        (constraint) => constraint.name === 'claims_extraction_metadata_matches_origin'
+      )
+    ).toBe(true);
   });
 
   it('links profiles to users and claims to their owners', () => {

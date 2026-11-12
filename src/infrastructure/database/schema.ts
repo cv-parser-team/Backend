@@ -7,3 +7,4 @@ export * from '../../modules/documents/documents.table.js';
 export * from '../../modules/normalization/normalization.table.js';
 export * from '../../modules/parsing/parsing.table.js';
 export * from '../../modules/users/users.table.js';
+export * from '../llm/llm.table.js';

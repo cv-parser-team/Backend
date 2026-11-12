@@ -5,6 +5,7 @@ import { withTransientRetry } from '../../infrastructure/database/transient-retr
 import {
   candidates,
   certificationDetails,
+  ClaimExtractionMetadata,
   ClaimFieldValue,
   claimRevisions,
   claims,
@@ -43,18 +44,25 @@ export interface ClaimRecord {
   origin: ClaimRow['origin'];
   status: ClaimRow['status'];
   values: ClaimValues;
+  extraction: ClaimExtractionMetadata | null;
   version: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
-export interface CreateClaimInput {
+interface CreateClaimBase {
   candidateId: string;
   claimType: ClaimRow['claimType'];
-  origin: ClaimRow['origin'];
   status: ClaimRow['status'];
   values: ClaimValues;
 }
+
+export type CreateClaimInput =
+  | (CreateClaimBase & { origin: 'manual'; extraction?: never })
+  | (CreateClaimBase & {
+      origin: 'extracted';
+      extraction: ClaimExtractionMetadata;
+    });
 
 export interface ClaimFilters {
   claimType?: ClaimRow['claimType'];
@@ -365,6 +373,19 @@ async function selectClaims(
       origin: claim.origin,
       status: claim.status,
       values,
+      extraction:
+        claim.origin === 'extracted' &&
+        claim.extractionInvocationId !== null &&
+        claim.extractionRawValues !== null &&
+        claim.extractionFieldSources !== null &&
+        claim.extractionCurrent !== null
+          ? {
+              invocationId: claim.extractionInvocationId,
+              rawValues: claim.extractionRawValues,
+              fieldSources: claim.extractionFieldSources,
+              current: claim.extractionCurrent
+            }
+          : null,
       version: claim.version,
       createdAt: claim.createdAt,
       updatedAt: claim.updatedAt
@@ -445,7 +466,15 @@ export function createCandidatesRepository(
               candidateId: input.candidateId,
               claimType: input.claimType,
               origin: input.origin,
-              status: input.status
+              status: input.status,
+              extractionInvocationId:
+                input.origin === 'extracted' ? input.extraction.invocationId : null,
+              extractionRawValues:
+                input.origin === 'extracted' ? input.extraction.rawValues : null,
+              extractionFieldSources:
+                input.origin === 'extracted' ? input.extraction.fieldSources : null,
+              extractionCurrent:
+                input.origin === 'extracted' ? input.extraction.current : null
             })
             .returning({ claimId: claims.claimId });
 

@@ -147,6 +147,26 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+// References are copied as complete tokens from compact AI input. Keeping
+// ranges opaque avoids accepting a range or block row that was never supplied
+// to the provider.
+const AI_INPUT_REFERENCE = /^(?:## )?(L\d+(?:-\d+)?(?:,\d+(?:-\d+)?)?|B\d+(?:\.\d+)?)\s/;
+
+export function collectAiInputReferences(input: string): ReadonlySet<string> {
+  const references = new Set<string>();
+  for (const line of input.split('\n')) {
+    const reference = AI_INPUT_REFERENCE.exec(line)?.[1];
+    if (reference) {
+      references.add(reference);
+    }
+  }
+  return references;
+}
+
+function sourcesExist(sources: string[], availableSources?: ReadonlySet<string>): boolean {
+  return availableSources === undefined || sources.every((source) => availableSources.has(source));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -228,7 +248,7 @@ function unmappedField(
 // An invalid optional field is set aside on its own and the claim keeps its
 // other fields. An invalid or missing required field rejects the whole claim,
 // because a claim cannot exist without it.
-function mapClaim(claim: ExtractedClaim): ClaimMapping {
+function mapClaim(claim: ExtractedClaim, availableSources?: ReadonlySet<string>): ClaimMapping {
   const rules = CLAIM_RULES[claim.type];
   const kept = new Map<string, ExtractedField>();
   const values: DraftValues = {};
@@ -252,6 +272,12 @@ function mapClaim(claim: ExtractedClaim): ClaimMapping {
   };
 
   for (const [fieldName, field] of Object.entries(claim.fields)) {
+    if (!sourcesExist(field.sources, availableSources)) {
+      if (!setFieldAside(fieldName, 'invalid_source')) {
+        return rejectClaim('invalid_source');
+      }
+      continue;
+    }
     if (rules.dates?.[1] === fieldName && field.current) {
       current = true;
       kept.set(fieldName, field);
@@ -327,12 +353,28 @@ function mapClaim(claim: ExtractedClaim): ClaimMapping {
   };
 }
 
-function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): ProfileDraft {
+function mapProfile(
+  profile: ExtractedProfile,
+  unmapped: UnmappedItem[],
+  availableSources?: ReadonlySet<string>
+): ProfileDraft {
   const draft: ProfileDraft = { values: {}, rawValues: {}, confidence: {}, sources: {} };
 
   for (const fieldName of PROFILE_TEXT_FIELDS) {
     const field = profile[fieldName];
-    if (!field || field.value === undefined) {
+    if (!field) {
+      continue;
+    }
+    if (!sourcesExist(field.sources, availableSources)) {
+      unmapped.push({
+        label: `profile.${fieldName}`,
+        text: describeField(field),
+        sources: field.sources,
+        reason: 'invalid_source'
+      });
+      continue;
+    }
+    if (field.value === undefined) {
       continue;
     }
     const value = typeof field.value === 'string' ? field.value.trim() : field.value;
@@ -354,6 +396,15 @@ function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): Profil
   }
 
   for (const link of profile.links ?? []) {
+    if (!sourcesExist(link.sources, availableSources)) {
+      unmapped.push({
+        label: 'profile.links',
+        text: describeField(link),
+        sources: link.sources,
+        reason: 'invalid_source'
+      });
+      continue;
+    }
     const label = link.raw?.trim();
     const url = typeof link.value === 'string' ? link.value.trim() : '';
     if (!label || !PROFILE_VALIDATORS.profileLink({ label, url }).valid) {
@@ -379,7 +430,10 @@ function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): Profil
 // Turns an AI output into pending claim drafts, a profile draft, and unmapped
 // items. Each item is checked on its own, so an invalid item never rejects the
 // others; only an unreadable output as a whole is rejected.
-export function mapAiOutput(output: unknown): MappingResult {
+export function mapAiOutput(
+  output: unknown,
+  availableSources?: ReadonlySet<string>
+): MappingResult {
   const envelope = validateEnvelope(output);
   if (!envelope.valid || !isRecord(output)) {
     throw new InvalidAiOutputError(
@@ -394,7 +448,7 @@ export function mapAiOutput(output: unknown): MappingResult {
   let profile: ProfileDraft = { values: {}, rawValues: {}, confidence: {}, sources: {} };
   if (output.profile !== undefined) {
     if (validateProfile(output.profile).valid) {
-      profile = mapProfile(output.profile as ExtractedProfile, unmapped);
+      profile = mapProfile(output.profile as ExtractedProfile, unmapped, availableSources);
     } else {
       unmapped.push(describeInvalid('profile', output.profile, 'invalid_item'));
     }
@@ -406,7 +460,10 @@ export function mapAiOutput(output: unknown): MappingResult {
       unmapped.push(describeInvalid(label, item, 'invalid_item'));
       continue;
     }
-    const { draft, unmapped: setAside } = mapClaim(item as ExtractedClaim);
+    const { draft, unmapped: setAside } = mapClaim(
+      item as ExtractedClaim,
+      availableSources
+    );
     if (draft) {
       claims.push(draft);
     }
@@ -416,7 +473,12 @@ export function mapAiOutput(output: unknown): MappingResult {
   for (const item of (output.unmapped ?? []) as unknown[]) {
     if (validateUnmapped(item).valid) {
       const { label, text, sources } = item as ExtractedUnmapped;
-      unmapped.push({ label, text, sources, reason: 'unsupported_section' });
+      unmapped.push({
+        label,
+        text,
+        sources,
+        reason: sourcesExist(sources, availableSources) ? 'unsupported_section' : 'invalid_source'
+      });
     } else {
       unmapped.push(describeInvalid('unmapped', item, 'invalid_item'));
     }

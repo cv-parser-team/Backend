@@ -26,6 +26,7 @@ const claim: ClaimRecord = {
   origin: 'manual',
   status: 'accepted',
   values: { name: 'TypeScript' },
+  extraction: null,
   version: 1,
   createdAt: timestamp,
   updatedAt: timestamp
@@ -40,6 +41,10 @@ function claimRow(version: number, name = 'TypeScript') {
       claimType: 'skill',
       origin: 'manual',
       status: 'accepted',
+      extractionInvocationId: null,
+      extractionRawValues: null,
+      extractionFieldSources: null,
+      extractionCurrent: null,
       version,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -331,5 +336,66 @@ describe('retrying claim transactions', () => {
       createCandidatesRepository(database).updateClaimValues(edit)
     ).rejects.toMatchObject({ statusCode: 503, code: 'TRANSIENT_DATABASE_ERROR' });
     expect(transaction).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('creating an extracted claim', () => {
+  it('stores and returns its original evidence metadata', async () => {
+    const extraction = {
+      invocationId: '33333333-3333-4333-8333-333333333333',
+      rawValues: { name: 'TypeScript' },
+      fieldSources: { name: ['L12'] },
+      current: false
+    };
+    const extractedRow = {
+      ...claimRow(1),
+      claim: {
+        ...claimRow(1).claim,
+        origin: 'extracted' as const,
+        status: 'pending' as const,
+        extractionInvocationId: extraction.invocationId,
+        extractionRawValues: extraction.rawValues,
+        extractionFieldSources: extraction.fieldSources,
+        extractionCurrent: extraction.current
+      }
+    };
+    const returning = vi.fn().mockResolvedValue([{ claimId }]);
+    const claimValues = vi.fn(() => ({ returning }));
+    const detailValues = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn((table: unknown) => ({
+      values: table === claims ? claimValues : detailValues
+    }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where: () => ({ orderBy: () => Promise.resolve([extractedRow]) })
+    };
+    const select = vi.fn(() => ({ from: () => readQuery }));
+    const repository = createCandidatesRepository(
+      databaseWith({ insert, select })
+    );
+
+    await expect(
+      repository.createClaim({
+        candidateId,
+        claimType: 'skill',
+        origin: 'extracted',
+        status: 'pending',
+        values: { name: 'TypeScript' },
+        extraction
+      })
+    ).resolves.toMatchObject({
+      origin: 'extracted',
+      extraction
+    });
+    expect(claimValues).toHaveBeenCalledWith({
+      candidateId,
+      claimType: 'skill',
+      origin: 'extracted',
+      status: 'pending',
+      extractionInvocationId: extraction.invocationId,
+      extractionRawValues: extraction.rawValues,
+      extractionFieldSources: extraction.fieldSources,
+      extractionCurrent: false
+    });
   });
 });

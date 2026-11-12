@@ -1,6 +1,7 @@
 import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { UnsupportedDocumentTypeError } from './parsing.errors.js';
 import { ExtractionRecord, ParsingRepository } from './parsing.repository.js';
+import type { UnmappedItem } from './parsing.table.js';
 import { DocumentParser, ExtractionResult, ParseInput } from './parsing.types.js';
 
 export interface ParsingService {
@@ -11,6 +12,12 @@ export interface ParsingService {
   saveExtraction(
     documentId: string,
     result: ExtractionResult,
+    transaction?: DatabaseExecutor
+  ): Promise<ExtractionRecord>;
+  // Replaces only AI-output items that could not become profile fields or claims.
+  saveUnmappedData(
+    documentId: string,
+    items: UnmappedItem[],
     transaction?: DatabaseExecutor
   ): Promise<ExtractionRecord>;
 }
@@ -44,6 +51,10 @@ export function createParsingService({
 
     saveExtraction(documentId, result, transaction) {
       return repository.saveExtraction(documentId, result, transaction);
+    },
+
+    saveUnmappedData(documentId, items, transaction) {
+      return repository.saveUnmappedData(documentId, items, transaction);
     }
   };
 }

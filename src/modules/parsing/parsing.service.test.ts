@@ -50,6 +50,7 @@ function createRepositoryDouble(): ParsingRepository {
         updatedAt: new Date('2026-01-01T00:00:00.000Z')
       })
     ),
+    saveUnmappedData: vi.fn(),
     findByDocumentId: vi.fn().mockResolvedValue(null)
   };
 }
@@ -66,6 +67,7 @@ describe('parsing module', () => {
       expect(app.hasDecorator('parsingService')).toBe(true);
       expect(typeof app.parsingService.parse).toBe('function');
       expect(typeof app.parsingService.saveExtraction).toBe('function');
+      expect(typeof app.parsingService.saveUnmappedData).toBe('function');
     } finally {
       await app.close();
     }

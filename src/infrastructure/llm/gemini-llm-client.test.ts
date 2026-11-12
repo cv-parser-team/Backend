@@ -61,6 +61,17 @@ describe('Gemini LLM client', () => {
       outputTokens: 5
     });
     expect(fetch).toHaveBeenCalledOnce();
+    const requestBody = JSON.parse(
+      String(fetch.mock.calls[0]?.[1]?.body)
+    ) as Record<string, unknown>;
+    expect(requestBody).toMatchObject({
+      systemInstruction: { parts: [{ text: 'Return the value.' }] },
+      contents: [{ role: 'user', parts: [{ text: 'The value is 3.' }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseJsonSchema: request.outputSchema
+      }
+    });
   });
 
   it('maps an invalid API key without exposing the provider response', async () => {
@@ -99,5 +110,22 @@ describe('Gemini LLM client', () => {
       code: 'INPUT_TOO_LARGE'
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('does not retry provider failures inside the SDK', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { status: 'UNAVAILABLE' }
+        }),
+        { status: 503, headers: { 'content-type': 'application/json' } }
+      )
+    );
+
+    await expect(clientWith(fetch).generate(request)).rejects.toMatchObject({
+      category: 'provider_unavailable',
+      code: 'UNAVAILABLE'
+    });
+    expect(fetch).toHaveBeenCalledOnce();
   });
 });

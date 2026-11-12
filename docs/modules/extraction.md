@@ -1,4 +1,4 @@
-# AI-output mapping plan (V1)
+# Candidate extraction (V1)
 
 ## Goal
 
@@ -9,8 +9,20 @@ came from, and how confident the AI was about each value. Invalid or
 incomplete values are kept as unmapped instead of being rejected or completed
 with invented values.
 
-V1 does not call an AI, save drafts, normalize values, or resolve conflicts.
-It is tested with hand-written AI outputs.
+V1 sends compact parsing input through the tracked LLM service and maps the
+provider's structured output. It does not yet save drafts, normalize values,
+resolve conflicts, or run as part of the document-processing worker.
+
+The extraction service owns the versioned prompt and output contract. Provider,
+model, timeout, and the LLM service are injected so the module does not create
+infrastructure or read global configuration.
+
+Provider generation uses a shallow schema for the stable envelope and item
+containers. The detailed field contract and type-specific requirements stay in
+the versioned prompt because the configured Gemini model rejects the complete
+nested schema as too complex. Local mapping remains authoritative: it validates
+each item independently, so one malformed provider item does not discard valid
+items returned with it.
 
 ## Input: the AI output contract
 
@@ -110,22 +122,27 @@ claim, because a claim cannot exist without it.
 | Value with low confidence | Kept, with its confidence, so the candidate can review it |
 | Required field missing | Whole claim unmapped, reason `missing_<field>`, such as `missing_start_date` |
 | Required field invalid, such as a start date of `2021` or an empty name | Whole claim unmapped, reason `invalid_date` or `invalid_value` |
+| Required field cites a reference absent from the supplied AI input | Whole claim unmapped, reason `invalid_source` |
 | Optional date not `YYYY-MM`, such as an end date of `2023` | Only that field unmapped, reason `invalid_date`; no month is invented |
 | End date written as `Present` | `current: true`; the end date stays empty |
 | End date before start date | Only the end date unmapped, reason `invalid_date_order` |
 | Optional field too long, empty, or not part of the type | Only that field unmapped, reason `invalid_value` |
 | Optional field with `raw` text but no value | Only that field unmapped, reason `missing_value` |
+| Optional or profile field cites a reference absent from the supplied AI input | Only that field unmapped, reason `invalid_source` |
 | Unknown type or broken item | Whole item unmapped, reason `invalid_item` |
 | Invalid profile field, such as a bad email | Only that field unmapped, reason `invalid_value` |
 | Profile link without its link text | Only that link unmapped, reason `missing_label` |
 | Profile that does not follow the contract | Whole profile unmapped, reason `invalid_item`, keeping its text |
 | Item in the AI's own `unmapped` list | Kept as unmapped, reason `unsupported_section` |
+| Item in the AI's own `unmapped` list cites an absent reference | Kept as unmapped, reason `invalid_source` |
 | Wrong `version` or no `claims` list | The whole output is rejected with `INVALID_AI_OUTPUT` |
 
 - Each item is checked on its own, so one invalid item never rejects the others.
 - Claim values are checked with the same rules as manual claims, so every
   draft can become a real claim.
 - Nothing missing is filled in.
+- Source references must exactly match tokens present in the compact AI input;
+  page/region headers and table column labels are not evidence references.
 - An unmapped field is labelled with its claim type and field, such as
   `employment.endDate`.
 
@@ -214,21 +231,21 @@ taken from its proficiency. A field set aside on its own looks like this:
    which looks safe. The overall value is only a summary for finding claims to
    review; the confidence of each field is kept. Fields that were set aside are
    left out.
-3. **Confidence stays in the AI output and the drafts; it is not stored in the
-   database yet.** V1 saves nothing, and confidence only matters until the
-   candidate reviews a claim. When drafts are saved, confidence is stored with
-   the original extracted values, as the task lists them together.
+3. **Confidence stays transient.** It is model-generated review guidance, not
+   a candidate fact. Extracted claims persist their invocation, original
+   wording, sources, and explicit current status; confidence can be added when
+   a review or evaluation feature has a concrete use for it.
 
 ## Version 2
 
 Listed under "Revisit later" on the task:
 
-- Save drafts as candidate claims and unmapped items in `unmapped_data`.
+- Save drafts as candidate claims and call the parsing service's durable
+  `unmapped_data` write from the extraction workflow.
 - Resolve line references into `source_occurrences` with page and position.
-- Store confidence and original extracted values.
-- Check that every line reference exists in the document's AI input.
+- Connect claim persistence to the extraction workflow; the claim schema now
+  retains invocation, original wording, sources, and current status.
 - Avoid duplicate claims when an extraction runs again, and decide whether a
   new parse clears old unmapped data.
-- Connect an AI provider and send it this contract.
 - Normalize aliases and detect conflicts.
 - Accept year-only dates and grades.

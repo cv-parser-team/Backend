@@ -34,7 +34,7 @@ does not load `.env` files itself.
 | `npm run worker` | Start the compiled document-processing worker |
 | `npm run parsing:inspect` | Select a PDF or DOCX and write a visual HTML parsing report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
-| `npm run llm:inspect` | Send one synthetic structured-output request to the configured LLM |
+| `npm run llm:inspect` | Run one tracked candidate-extraction request against the configured LLM |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |

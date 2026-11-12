@@ -1,46 +1,54 @@
+import { randomUUID } from 'node:crypto';
 import { config } from '../config/config.js';
+import { AppDatabase } from '../infrastructure/database/database.js';
 import {
   createGeminiLlmClient,
+  createLlmRepository,
+  createLlmService,
   LlmError
 } from '../infrastructure/llm/index.js';
+import { createCandidateExtractionService } from '../modules/extraction/index.js';
 
-const inspectionSchema = {
-  type: 'object',
-  properties: {
-    landmark: { type: 'string' },
-    heightMetres: { type: 'integer' }
-  },
-  required: ['landmark', 'heightMetres'],
-  additionalProperties: false
-} as const;
+const inspectionInput = `[P1 R0 independent]
+## L1 Samira Haddad
+L2 Backend Engineer
+L3 samira.haddad@example.com
+[P1 R1 section]
+## L4 Experience
+L5 Senior Backend Engineer | Example Labs
+L6 January 2022 - Present
+L7 Built TypeScript services backed by PostgreSQL.
+[P1 R2 section]
+## L8 Skills
+L9 TypeScript, PostgreSQL
+[P1 R3 section]
+## L10 Awards
+L11 Engineering Excellence Award, 2024`;
 
 async function main(): Promise<void> {
+  let database: AppDatabase | undefined;
   try {
     const client = createGeminiLlmClient({
       apiKey: config.llm.apiKey,
       maximumInputCharacters: config.llm.maximumInputCharacters
     });
-    const result = await client.generate({
-      task: 'llm_inspection',
+    database = new AppDatabase();
+    const llmService = createLlmService(
+      client,
+      createLlmRepository(database)
+    );
+    const extractionService = createCandidateExtractionService({
+      llmService,
+      provider: config.llm.provider,
       model: config.llm.model,
-      prompt: 'Extract the stated landmark and its height. Do not infer missing values.',
-      input: 'The synthetic landmark is Cedar Tower. Its height is 37 metres.',
-      outputSchema: inspectionSchema,
       timeoutMs: config.llm.timeoutMs
     });
+    const result = await extractionService.extract({
+      operationId: randomUUID(),
+      input: inspectionInput
+    });
 
-    console.log(
-      JSON.stringify(
-        {
-          output: result.output,
-          providerRequestId: result.providerRequestId,
-          inputTokens: result.inputTokens,
-          outputTokens: result.outputTokens
-        },
-        null,
-        2
-      )
-    );
+    console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     if (error instanceof LlmError) {
       console.error(
@@ -50,6 +58,8 @@ async function main(): Promise<void> {
       return;
     }
     throw error;
+  } finally {
+    await database?.close();
   }
 }
 

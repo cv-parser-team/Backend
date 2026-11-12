@@ -51,6 +51,10 @@ erDiagram
         claim_type claim_type
         claim_origin origin
         claim_status status
+        uuid extraction_invocation_id "nullable"
+        jsonb extraction_raw_values "nullable"
+        jsonb extraction_field_sources "nullable"
+        boolean extraction_current "nullable"
         integer version
         timestamptz created_at
         timestamptz updated_at
@@ -175,6 +179,23 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    LLM_INVOCATIONS {
+        uuid invocation_id PK
+        uuid operation_id
+        text task
+        text provider
+        text model
+        text prompt_version
+        integer contract_version
+        llm_invocation_status status
+        text provider_request_id "nullable"
+        integer input_tokens "nullable"
+        integer output_tokens "nullable"
+        text error_category "nullable"
+        text error_code "nullable"
+        timestamptz started_at
+        timestamptz completed_at "nullable"
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
     USERS ||--o| CANDIDATES : "has profile"
@@ -275,6 +296,10 @@ Claims cascade on profile deletion.
 | `claim_type` | `claim_type` | Required | Kind of profile information |
 | `origin` | `claim_origin` | Required | Whether the candidate entered or extraction produced the claim |
 | `status` | `claim_status` | Required, defaults to `pending` | Review state; only `accepted` is exported |
+| `extraction_invocation_id` | UUID | Required for extracted claims; null for manual claims | LLM invocation that produced the draft |
+| `extraction_raw_values` | JSONB | Required for extracted claims; null for manual claims | Original wording for normalized fields |
+| `extraction_field_sources` | JSONB | Required for extracted claims; null for manual claims | AI-input references supporting each field |
+| `extraction_current` | Boolean | Required for extracted claims; null for manual claims | Whether the source explicitly described the claim as current |
 | `version` | Integer | Required, defaults to `1` | Increases on every value change; an edit or delete sent with an older version in `If-Match` is refused |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last value change |
@@ -511,13 +536,47 @@ are refused. Deleting a document deletes its processing history.
 - `processing_job_status`: `queued`, `processing`, `retrying`, `completed`,
   `failed`
 
+## LLM invocations
+
+Owned by the shared LLM infrastructure and defined in
+`src/infrastructure/llm/llm.table.ts`.
+
+`llm_invocations` records safe metadata for each actual provider request.
+`operation_id` groups retries for one logical feature action without creating
+a foreign-key dependency on a processing job or feature table. Prompts,
+document content, raw responses, credentials, and feature results are not
+stored here.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `invocation_id` | UUID | Primary key, generated | Stable identifier for one provider request |
+| `operation_id` | UUID | Required, indexed | Groups provider requests for one logical action |
+| `task` | Text | Required, indexed with start time | Feature-owned task name |
+| `provider` | Text | Required, unique with a present provider request ID | Configured provider |
+| `model` | Text | Required | Configured provider model |
+| `prompt_version` | Text | Required | Feature-owned prompt version |
+| `contract_version` | Integer | Required, positive | Feature output contract version |
+| `status` | `llm_invocation_status` | Required, defaults to `started` | Provider-call lifecycle state |
+| `provider_request_id` | Text | Nullable, unique per provider when present | Provider-side request identifier |
+| `input_tokens` | Integer | Nullable, nonnegative | Provider-reported input token count |
+| `output_tokens` | Integer | Nullable, nonnegative | Provider-reported output token count |
+| `error_category` | Text | Nullable | Safe application error category |
+| `error_code` | Text | Nullable | Safe provider or application error code |
+| `started_at` | Timestamp with time zone | Required, generated | Request start time |
+| `completed_at` | Timestamp with time zone | Nullable, not before start | Request completion time |
+
+### LLM invocation enumeration
+
+- `llm_invocation_status`: `started`, `succeeded`, `failed`
+
 ### Not yet implemented
 
 The [target domain ERD](erd.md) includes claim details that belong to later
 features and are intentionally not part of the current schema:
 
 - `claims.confidence_score`, `claims.matched_claim_id`, and
-  `claims.match_status` arrive with extraction and duplicate matching.
+  `claims.match_status` arrive only when review prioritization and duplicate
+  matching have a concrete consumer. Model confidence remains transient.
 - Field-level validation flags for low-confidence extracted values, previously
   modeled as `ClaimValueHistory.validation_status`, are left to the extraction
   review feature to place.
