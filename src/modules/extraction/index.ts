@@ -16,6 +16,10 @@ export {
   EXTRACTION_PROMPT,
   EXTRACTION_PROMPT_VERSION
 } from './extraction.service.js';
+export {
+  InvalidExtractionProvenanceError,
+  SourceReferenceResolutionError
+} from './extraction.errors.js';
 export type {
   CandidateExtractionRequest,
   CandidateExtractionResult,

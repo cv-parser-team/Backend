@@ -2,11 +2,16 @@ import type {
   DatabaseExecutor,
   UnitOfWork
 } from '../../infrastructure/database/unit-of-work.js';
-import type {
-  CandidateExtractionWriter,
-  ExtractedClaimDraftInput
+import {
+  ConflictingSourceOccurrenceError,
+  type CandidateExtractionWriter,
+  type ExtractedClaimDraftInput
 } from '../candidates/index.js';
-import type { ExtractionResult, ParsingService } from '../parsing/index.js';
+import type {
+  ExtractionResult,
+  ParsingService
+} from '../parsing/index.js';
+import { InvalidExtractionProvenanceError } from './extraction.errors.js';
 import type { CandidateExtractionResult } from './extraction.service.js';
 import { mapClaimSourceOccurrences } from './extraction.source-occurrences.js';
 
@@ -57,13 +62,21 @@ export function createExtractionPersistenceCoordinator({
       sourceOccurrences: mapClaimSourceOccurrences(claim, sourceContent)
     }));
 
-    const claims = await candidateWriter.saveExtractedClaims(
-      ownerUserId,
-      documentId,
-      result.invocationId,
-      drafts,
-      transaction
-    );
+    let claims: PersistedExtractionClaims;
+    try {
+      claims = await candidateWriter.saveExtractedClaims(
+        ownerUserId,
+        documentId,
+        result.invocationId,
+        drafts,
+        transaction
+      );
+    } catch (error) {
+      if (error instanceof ConflictingSourceOccurrenceError) {
+        throw new InvalidExtractionProvenanceError(error);
+      }
+      throw error;
+    }
     await parsingService.saveUnmappedData(
       documentId,
       result.unmapped,

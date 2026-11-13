@@ -4,13 +4,17 @@ import type {
   UnitOfWork
 } from '../../infrastructure/database/unit-of-work.js';
 import type { CandidateExtractionWriter } from '../candidates/index.js';
+import { ConflictingSourceOccurrenceError } from '../candidates/index.js';
 import type { ParsingService } from '../parsing/index.js';
 import {
   createExtractionPersistenceCoordinator,
   type ExtractionPersistenceCoordinatorDependencies
 } from './extraction.persistence.js';
 import type { CandidateExtractionResult } from './extraction.service.js';
-import { SourceReferenceResolutionError } from './extraction.errors.js';
+import {
+  InvalidExtractionProvenanceError,
+  SourceReferenceResolutionError
+} from './extraction.errors.js';
 
 const documentId = '11111111-1111-4111-8111-111111111111';
 const ownerUserId = '22222222-2222-4222-8222-222222222222';
@@ -200,6 +204,23 @@ describe('extraction persistence coordinator', () => {
       )
     ).rejects.toBeInstanceOf(SourceReferenceResolutionError);
     expect(saveExtractedClaims).not.toHaveBeenCalled();
+    expect(saveUnmappedData).not.toHaveBeenCalled();
+  });
+
+  it('translates conflicting physical anchors at the extraction boundary', async () => {
+    const { coordinator, saveExtractedClaims, saveUnmappedData } = dependencies();
+    const conflict = new ConflictingSourceOccurrenceError('pdf:1:8');
+    saveExtractedClaims.mockRejectedValueOnce(conflict);
+
+    const persistence = coordinator.persist(
+      { documentId, ownerUserId, result, sourceContent },
+      callerTransaction
+    );
+
+    await expect(persistence).rejects.toBeInstanceOf(
+      InvalidExtractionProvenanceError
+    );
+    await expect(persistence).rejects.toMatchObject({ cause: conflict });
     expect(saveUnmappedData).not.toHaveBeenCalled();
   });
 });

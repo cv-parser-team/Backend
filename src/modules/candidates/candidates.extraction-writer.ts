@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import type {
@@ -44,6 +45,15 @@ export interface CandidateExtractionWriterDependencies {
     | 'createClaims'
     | 'createClaimSourceOccurrences'
   >;
+}
+
+export class ConflictingSourceOccurrenceError extends Error {
+  readonly code = 'CONFLICTING_SOURCE_OCCURRENCE';
+
+  constructor(readonly anchorKey: string) {
+    super(`Source occurrence '${anchorKey}' has conflicting physical anchors`);
+    this.name = 'ConflictingSourceOccurrenceError';
+  }
 }
 
 function normalizeComparisonText(value: string): string {
@@ -107,6 +117,9 @@ function mergeSourceOccurrences(
   for (const occurrence of right) {
     const existing = merged.get(occurrence.anchorKey);
     if (existing) {
+      if (!isDeepStrictEqual(existing.anchor, occurrence.anchor)) {
+        throw new ConflictingSourceOccurrenceError(occurrence.anchorKey);
+      }
       existing.references = mergeUnique(
         existing.references,
         occurrence.references
@@ -122,6 +135,22 @@ function mergeSourceOccurrences(
   }
 
   return [...merged.values()];
+}
+
+function validateSourceOccurrenceAnchors(
+  drafts: ExtractedClaimDraftInput[]
+): void {
+  const anchorsByKey = new Map<string, ClaimSourceAnchor>();
+
+  for (const draft of drafts) {
+    for (const occurrence of draft.sourceOccurrences) {
+      const existing = anchorsByKey.get(occurrence.anchorKey);
+      if (existing && !isDeepStrictEqual(existing, occurrence.anchor)) {
+        throw new ConflictingSourceOccurrenceError(occurrence.anchorKey);
+      }
+      anchorsByKey.set(occurrence.anchorKey, occurrence.anchor);
+    }
+  }
 }
 
 function coalesceDrafts(
@@ -174,6 +203,8 @@ export function createCandidateExtractionWriter({
       if (!candidate) {
         throw new RecordNotFoundError('Candidate profile');
       }
+      validateSourceOccurrenceAnchors(drafts);
+      const coalescedDrafts = coalesceDrafts(drafts);
 
       await repository.deletePendingExtractedClaims(
         candidate.candidateId,
@@ -191,7 +222,7 @@ export function createCandidateExtractionWriter({
         )
       );
 
-      const draftsToCreate = coalesceDrafts(drafts).filter(
+      const draftsToCreate = coalescedDrafts.filter(
         (draft) =>
           !reviewedClaimKeys.has(claimKey(draft.type, draft.values))
       );

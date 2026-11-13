@@ -21,3 +21,14 @@ export class SourceReferenceResolutionError extends Error {
     this.name = 'SourceReferenceResolutionError';
   }
 }
+
+// Physical evidence that contradicts its own stable identity cannot be saved
+// or repaired by retrying the same parsed result.
+export class InvalidExtractionProvenanceError extends Error {
+  readonly code = 'INVALID_EXTRACTION_PROVENANCE';
+
+  constructor(readonly cause: unknown) {
+    super('Extracted claim provenance is internally inconsistent');
+    this.name = 'InvalidExtractionProvenanceError';
+  }
+}

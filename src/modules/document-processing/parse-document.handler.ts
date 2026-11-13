@@ -5,10 +5,12 @@ import type {
   UnitOfWork
 } from '../../infrastructure/database/unit-of-work.js';
 import type { ProcessingDocumentsService } from '../documents/index.js';
-import type {
-  CandidateExtractionResult,
-  CandidateExtractionService,
-  ExtractionPersistenceCoordinator
+import {
+  InvalidExtractionProvenanceError,
+  SourceReferenceResolutionError,
+  type CandidateExtractionResult,
+  type CandidateExtractionService,
+  type ExtractionPersistenceCoordinator
 } from '../extraction/index.js';
 import { buildAiInput, type ParsingService } from '../parsing/index.js';
 import type { ExtractionResult } from '../parsing/parsing.types.js';
@@ -18,6 +20,8 @@ import type { ParseDocumentJob } from './parse-document.job.js';
 
 const PARSING_FAILURE_CODE = 'PARSING_FAILED';
 const EXTRACTION_FAILURE_CODE = 'EXTRACTION_FAILED';
+const INVALID_EXTRACTION_PROVENANCE_FAILURE_CODE =
+  'INVALID_EXTRACTION_PROVENANCE';
 const DOCUMENT_DELETED_FAILURE_CODE = 'DOCUMENT_DELETED';
 const MAX_ATTEMPTS_FAILURE_CODE = 'MAX_ATTEMPTS_EXCEEDED';
 const MAX_PROCESSING_ATTEMPTS = 3;
@@ -308,6 +312,44 @@ export function createParseDocumentHandler({
     }
   }
 
+  async function finishInvalidExtractionProvenance(
+    processingJob: ProcessingJobRecord,
+    error: InvalidExtractionProvenanceError,
+    extraction: ExtractionResult
+  ): Promise<ParseDocumentHandlerResult> {
+    try {
+      return await unitOfWork.run(async (transaction) => {
+        if (!(await processingService.lockClaim(processingJob, transaction))) {
+          return STALE;
+        }
+
+        const cancelled = await cancelIfDocumentDeleted(
+          processingJob,
+          transaction
+        );
+        if (cancelled) {
+          return cancelled;
+        }
+
+        await parsingService.saveExtraction(
+          processingJob.documentId,
+          extraction,
+          transaction
+        );
+        return failJobAndDocument(
+          processingJob,
+          INVALID_EXTRACTION_PROVENANCE_FAILURE_CODE,
+          transaction
+        );
+      });
+    } catch (recordingError) {
+      throw new AggregateError(
+        [error, recordingError],
+        'Invalid extraction provenance and failure recording both failed'
+      );
+    }
+  }
+
   return {
     async handle(job) {
       const processingJob = await processingService.claim(job);
@@ -368,12 +410,32 @@ export function createParseDocumentHandler({
         );
       }
 
-      return finishParsed(
-        processingJob,
-        extraction,
-        candidateExtraction,
-        processingDocument.ownerUserId
-      );
+      try {
+        return await finishParsed(
+          processingJob,
+          extraction,
+          candidateExtraction,
+          processingDocument.ownerUserId
+        );
+      } catch (error) {
+        if (error instanceof InvalidExtractionProvenanceError) {
+          return finishInvalidExtractionProvenance(
+            processingJob,
+            error,
+            extraction
+          );
+        }
+        if (error instanceof SourceReferenceResolutionError) {
+          return finishFailed(
+            processingJob,
+            error,
+            extraction,
+            EXTRACTION_FAILURE_CODE,
+            'Candidate extraction persistence'
+          );
+        }
+        throw error;
+      }
     }
   };
 }

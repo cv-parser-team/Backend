@@ -50,8 +50,17 @@ export function createParseDocumentMessageHandler({
         'Document processing attempt stopped because another attempt claimed the job'
       );
     } else {
+      const processingContext =
+        result.outcome === 'retrying' ||
+        result.outcome === 'failed' ||
+        result.outcome === 'cancelled'
+          ? {
+              attemptCount: result.processingJob.attemptCount,
+              failureCode: result.processingJob.failureCode
+            }
+          : {};
       log.info(
-        { ...context, outcome: result.outcome },
+        { ...context, outcome: result.outcome, ...processingContext },
         'Handled document processing job'
       );
     }

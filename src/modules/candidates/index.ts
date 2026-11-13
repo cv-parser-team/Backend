@@ -36,3 +36,4 @@ export type {
   ExtractedClaimDraftInput,
   ExtractedClaimSourceOccurrenceInput
 } from './candidates.extraction-writer.js';
+export { ConflictingSourceOccurrenceError } from './candidates.extraction-writer.js';

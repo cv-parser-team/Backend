@@ -42,6 +42,10 @@ insertion. The first draft supplies the persisted values and original wording;
 field references and physical occurrences are merged without duplication, and
 an explicit current marker is retained when any equivalent draft has it. This
 prevents duplicate pending claims without inventing semantic equivalence.
+An `anchorKey` identifies exactly one physical occurrence across the entire
+provider result. If any drafts reuse a key for different anchor content,
+persistence fails before pending claims are deleted instead of silently keeping
+either location.
 
 Candidates review a pending claim through
 `PATCH /api/candidates/me/claims/:claimId/review`. Acceptance or rejection is a

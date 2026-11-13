@@ -153,6 +153,24 @@ the document and job failed and rejects the message without requeueing, which
 sends it to the dead-letter queue. Successful or partial parses complete only
 after candidate extraction is also persisted.
 
+`INVALID_EXTRACTION_PROVENANCE` is terminal on its first occurrence. It means
+one stable physical `anchorKey` resolved to contradictory anchor content, so
+repeating the same parse cannot repair it. The completion transaction rolls
+back, then a separate transaction re-locks the job and document, saves the
+valid parsing result for inspection, and marks both failed without scheduling a
+retry. Unknown persistence and database failures are not classified this way;
+they continue through the existing thrown-error and lease-recovery path.
+
+Missing or ambiguous AI source references use the retryable
+`EXTRACTION_FAILED` path instead. A later attempt reruns candidate extraction
+against the same saved parse and may produce valid references; the normal
+attempt limit still applies.
+
+Structured completion logs include the failure code and attempt count for
+retrying, cancelled, and terminally failed jobs. They contain workflow
+metadata only and never include parsed CV content, source anchors, prompts, or
+provider responses.
+
 Every claim creates a five-minute processing lease. If a worker exits before
 settling the job, the recovery publisher moves the expired `processing` job
 back to `queued` and republishes it. Document processing transitions accept an

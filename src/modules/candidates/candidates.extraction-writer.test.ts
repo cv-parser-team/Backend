@@ -430,6 +430,78 @@ describe('candidate extraction writer', () => {
     );
   });
 
+  it('rejects conflicting physical anchors across non-equivalent drafts before writing', async () => {
+    const {
+      createClaims,
+      createClaimSourceOccurrences,
+      deletePendingExtractedClaims,
+      listReviewedExtractedClaims,
+      writer
+    } = dependencies(candidate);
+    const drafts: ExtractedClaimDraftInput[] = [
+      {
+        type: 'skill',
+        values: { name: 'TypeScript' },
+        rawValues: {},
+        fieldSources: { name: ['L9'] },
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:9',
+            references: ['L9'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 9,
+              pageNumber: 1,
+              box: { x: 10, y: 20, width: 100, height: 12 },
+              text: 'TypeScript',
+              links: []
+            }
+          }
+        ]
+      },
+      {
+        type: 'skill',
+        values: { name: 'JavaScript' },
+        rawValues: {},
+        fieldSources: { name: ['L9'] },
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:9',
+            references: ['L9'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 9,
+              pageNumber: 1,
+              box: { x: 10, y: 20, width: 100, height: 12 },
+              text: 'JavaScript',
+              links: []
+            }
+          }
+        ]
+      }
+    ];
+
+    await expect(
+      writer.saveExtractedClaims(
+        userId,
+        documentId,
+        invocationId,
+        drafts,
+        transaction
+      )
+    ).rejects.toThrow(
+      "Source occurrence 'pdf:1:9' has conflicting physical anchors"
+    );
+    expect(deletePendingExtractedClaims).not.toHaveBeenCalled();
+    expect(listReviewedExtractedClaims).not.toHaveBeenCalled();
+    expect(createClaims).not.toHaveBeenCalled();
+    expect(createClaimSourceOccurrences).not.toHaveBeenCalled();
+  });
+
   it('writes nothing when the user has no candidate profile', async () => {
     const {
       createClaims,
