@@ -10,8 +10,35 @@ incomplete values are kept as unmapped instead of being rejected or completed
 with invented values.
 
 V1 sends compact parsing input through the tracked LLM service and maps the
-provider's structured output. It does not yet save drafts, normalize values,
-resolve conflicts, or run as part of the document-processing worker.
+provider's structured output. Its persistence coordinator can atomically save
+pending claim drafts and the document's unmapped data. It does not yet persist
+profile drafts, normalize values, or resolve conflicts. The document-processing
+worker invokes extraction after a successful or partial parse.
+
+The candidate extraction workflow is the callable boundary for an already
+parsed document. It runs provider extraction first, then passes the mapped
+result to the persistence coordinator. Provider work therefore happens outside
+the database transaction; only the final claim and `unmapped_data` writes are
+atomic. The module composition factory assembles that workflow from the
+database-backed candidate writer, parsing service, and `UnitOfWork`.
+Standalone persistence owns that transaction. A larger workflow can instead
+pass its existing database executor, allowing parsed content, claims, unmapped
+data, and processing state to share one transaction without nesting another.
+
+Re-extracting a document replaces only that candidate's pending extracted
+claims from the same source document. Manual claims, reviewed claims, legacy
+claims without document provenance, and claims from other documents are never
+deleted. Replacement and insertion share one transaction, so failed insertion
+restores the previous pending set. A newly extracted draft is not inserted when
+the same document already has an accepted or rejected extracted claim with the
+same type and values. Field order and string-array order or duplicates do not
+affect this exact comparison. Changed and new drafts remain pending; broader
+semantic matching is deferred.
+
+Candidates review a pending claim through
+`PATCH /api/candidates/me/claims/:claimId/review`. Acceptance or rejection is a
+terminal, version-guarded decision; confidence remains advisory and never
+chooses the decision automatically.
 
 The extraction service owns the versioned prompt and output contract. Provider,
 model, timeout, and the LLM service are injected so the module does not create
@@ -233,20 +260,16 @@ taken from its proficiency. A field set aside on its own looks like this:
    left out.
 3. **Confidence stays transient.** It is model-generated review guidance, not
    a candidate fact. Extracted claims persist their invocation, original
-   wording, sources, and explicit current status; confidence can be added when
-   a review or evaluation feature has a concrete use for it.
+   wording, sources, source document, and explicit current status; confidence
+   can be added when a review or evaluation feature has a concrete use for it.
 
 ## Version 2
 
 Listed under "Revisit later" on the task:
 
-- Save drafts as candidate claims and call the parsing service's durable
-  `unmapped_data` write from the extraction workflow.
 - Resolve line references into `source_occurrences` with page and position.
-- Connect claim persistence to the extraction workflow; the claim schema now
-  retains invocation, original wording, sources, and current status.
-- Avoid duplicate claims when an extraction runs again, and decide whether a
-  new parse clears old unmapped data.
+- Detect near or semantic duplicates against accepted or rejected claims, and
+  decide whether a new parse clears old unmapped data.
 - Normalize aliases and detect conflicts.
 - Accept year-only dates and grades.
 
@@ -262,4 +285,5 @@ The command sends a deterministic referenced CV sample through the configured
 provider, prints the mapped profile, pending claim drafts, unmapped items, and
 invocation ID, and records the provider invocation in `llm_invocations`.
 Extracted claims and `unmapped_data` are not written by this command yet; that
-requires the atomic extraction coordinator planned next.
+requires wiring the persistence coordinator into a workflow with a document
+and candidate owner.

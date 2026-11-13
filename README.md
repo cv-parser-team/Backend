@@ -52,6 +52,24 @@ does not load `.env` files itself.
 | `npm run db:push` | Push schema changes during local development |
 | `npm run db:studio` | Open Drizzle Studio |
 
+Database integration tests are opt-in and require a separately provisioned
+database whose name contains `test`. They apply the project migrations before
+running and refuse any URL that does not identify a test-scoped database.
+Start PostgreSQL and create the test database once:
+
+```bash
+npm run db:up
+docker compose exec postgres createdb -U postgres luminacv_test
+```
+
+Then run the integration tests:
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres:postgrespassword@localhost:5432/luminacv_test \
+RUN_DATABASE_INTEGRATION_TESTS=true \
+npx vitest run src/modules/candidates/candidates.repository.integration.test.ts
+```
+
 ## API
 
 The authentication routes are:
@@ -75,6 +93,7 @@ and always act on the authenticated user's own profile:
 - `POST /api/candidates/me/claims` (add a manual claim)
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
 - `PUT /api/candidates/me/claims/:claimId`
+- `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)
 - `DELETE /api/candidates/me/claims/:claimId`
 - `POST /api/candidates/me/documents?purpose=source` (one or more multipart `file` fields)
 - `GET /api/candidates/me/documents`
@@ -95,10 +114,11 @@ PUT /api/candidates/me/claims/:claimId
 If-Match: "3"
 ```
 
-`PATCH /api/candidates/me` and `DELETE /api/candidates/me/claims/:claimId`
-accept `If-Match` the same way. If the record changed since, the request fails
-with `409 VERSION_CONFLICT`, and `error.details.current` holds the record as it
-is now. `If-Match` is optional for now; without it, edits are not checked.
+`PATCH /api/candidates/me`, claim review, and
+`DELETE /api/candidates/me/claims/:claimId` accept `If-Match` the same way. If
+the record changed since, the request fails with `409 VERSION_CONFLICT`, and
+`error.details.current` holds the record as it is now. `If-Match` is optional
+for now; without it, edits are not checked.
 
 Uploading a file whose earlier copy is still being deleted returns
 `409 DOCUMENT_BEING_DELETED` for that file; upload it again shortly. A request

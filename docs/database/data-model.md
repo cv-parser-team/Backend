@@ -52,6 +52,7 @@ erDiagram
         claim_origin origin
         claim_status status
         uuid extraction_invocation_id "nullable"
+        uuid extraction_document_id "nullable"
         jsonb extraction_raw_values "nullable"
         jsonb extraction_field_sources "nullable"
         boolean extraction_current "nullable"
@@ -302,12 +303,17 @@ its own transaction with transient-failure retries.
 | `origin` | `claim_origin` | Required | Whether the candidate entered or extraction produced the claim |
 | `status` | `claim_status` | Required, defaults to `pending` | Review state; only `accepted` is exported |
 | `extraction_invocation_id` | UUID | Required for extracted claims; null for manual claims | LLM invocation that produced the draft |
+| `extraction_document_id` | UUID | Required on new extracted claims; nullable for legacy rows; null for manual claims | Source document that produced the draft |
 | `extraction_raw_values` | JSONB | Required for extracted claims; null for manual claims | Original wording for normalized fields |
 | `extraction_field_sources` | JSONB | Required for extracted claims; null for manual claims | AI-input references supporting each field |
 | `extraction_current` | Boolean | Required for extracted claims; null for manual claims | Whether the source explicitly described the claim as current |
 | `version` | Integer | Required, defaults to `1` | Increases on every value change; an edit or delete sent with an older version in `If-Match` is refused |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last value change |
+
+`extraction_document_id` is intentionally not a foreign key until document
+deletion semantics for reviewed claims are defined. New application writes
+always provide it; older extracted claims remain readable with a null value.
 
 ## Claim details
 

@@ -36,3 +36,12 @@ export class ClaimTypeMismatchError extends AppError {
     super('Claim type cannot be changed');
   }
 }
+
+export class ClaimNotReviewableError extends AppError {
+  readonly statusCode = 409;
+  readonly code = 'CLAIM_NOT_REVIEWABLE';
+
+  constructor(current: unknown) {
+    super('Only pending extracted claims can be reviewed', { current });
+  }
+}

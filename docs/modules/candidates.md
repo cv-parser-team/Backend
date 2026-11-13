@@ -41,6 +41,11 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     row, so concurrent edits run one after the other and each revision holds
     the values it replaced. See
     [Duplicate and conflict resolution](../duplicates-and-conflicts.md).
+12. **Review decisions are terminal.** Only pending extracted claims can move
+    to `accepted` or `rejected`. The guarded transition checks candidate
+    ownership and the optional `If-Match` version in one update. Accepted
+    claims are normalized; rejected claims remain available for audit but are
+    excluded from export.
 
 ## Editing a claim
 
@@ -90,5 +95,16 @@ stateDiagram-v2
     end note
 ```
 
-Extraction and review belong to the document parsing feature; this module
-already stores and filters their statuses.
+The candidate sends one terminal decision with:
+
+```http
+PATCH /api/candidates/me/claims/:claimId/review
+If-Match: "1"
+Content-Type: application/json
+
+{ "status": "accepted" }
+```
+
+Manual or already-reviewed claims return `409 CLAIM_NOT_REVIEWABLE`. A stale
+`If-Match` returns `409 VERSION_CONFLICT`; another candidate's claim returns
+404. A successful review increments the version and returns the new `ETag`.

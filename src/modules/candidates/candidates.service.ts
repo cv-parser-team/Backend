@@ -4,6 +4,7 @@ import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
+  ClaimNotReviewableError,
   ClaimTypeMismatchError,
   InvalidClaimDatesError,
   VersionConflictError
@@ -19,6 +20,7 @@ import {
   ClaimBody,
   CreateCandidateBody,
   ListClaimsQuery,
+  ReviewClaimBody,
   UpdateCandidateBody
 } from './candidates.schemas.js';
 import { ProfileLink } from './candidates.table.js';
@@ -80,6 +82,12 @@ export interface CandidatesService {
     userId: string,
     claimId: string,
     input: ClaimBody,
+    expectedVersion?: number
+  ): Promise<ClaimRecord>;
+  reviewClaim(
+    userId: string,
+    claimId: string,
+    input: ReviewClaimBody,
     expectedVersion?: number
   ): Promise<ClaimRecord>;
   deleteClaim(userId: string, claimId: string, expectedVersion?: number): Promise<void>;
@@ -380,6 +388,29 @@ export function createCandidatesService({
           return;
         case 'conflict':
           throw new VersionConflictError('Claim', result.current);
+        case 'missing':
+          throw new RecordNotFoundError('Claim', claimId);
+      }
+    },
+
+    async reviewClaim(userId, claimId, input, expectedVersion) {
+      const candidate = await requireCandidate(userId);
+      const result = await repository.reviewExtractedClaim(
+        candidate.candidateId,
+        claimId,
+        input.status,
+        expectedVersion
+      );
+      switch (result.status) {
+        case 'saved':
+          if (result.record.status === 'accepted') {
+            await normalize(result.record);
+          }
+          return result.record;
+        case 'conflict':
+          throw new VersionConflictError('Claim', result.current);
+        case 'not_reviewable':
+          throw new ClaimNotReviewableError(result.current);
         case 'missing':
           throw new RecordNotFoundError('Claim', claimId);
       }

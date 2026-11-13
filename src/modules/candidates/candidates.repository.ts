@@ -1,4 +1,5 @@
-import { and, asc, eq, sql, SQL } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, asc, eq, inArray, sql, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
@@ -14,6 +15,7 @@ import {
   educationDetails,
   employmentDetails,
   languageDetails,
+  NewClaimExtractionMetadata,
   projectDetails,
   skillDetails
 } from './candidates.table.js';
@@ -62,7 +64,7 @@ export type CreateClaimInput =
   | (CreateClaimBase & { origin: 'manual'; extraction?: never })
   | (CreateClaimBase & {
     origin: 'extracted';
-    extraction: ClaimExtractionMetadata;
+    extraction: NewClaimExtractionMetadata;
   });
 
 export interface ClaimFilters {
@@ -91,6 +93,17 @@ export type VersionedDelete<T> =
   | { status: 'conflict'; current: T }
   | { status: 'missing' };
 
+export type ClaimReviewStatus = Extract<
+  ClaimRow['status'],
+  'accepted' | 'rejected'
+>;
+
+export type ReviewClaimResult =
+  | { status: 'saved'; record: ClaimRecord }
+  | { status: 'conflict'; current: ClaimRecord }
+  | { status: 'not_reviewable'; current: ClaimRecord }
+  | { status: 'missing' };
+
 export interface CandidatesRepository {
   findCandidateByUserId(
     userId: string,
@@ -106,6 +119,26 @@ export interface CandidatesRepository {
     input: CreateClaimInput,
     transaction?: DatabaseExecutor
   ): Promise<ClaimRecord>;
+  createClaims(
+    inputs: CreateClaimInput[],
+    transaction: DatabaseExecutor
+  ): Promise<ClaimRecord[]>;
+  deletePendingExtractedClaims(
+    candidateId: string,
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<number>;
+  listReviewedExtractedClaims(
+    candidateId: string,
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<ClaimRecord[]>;
+  reviewExtractedClaim(
+    candidateId: string,
+    claimId: string,
+    status: ClaimReviewStatus,
+    expectedVersion?: number
+  ): Promise<ReviewClaimResult>;
   listClaims(candidateId: string, filters?: ClaimFilters): Promise<ClaimRecord[]>;
   findClaim(candidateId: string, claimId: string): Promise<ClaimRecord | null>;
   updateClaimValues(input: UpdateClaimValuesInput): Promise<VersionedWrite<ClaimRecord>>;
@@ -253,6 +286,88 @@ async function insertDetails(
   }
 }
 
+interface ClaimWithId {
+  claimId: string;
+  input: CreateClaimInput;
+}
+
+function toClaimInsert({ claimId, input }: ClaimWithId): typeof claims.$inferInsert {
+  return {
+    claimId,
+    candidateId: input.candidateId,
+    claimType: input.claimType,
+    origin: input.origin,
+    status: input.status,
+    extractionInvocationId:
+      input.origin === 'extracted' ? input.extraction.invocationId : null,
+    extractionDocumentId:
+      input.origin === 'extracted' ? input.extraction.sourceDocumentId : null,
+    extractionRawValues:
+      input.origin === 'extracted' ? input.extraction.rawValues : null,
+    extractionFieldSources:
+      input.origin === 'extracted' ? input.extraction.fieldSources : null,
+    extractionCurrent:
+      input.origin === 'extracted' ? input.extraction.current : null
+  };
+}
+
+async function insertDetailsBatch(
+  executor: QueryExecutor,
+  claimsWithIds: ClaimWithId[]
+): Promise<void> {
+  const skillRows: (typeof skillDetails.$inferInsert)[] = [];
+  const employmentRows: (typeof employmentDetails.$inferInsert)[] = [];
+  const educationRows: (typeof educationDetails.$inferInsert)[] = [];
+  const certificationRows: (typeof certificationDetails.$inferInsert)[] = [];
+  const languageRows: (typeof languageDetails.$inferInsert)[] = [];
+  const projectRows: (typeof projectDetails.$inferInsert)[] = [];
+
+  for (const { claimId, input } of claimsWithIds) {
+    switch (input.claimType) {
+      case 'skill':
+        skillRows.push({ claimId, ...toSkillRow(input.values) });
+        break;
+      case 'employment':
+        employmentRows.push({ claimId, ...toEmploymentRow(input.values) });
+        break;
+      case 'education':
+        educationRows.push({ claimId, ...toEducationRow(input.values) });
+        break;
+      case 'certification':
+        certificationRows.push({
+          claimId,
+          ...toCertificationRow(input.values)
+        });
+        break;
+      case 'language':
+        languageRows.push({ claimId, ...toLanguageRow(input.values) });
+        break;
+      case 'project':
+        projectRows.push({ claimId, ...toProjectRow(input.values) });
+        break;
+    }
+  }
+
+  if (skillRows.length > 0) {
+    await executor.insert(skillDetails).values(skillRows);
+  }
+  if (employmentRows.length > 0) {
+    await executor.insert(employmentDetails).values(employmentRows);
+  }
+  if (educationRows.length > 0) {
+    await executor.insert(educationDetails).values(educationRows);
+  }
+  if (certificationRows.length > 0) {
+    await executor.insert(certificationDetails).values(certificationRows);
+  }
+  if (languageRows.length > 0) {
+    await executor.insert(languageDetails).values(languageRows);
+  }
+  if (projectRows.length > 0) {
+    await executor.insert(projectDetails).values(projectRows);
+  }
+}
+
 async function updateDetails(
   executor: QueryExecutor,
   claimId: string,
@@ -388,6 +503,7 @@ async function selectClaims(
           claim.extractionCurrent !== null
           ? {
             invocationId: claim.extractionInvocationId,
+            sourceDocumentId: claim.extractionDocumentId,
             rawValues: claim.extractionRawValues,
             fieldSources: claim.extractionFieldSources,
             current: claim.extractionCurrent
@@ -413,6 +529,8 @@ async function insertClaim(
       status: input.status,
       extractionInvocationId:
         input.origin === 'extracted' ? input.extraction.invocationId : null,
+      extractionDocumentId:
+        input.origin === 'extracted' ? input.extraction.sourceDocumentId : null,
       extractionRawValues:
         input.origin === 'extracted' ? input.extraction.rawValues : null,
       extractionFieldSources:
@@ -441,6 +559,39 @@ async function insertClaim(
     throw new Error('Created claim could not be read');
   }
   return claim;
+}
+
+async function insertClaims(
+  executor: QueryExecutor,
+  inputs: CreateClaimInput[]
+): Promise<ClaimRecord[]> {
+  if (inputs.length === 0) {
+    return [];
+  }
+
+  const claimsWithIds = inputs.map((input) => ({
+    claimId: randomUUID(),
+    input
+  }));
+  await executor.insert(claims).values(claimsWithIds.map(toClaimInsert));
+  await insertDetailsBatch(executor, claimsWithIds);
+
+  const claimIds = claimsWithIds.map(({ claimId }) => claimId);
+  const createdClaims = await selectClaims(
+    executor,
+    inArray(claims.claimId, claimIds)
+  );
+  const claimsById = new Map(
+    createdClaims.map((claim) => [claim.claimId, claim])
+  );
+
+  return claimIds.map((claimId) => {
+    const claim = claimsById.get(claimId);
+    if (!claim) {
+      throw new Error('Created claim could not be read');
+    }
+    return claim;
+  });
 }
 
 export function createCandidatesRepository(
@@ -519,6 +670,109 @@ export function createCandidatesRepository(
           )
         )
       );
+    },
+
+    async createClaims(inputs, transaction) {
+      return withDbErrors('Claims', () =>
+        insertClaims(transaction, inputs)
+      );
+    },
+
+    async deletePendingExtractedClaims(
+      candidateId,
+      documentId,
+      transaction
+    ) {
+      return withDbErrors('Claims', async () => {
+        const deleted = await transaction
+          .delete(claims)
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.origin, 'extracted'),
+              eq(claims.status, 'pending'),
+              eq(claims.extractionDocumentId, documentId)
+            )
+          )
+          .returning({ claimId: claims.claimId });
+
+        return deleted.length;
+      });
+    },
+
+    async listReviewedExtractedClaims(
+      candidateId,
+      documentId,
+      transaction
+    ) {
+      return withDbErrors('Claims', () =>
+        selectClaims(
+          transaction,
+          and(
+            eq(claims.candidateId, candidateId),
+            eq(claims.origin, 'extracted'),
+            inArray(claims.status, ['accepted', 'rejected']),
+            eq(claims.extractionDocumentId, documentId)
+          )
+        )
+      );
+    },
+
+    async reviewExtractedClaim(
+      candidateId,
+      claimId,
+      status,
+      expectedVersion
+    ) {
+      return withDbErrors('Claim', async (): Promise<ReviewClaimResult> => {
+        const [reviewed] = await database.db
+          .update(claims)
+          .set({ status, version: sql`${claims.version} + 1` })
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.claimId, claimId),
+              eq(claims.origin, 'extracted'),
+              eq(claims.status, 'pending'),
+              expectedVersion === undefined
+                ? undefined
+                : eq(claims.version, expectedVersion)
+            )
+          )
+          .returning({ claimId: claims.claimId });
+
+        if (reviewed) {
+          const [record] = await selectClaims(
+            database.db,
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.claimId, claimId)
+            )
+          );
+          if (!record) {
+            throw new Error('Reviewed claim could not be read');
+          }
+          return { status: 'saved', record };
+        }
+
+        const [current] = await selectClaims(
+          database.db,
+          and(
+            eq(claims.candidateId, candidateId),
+            eq(claims.claimId, claimId)
+          )
+        );
+        if (!current) {
+          return { status: 'missing' };
+        }
+        if (
+          expectedVersion !== undefined &&
+          current.version !== expectedVersion
+        ) {
+          return { status: 'conflict', current };
+        }
+        return { status: 'not_reviewable', current };
+      });
     },
 
     async listClaims(candidateId, filters = {}) {

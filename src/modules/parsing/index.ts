@@ -26,4 +26,5 @@ export const parsingModule = fastifyPlugin(registerParsing, {
   dependencies: ['database']
 });
 
+export { buildAiInput } from './ai-input.js';
 export type { ParsingService } from './parsing.service.js';

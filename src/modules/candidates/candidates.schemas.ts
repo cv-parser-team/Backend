@@ -232,6 +232,17 @@ export const claimParamsSchema = {
 
 export type ClaimParams = FromSchema<typeof claimParamsSchema>;
 
+export const reviewClaimBodySchema = {
+  type: 'object',
+  properties: {
+    status: { type: 'string', enum: ['accepted', 'rejected'] }
+  },
+  required: ['status'],
+  additionalProperties: false
+} as const;
+
+export type ReviewClaimBody = FromSchema<typeof reviewClaimBodySchema>;
+
 export const listClaimsQuerySchema = {
   type: 'object',
   properties: {

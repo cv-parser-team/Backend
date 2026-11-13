@@ -1,16 +1,23 @@
+import { createHash } from 'node:crypto';
 import { buffer } from 'node:stream/consumers';
 import type {
   DatabaseExecutor,
   UnitOfWork
 } from '../../infrastructure/database/unit-of-work.js';
 import type { ProcessingDocumentsService } from '../documents/index.js';
-import type { ParsingService } from '../parsing/index.js';
+import type {
+  CandidateExtractionResult,
+  CandidateExtractionService,
+  ExtractionPersistenceCoordinator
+} from '../extraction/index.js';
+import { buildAiInput, type ParsingService } from '../parsing/index.js';
 import type { ExtractionResult } from '../parsing/parsing.types.js';
 import type { ProcessingJobRecord } from './document-processing.repository.js';
 import type { DocumentProcessingService } from './document-processing.service.js';
 import type { ParseDocumentJob } from './parse-document.job.js';
 
 const PARSING_FAILURE_CODE = 'PARSING_FAILED';
+const EXTRACTION_FAILURE_CODE = 'EXTRACTION_FAILED';
 const DOCUMENT_DELETED_FAILURE_CODE = 'DOCUMENT_DELETED';
 const MAX_ATTEMPTS_FAILURE_CODE = 'MAX_ATTEMPTS_EXCEEDED';
 const MAX_PROCESSING_ATTEMPTS = 3;
@@ -33,6 +40,11 @@ export interface ParseDocumentHandler {
 export interface ParseDocumentHandlerDependencies {
   documentsService: ProcessingDocumentsService;
   parsingService: Pick<ParsingService, 'parse' | 'saveExtraction'>;
+  candidateExtractionService: Pick<CandidateExtractionService, 'extract'>;
+  extractionPersistenceCoordinator: Pick<
+    ExtractionPersistenceCoordinator,
+    'persist'
+  >;
   processingService: Pick<
     DocumentProcessingService,
     'claim' | 'lockClaim' | 'complete' | 'fail' | 'retry'
@@ -42,6 +54,24 @@ export interface ParseDocumentHandlerDependencies {
 
 const STALE: ParseDocumentHandlerResult = { outcome: 'stale' };
 
+function extractionOperationId(processingJob: ProcessingJobRecord): string {
+  // A stable UUID distinguishes retries while linking the invocation to one
+  // claimed processing attempt.
+  const hash = createHash('sha256')
+    .update(processingJob.jobId)
+    .update(':')
+    .update(String(processingJob.attemptCount))
+    .digest('hex');
+
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    `5${hash.slice(13, 16)}`,
+    `8${hash.slice(17, 20)}`,
+    hash.slice(20, 32)
+  ].join('-');
+}
+
 // The document is read and parsed outside any transaction. The attempt then
 // ends in one transaction that first locks the job under this claim: the
 // result, the job, and the document change together, or not at all, and an
@@ -49,6 +79,8 @@ const STALE: ParseDocumentHandlerResult = { outcome: 'stale' };
 export function createParseDocumentHandler({
   documentsService,
   parsingService,
+  candidateExtractionService,
+  extractionPersistenceCoordinator,
   processingService,
   unitOfWork
 }: ParseDocumentHandlerDependencies): ParseDocumentHandler {
@@ -104,7 +136,9 @@ export function createParseDocumentHandler({
 
   async function finishParsed(
     processingJob: ProcessingJobRecord,
-    extraction: ExtractionResult
+    extraction: ExtractionResult,
+    candidateExtraction: CandidateExtractionResult,
+    ownerUserId: string
   ): Promise<ParseDocumentHandlerResult> {
     return unitOfWork.run(async (transaction) => {
       if (!(await processingService.lockClaim(processingJob, transaction))) {
@@ -119,6 +153,14 @@ export function createParseDocumentHandler({
       await parsingService.saveExtraction(
         processingJob.documentId,
         extraction,
+        transaction
+      );
+      await extractionPersistenceCoordinator.persist(
+        {
+          documentId: processingJob.documentId,
+          ownerUserId,
+          result: candidateExtraction
+        },
         transaction
       );
 
@@ -207,7 +249,9 @@ export function createParseDocumentHandler({
   async function finishFailed(
     processingJob: ProcessingJobRecord,
     error: unknown,
-    extraction: ExtractionResult | null
+    extraction: ExtractionResult | null,
+    failureCode = PARSING_FAILURE_CODE,
+    failureLabel = 'Document parsing'
   ): Promise<ParseDocumentHandlerResult> {
     const retrying = processingJob.attemptCount < MAX_PROCESSING_ATTEMPTS;
 
@@ -236,7 +280,7 @@ export function createParseDocumentHandler({
         if (retrying) {
           const retryingJob = await processingService.retry(
             processingJob,
-            PARSING_FAILURE_CODE,
+            failureCode,
             transaction
           );
           if (!retryingJob) {
@@ -249,7 +293,7 @@ export function createParseDocumentHandler({
 
         return failJobAndDocument(
           processingJob,
-          PARSING_FAILURE_CODE,
+          failureCode,
           transaction
         );
       });
@@ -257,8 +301,8 @@ export function createParseDocumentHandler({
       throw new AggregateError(
         [error, recordingError],
         retrying
-          ? 'Document parsing and retry scheduling both failed'
-          : 'Document parsing and failure recording both failed'
+          ? `${failureLabel} and retry scheduling both failed`
+          : `${failureLabel} and failure recording both failed`
       );
     }
   }
@@ -307,7 +351,28 @@ export function createParseDocumentHandler({
         );
       }
 
-      return finishParsed(processingJob, extraction);
+      let candidateExtraction: CandidateExtractionResult;
+      try {
+        candidateExtraction = await candidateExtractionService.extract({
+          operationId: extractionOperationId(processingJob),
+          input: buildAiInput(extraction)
+        });
+      } catch (error) {
+        return finishFailed(
+          processingJob,
+          error,
+          extraction,
+          EXTRACTION_FAILURE_CODE,
+          'Candidate extraction'
+        );
+      }
+
+      return finishParsed(
+        processingJob,
+        extraction,
+        candidateExtraction,
+        processingDocument.ownerUserId
+      );
     }
   };
 }

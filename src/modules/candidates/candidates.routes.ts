@@ -12,6 +12,8 @@ import {
   createCandidateBodySchema,
   ListClaimsQuery,
   listClaimsQuerySchema,
+  ReviewClaimBody,
+  reviewClaimBodySchema,
   UpdateCandidateBody,
   updateCandidateBodySchema
 } from './candidates.schemas.js';
@@ -147,6 +149,30 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
         success: true,
         data,
         message: 'Claim updated successfully',
+        timestamp: new Date().toISOString()
+      };
+
+      return reply.header('etag', versionEtag(data.version)).send(response);
+    }
+  );
+
+  fastify.patch<{ Params: ClaimParams; Body: ReviewClaimBody }>(
+    '/me/claims/:claimId/review',
+    {
+      schema: { params: claimParamsSchema, body: reviewClaimBodySchema },
+      preHandler: candidateOnly
+    },
+    async (request, reply) => {
+      const data = await service.reviewClaim(
+        request.auth.userId,
+        request.params.claimId,
+        request.body,
+        parseIfMatchVersion(request.headers['if-match'])
+      );
+      const response: ApiResponse<ClaimRecord> = {
+        success: true,
+        data,
+        message: 'Claim review saved successfully',
         timestamp: new Date().toISOString()
       };
 

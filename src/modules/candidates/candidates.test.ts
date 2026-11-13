@@ -13,6 +13,7 @@ import { JwtService, UserRole } from '../auth/jwt-service.js';
 import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
+  ClaimNotReviewableError,
   ClaimTypeMismatchError,
   InvalidClaimDatesError,
   VersionConflictError
@@ -79,6 +80,24 @@ function claimRecord(overrides: Partial<ClaimRecord> = {}): ClaimRecord {
   };
 }
 
+function extractedClaim(
+  status: ClaimRecord['status'] = 'pending',
+  version = 1
+): ClaimRecord {
+  return claimRecord({
+    origin: 'extracted',
+    status,
+    extraction: {
+      invocationId: '44444444-4444-4444-8444-444444444444',
+      sourceDocumentId: '55555555-5555-4555-8555-555555555555',
+      rawValues: {},
+      fieldSources: { name: ['L8'] },
+      current: false
+    },
+    version
+  });
+}
+
 function createRepositoryDouble(
   candidate: CandidateRecord | null = candidateRecord
 ): CandidatesRepository {
@@ -89,6 +108,12 @@ function createRepositoryDouble(
       .fn()
       .mockResolvedValue({ status: 'saved', record: candidateRecord }),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
+    createClaims: vi.fn().mockResolvedValue([]),
+    deletePendingExtractedClaims: vi.fn().mockResolvedValue(0),
+    listReviewedExtractedClaims: vi.fn().mockResolvedValue([]),
+    reviewExtractedClaim: vi
+      .fn()
+      .mockResolvedValue({ status: 'saved', record: extractedClaim('accepted', 2) }),
     listClaims: vi.fn().mockResolvedValue([]),
     findClaim: vi.fn().mockResolvedValue(claimRecord()),
     updateClaimValues: vi
@@ -155,6 +180,7 @@ describe('candidates tables', () => {
     const config = getTableConfig(claims);
     const evidenceColumns = [
       claims.extractionInvocationId,
+      claims.extractionDocumentId,
       claims.extractionRawValues,
       claims.extractionFieldSources,
       claims.extractionCurrent
@@ -543,6 +569,56 @@ describe('candidates service', () => {
     expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId, undefined);
   });
 
+  it.each(['accepted', 'rejected'] as const)(
+    'reviews a pending extracted claim as %s',
+    async (status) => {
+      const repository = createRepositoryDouble();
+      const reviewed = extractedClaim(status, 2);
+      vi.mocked(repository.reviewExtractedClaim).mockResolvedValue({
+        status: 'saved',
+        record: reviewed
+      });
+      const normalizer = createNormalizerDouble();
+      const service = createService(repository, normalizer);
+
+      await expect(
+        service.reviewClaim(userId, claimId, { status }, 1)
+      ).resolves.toBe(reviewed);
+      expect(repository.reviewExtractedClaim).toHaveBeenCalledWith(
+        candidateId,
+        claimId,
+        status,
+        1
+      );
+      if (status === 'accepted') {
+        expect(normalizer.normalizeClaim).toHaveBeenCalledWith(reviewed);
+      } else {
+        expect(normalizer.normalizeClaim).not.toHaveBeenCalled();
+      }
+    }
+  );
+
+  it('refuses a claim that is not pending and extracted', async () => {
+    const repository = createRepositoryDouble();
+    const current = claimRecord();
+    vi.mocked(repository.reviewExtractedClaim).mockResolvedValue({
+      status: 'not_reviewable',
+      current
+    });
+    const service = createService(repository);
+
+    const error = await service
+      .reviewClaim(userId, claimId, { status: 'accepted' })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ClaimNotReviewableError);
+    expect(error).toMatchObject({
+      statusCode: 409,
+      code: 'CLAIM_NOT_REVIEWABLE',
+      details: { current }
+    });
+  });
+
   describe('versions', () => {
     it('refuses a claim edit based on an older version, even with equal values', async () => {
       const repository = createRepositoryDouble();
@@ -626,6 +702,19 @@ describe('candidates service', () => {
         VersionConflictError
       );
       expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId, 1);
+    });
+
+    it('refuses to review a claim that changed', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.reviewExtractedClaim).mockResolvedValue({
+        status: 'conflict',
+        current: extractedClaim('pending', 2)
+      });
+      const service = createService(repository);
+
+      await expect(
+        service.reviewClaim(userId, claimId, { status: 'accepted' }, 1)
+      ).rejects.toBeInstanceOf(VersionConflictError);
     });
 
     it('returns the profile version', async () => {
@@ -733,6 +822,7 @@ function createServiceDouble(): CandidatesService {
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     listClaims: vi.fn().mockResolvedValue([claimRecord()]),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
+    reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
     exportProfile: vi.fn()
   };
@@ -959,6 +1049,43 @@ describe('candidates routes', () => {
 
     expect(response.statusCode).toBe(204);
     expect(service.deleteClaim).toHaveBeenCalledWith(userId, claimId, undefined);
+  });
+
+  it('reviews a claim with optimistic versioning', async () => {
+    const service = createServiceDouble();
+    vi.mocked(service.reviewClaim).mockResolvedValue(extractedClaim('accepted', 2));
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/candidates/me/claims/${claimId}/review`,
+      headers: { ...authorization, 'if-match': '"1"' },
+      payload: { status: 'accepted' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe('"2"');
+    expect(service.reviewClaim).toHaveBeenCalledWith(
+      userId,
+      claimId,
+      { status: 'accepted' },
+      1
+    );
+  });
+
+  it('accepts only terminal review decisions', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/candidates/me/claims/${claimId}/review`,
+      headers: authorization,
+      payload: { status: 'pending' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.reviewClaim).not.toHaveBeenCalled();
   });
 
   it('filters listed claims by type and status', async () => {

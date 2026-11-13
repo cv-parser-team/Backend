@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DatabaseExecutor } from '../infrastructure/database/unit-of-work.js';
 import type { ProcessingDocumentsService } from '../modules/documents/index.js';
 import type { DocumentRecord } from '../modules/documents/documents.repository.js';
+import type { CandidateExtractionResult } from '../modules/extraction/index.js';
 import type {
   DocumentProcessingRepository,
   ProcessingJobRecord
@@ -206,9 +207,24 @@ describe('document processing pipeline', () => {
       parse: vi.fn().mockResolvedValue(result),
       saveExtraction: vi.fn().mockResolvedValue(extraction)
     };
+    const candidateExtraction: CandidateExtractionResult = {
+      invocationId: '55555555-5555-4555-8555-555555555555',
+      version: 1,
+      profile: { values: {}, rawValues: {}, confidence: {}, sources: {} },
+      claims: [],
+      unmapped: []
+    };
+    const candidateExtractionService = {
+      extract: vi.fn().mockResolvedValue(candidateExtraction)
+    };
+    const extractionPersistenceCoordinator = {
+      persist: vi.fn().mockResolvedValue([])
+    };
     const handler = createParseDocumentHandler({
       documentsService: createDocumentsService(documentStatuses),
       parsingService: parser,
+      candidateExtractionService,
+      extractionPersistenceCoordinator,
       processingService,
       unitOfWork: { run: (work) => work(transaction) }
     });
@@ -237,6 +253,18 @@ describe('document processing pipeline', () => {
       content: documentBytes
     });
     expect(parser.saveExtraction).toHaveBeenCalledWith(documentId, result, transaction);
+    expect(candidateExtractionService.extract).toHaveBeenCalledWith({
+      operationId: expect.any(String),
+      input: ''
+    });
+    expect(extractionPersistenceCoordinator.persist).toHaveBeenCalledWith(
+      {
+        documentId,
+        ownerUserId,
+        result: candidateExtraction
+      },
+      transaction
+    );
     expect(log.info).toHaveBeenLastCalledWith(
       { jobId, documentId, outcome: 'processed' },
       'Handled document processing job'
