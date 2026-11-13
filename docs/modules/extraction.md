@@ -170,6 +170,16 @@ claim, because a claim cannot exist without it.
 - Nothing missing is filled in.
 - Source references must exactly match tokens present in the compact AI input;
   page/region headers and table column labels are not evidence references.
+- A matching token establishes citation integrity only. Parser-inferred
+  headings, section ownership, and region roles can be wrong and are not
+  authoritative provenance. Reference resolution uses original PDF lines and
+  coordinates or original DOCX blocks and table rows; semantic support remains
+  subject to review.
+- Before persistence, claim citations can be mapped into physical occurrence
+  drafts. A draft combines repeated citations to the same stored line or DOCX
+  row, retains every supporting claim field and reference token, and carries
+  only physical evidence. Any missing or ambiguous anchor fails the mapping
+  instead of silently losing provenance.
 - An unmapped field is labelled with its claim type and field, such as
   `employment.endDate`.
 
@@ -243,8 +253,9 @@ taken from its proficiency. A field set aside on its own looks like this:
   text, such as `Oct 2023` or `Present`, so original values are never lost.
 - An unmapped item keeps the CV's own wording: a field's `raw` text when given,
   otherwise its value.
-- `unmapped` items have the shape of `document_extractions.unmapped_data`, so
-  they can be stored there later.
+- `unmapped` items have the shape of `document_extractions.unmapped_data` and
+  replace that field as the latest successful extraction snapshot. An empty
+  result clears unmapped items from an older extraction.
 
 ## Decisions
 
@@ -267,9 +278,8 @@ taken from its proficiency. A field set aside on its own looks like this:
 
 Listed under "Revisit later" on the task:
 
-- Resolve line references into `source_occurrences` with page and position.
-- Detect near or semantic duplicates against accepted or rejected claims, and
-  decide whether a new parse clears old unmapped data.
+- Expose persisted physical occurrences in candidate profile exports.
+- Detect near or semantic duplicates against accepted or rejected claims.
 - Normalize aliases and detect conflicts.
 - Accept year-only dates and grades.
 
@@ -287,3 +297,21 @@ invocation ID, and records the provider invocation in `llm_invocations`.
 Extracted claims and `unmapped_data` are not written by this command yet; that
 requires wiring the persistence coordinator into a workflow with a document
 and candidate owner.
+
+To inspect occurrences written by the document-processing worker, replace the
+UUID and run this read-only query in PostgreSQL:
+
+```sql
+select
+  c.claim_id,
+  c.claim_type,
+  c.status,
+  so.anchor_key,
+  so.source_references,
+  so.field_names,
+  so.anchor
+from source_occurrences so
+join claims c on c.claim_id = so.claim_id
+where so.document_id = '00000000-0000-0000-0000-000000000000'::uuid
+order by c.created_at, so.anchor_key;
+```

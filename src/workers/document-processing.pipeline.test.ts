@@ -261,7 +261,8 @@ describe('document processing pipeline', () => {
       {
         documentId,
         ownerUserId,
-        result: candidateExtraction
+        result: candidateExtraction,
+        sourceContent: result
       },
       transaction
     );

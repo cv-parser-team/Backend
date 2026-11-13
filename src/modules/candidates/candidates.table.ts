@@ -13,6 +13,7 @@ import {
   uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
+import { documents } from '../documents/documents.table.js';
 import { users } from '../users/users.table.js';
 
 export interface ProfileLink {
@@ -35,6 +36,28 @@ export interface NewClaimExtractionMetadata
   extends Omit<ClaimExtractionMetadata, 'sourceDocumentId'> {
   sourceDocumentId: string;
 }
+
+export type ClaimSourceAnchor =
+  | {
+    kind: 'pdf_line';
+    order: number;
+    pageNumber: number;
+    box: { x: number; y: number; width: number; height: number };
+    text: string;
+    links: string[];
+  }
+  | {
+    kind: 'docx_paragraph';
+    blockIndex: number;
+    text: string;
+    links: string[];
+  }
+  | {
+    kind: 'docx_table_row';
+    blockIndex: number;
+    rowNumber: number;
+    cells: string[];
+  };
 
 export const claimType = pgEnum('claim_type', [
   'skill',
@@ -149,6 +172,44 @@ export const claims = pgTable(
         and ${table.extractionFieldSources} is not null
         and ${table.extractionCurrent} is not null
       )`
+    )
+  ]
+);
+
+// Physical document evidence only. Parser-inferred headings, sections, and
+// semantic-support decisions do not belong in this table.
+export const sourceOccurrences = pgTable(
+  'source_occurrences',
+  {
+    occurrenceId: uuid('occurrence_id').primaryKey().defaultRandom(),
+    claimId: uuid('claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    documentId: uuid('document_id')
+      .notNull()
+      .references(() => documents.documentId, { onDelete: 'cascade' }),
+    anchorKey: text('anchor_key').notNull(),
+    sourceReferences: text('source_references').array().notNull(),
+    fieldNames: text('field_names').array().notNull(),
+    anchor: jsonb('anchor').$type<ClaimSourceAnchor>().notNull()
+  },
+  (table) => [
+    uniqueIndex('source_occurrences_claim_anchor_unique').on(
+      table.claimId,
+      table.anchorKey
+    ),
+    index('source_occurrences_document_id_idx').on(table.documentId),
+    check(
+      'source_occurrences_anchor_key_not_blank',
+      sql`length(btrim(${table.anchorKey})) > 0`
+    ),
+    check(
+      'source_occurrences_references_not_empty',
+      sql`cardinality(${table.sourceReferences}) > 0`
+    ),
+    check(
+      'source_occurrences_fields_not_empty',
+      sql`cardinality(${table.fieldNames}) > 0`
     )
   ]
 );

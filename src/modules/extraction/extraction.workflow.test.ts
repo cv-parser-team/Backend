@@ -10,7 +10,21 @@ const documentId = '11111111-1111-4111-8111-111111111111';
 const ownerUserId = '22222222-2222-4222-8222-222222222222';
 const invocationId = '33333333-3333-4333-8333-333333333333';
 const operationId = '44444444-4444-4444-8444-444444444444';
-const input = 'L1 Ada Lovelace';
+const input = 'B1 Ada Lovelace';
+const sourceContent = {
+  pages: [],
+  blocks: [
+    {
+      type: 'paragraph' as const,
+      index: 1,
+      text: 'Ada Lovelace',
+      heading: false,
+      bold: false,
+      italic: false,
+      links: []
+    }
+  ]
+};
 
 const extractionResult: CandidateExtractionResult = {
   invocationId,
@@ -40,13 +54,19 @@ describe('candidate extraction workflow', () => {
     const { extract, persist, workflow } = dependencies();
 
     await expect(
-      workflow.run({ documentId, ownerUserId, operationId, input })
+      workflow.run({
+        documentId,
+        ownerUserId,
+        operationId,
+        sourceContent
+      })
     ).resolves.toEqual({ invocationId, persistedClaimCount: 0 });
     expect(extract).toHaveBeenCalledWith({ operationId, input });
     expect(persist).toHaveBeenCalledWith({
       documentId,
       ownerUserId,
-      result: extractionResult
+      result: extractionResult,
+      sourceContent
     });
   });
 
@@ -56,7 +76,12 @@ describe('candidate extraction workflow', () => {
     extract.mockRejectedValue(failure);
 
     await expect(
-      workflow.run({ documentId, ownerUserId, operationId, input })
+      workflow.run({
+        documentId,
+        ownerUserId,
+        operationId,
+        sourceContent
+      })
     ).rejects.toBe(failure);
     expect(persist).not.toHaveBeenCalled();
   });

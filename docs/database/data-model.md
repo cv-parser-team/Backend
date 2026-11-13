@@ -292,8 +292,9 @@ Claims cascade on profile deletion.
 
 Creating a claim and its type-specific details is atomic. The candidates
 repository can join a caller-owned transaction, allowing extraction to save
-multiple claims and document `unmapped_data` as one unit; manual creation uses
-its own transaction with transient-failure retries.
+multiple claims, their physical source occurrences, and document
+`unmapped_data` as one unit; manual creation uses its own transaction with
+transient-failure retries.
 
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |
@@ -314,6 +315,28 @@ its own transaction with transient-failure retries.
 `extraction_document_id` is intentionally not a foreign key until document
 deletion semantics for reviewed claims are defined. New application writes
 always provide it; older extracted claims remain readable with a null value.
+
+## Source occurrences
+
+Owned by the `candidates` module and defined in
+`src/modules/candidates/candidates.table.ts`.
+
+`source_occurrences` links a newly extracted claim to the exact stored PDF line,
+DOCX paragraph, or DOCX table row cited by the LLM. It stores physical evidence
+only: inferred headings, section ownership, region roles, and semantic-support
+decisions are deliberately excluded. Replacing a pending claim deletes its
+occurrences through the claim foreign key. Deleting the source document removes
+its occurrences without deleting a reviewed claim.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `occurrence_id` | UUID | Primary key, generated | Stable occurrence identifier |
+| `claim_id` | UUID | Required, claim FK, cascade delete | Extracted claim supported by this evidence |
+| `document_id` | UUID | Required, document FK, cascade delete, indexed | Physical source document |
+| `anchor_key` | Text | Required, nonblank, unique per claim | Deterministic physical identity such as a PDF page/line or DOCX block/row |
+| `source_references` | Text array | Required, nonempty | Exact compact-input tokens that resolved to this anchor |
+| `field_names` | Text array | Required, nonempty | Claim fields supported by the citation |
+| `anchor` | JSONB | Required | Original physical anchor: PDF page, line order, coordinates, text and links; DOCX paragraph text and links; or DOCX table cells |
 
 ## Claim details
 
@@ -591,9 +614,6 @@ features and are intentionally not part of the current schema:
 - Field-level validation flags for low-confidence extracted values, previously
   modeled as `ClaimValueHistory.validation_status`, are left to the extraction
   review feature to place.
-- `source_occurrences`, which links extracted claims to their source document
-  and location, arrives with document upload and parsing. Exported claims
-  already include an empty `sources` array for these references.
 
 ## Document extractions
 
@@ -632,7 +652,7 @@ erDiagram
 | `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
 | `content` | JSONB | Required | `{ version, pages, blocks }`, described below |
 | `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code, such as `NO_TEXT_LAYER` or `UNSUPPORTED_LANGUAGE` |
-| `unmapped_data` | JSONB | Required, defaults to `[]` | Information outside the profile schema, such as courses or awards, or items that could not become claims; filled by the AI-output mapping |
+| `unmapped_data` | JSONB | Required, defaults to `[]` | Latest successful AI-extraction snapshot of information outside the profile schema or items that could not become claims; replaced on re-extraction, including with `[]` |
 | `parser_version` | Text | Required | Library and version that produced the result |
 | `created_at` | Timestamp with time zone | Required, generated | First extraction time |
 | `updated_at` | Timestamp with time zone | Required, generated | Latest extraction time |

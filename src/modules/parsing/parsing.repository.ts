@@ -57,6 +57,8 @@ export function createParsingRepository(database: AppDatabase): ParsingRepositor
       });
     },
 
+    // Unmapped data is the latest successful AI-extraction snapshot. Replacing
+    // it with an empty list deliberately clears items from an older run.
     async saveUnmappedData(documentId, items, transaction = database.db) {
       return withDbErrors('Document extraction', async () => {
         const [saved] = await transaction

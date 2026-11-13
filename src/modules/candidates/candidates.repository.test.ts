@@ -12,6 +12,7 @@ import {
   claimRevisions,
   claims,
   employmentDetails,
+  sourceOccurrences,
   skillDetails
 } from './candidates.table.js';
 
@@ -578,6 +579,40 @@ describe('creating claims in a batch', () => {
     ).resolves.toEqual([]);
     expect(context.insert).not.toHaveBeenCalled();
     expect(context.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('creating claim source occurrences', () => {
+  it('bulk-inserts physical evidence through the caller transaction', async () => {
+    const values = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn((table: unknown) => {
+      expect(table).toBe(sourceOccurrences);
+      return { values };
+    });
+    const transaction = { insert } as unknown as DatabaseExecutor;
+    const repository = createCandidatesRepository({} as AppDatabase);
+    const inputs = [
+      {
+        claimId,
+        documentId: '44444444-4444-4444-8444-444444444444',
+        anchorKey: 'pdf:1:8',
+        sourceReferences: ['L8'],
+        fieldNames: ['name'],
+        anchor: {
+          kind: 'pdf_line' as const,
+          order: 8,
+          pageNumber: 1,
+          box: { x: 40, y: 80, width: 100, height: 12 },
+          text: 'TypeScript',
+          links: []
+        }
+      }
+    ];
+
+    await expect(
+      repository.createClaimSourceOccurrences(inputs, transaction)
+    ).resolves.toBe(1);
+    expect(values).toHaveBeenCalledWith(inputs);
   });
 });
 

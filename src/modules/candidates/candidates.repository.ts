@@ -9,6 +9,7 @@ import {
   certificationDetails,
   ClaimExtractionMetadata,
   ClaimFieldValue,
+  type ClaimSourceAnchor,
   claimRevisions,
   claims,
   ClaimSnapshot,
@@ -17,6 +18,7 @@ import {
   languageDetails,
   NewClaimExtractionMetadata,
   projectDetails,
+  sourceOccurrences,
   skillDetails
 } from './candidates.table.js';
 
@@ -40,6 +42,15 @@ export type UpdateCandidateInput = Partial<
 
 type ClaimRow = typeof claims.$inferSelect;
 export type ClaimValues = ClaimSnapshot;
+
+export interface CreateClaimSourceOccurrenceInput {
+  claimId: string;
+  documentId: string;
+  anchorKey: string;
+  sourceReferences: string[];
+  fieldNames: string[];
+  anchor: ClaimSourceAnchor;
+}
 
 export interface ClaimRecord {
   claimId: string;
@@ -123,6 +134,10 @@ export interface CandidatesRepository {
     inputs: CreateClaimInput[],
     transaction: DatabaseExecutor
   ): Promise<ClaimRecord[]>;
+  createClaimSourceOccurrences(
+    inputs: CreateClaimSourceOccurrenceInput[],
+    transaction: DatabaseExecutor
+  ): Promise<number>;
   deletePendingExtractedClaims(
     candidateId: string,
     documentId: string,
@@ -676,6 +691,16 @@ export function createCandidatesRepository(
       return withDbErrors('Claims', () =>
         insertClaims(transaction, inputs)
       );
+    },
+
+    async createClaimSourceOccurrences(inputs, transaction) {
+      if (inputs.length === 0) {
+        return 0;
+      }
+      return withDbErrors('Claim source occurrences', async () => {
+        await transaction.insert(sourceOccurrences).values(inputs);
+        return inputs.length;
+      });
     },
 
     async deletePendingExtractedClaims(

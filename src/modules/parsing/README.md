@@ -16,6 +16,11 @@ result per document, and can render an HTML inspection report.
   geometry and does not use the PDF layout pipeline.
 - `buildAiInput` derives compact, referenced text from stored output. It may
   join strongly supported wrapped lines, but it never changes stored lines.
+- `resolveSourceReferences` maps AI reference tokens back to physical stored
+  evidence: PDF lines with pages and coordinates, or DOCX paragraphs and table
+  rows. It deliberately excludes inferred headings, section ownership, and
+  region roles. Resolution proves where a citation points, not that the cited
+  text semantically supports an extracted field.
 - Meaning extraction, claims, OCR, and Arabic reconstruction are outside this
   module.
 
@@ -153,8 +158,9 @@ reading order is known and is unique across all successfully parsed pages.
 - A reparse upserts by `documentId`. Changing stored JSON shape requires
   incrementing `EXTRACTION_CONTENT_VERSION` and considering existing readers.
 - `saveUnmappedData` replaces only `unmapped_data` for an existing extraction.
-  It preserves parsed content, failures, format, and parser version, and can
-  join a caller-owned transaction.
+  This field is the latest successful AI-extraction snapshot, so an empty list
+  clears items from an older run. The write preserves parsed content, failures,
+  format, and parser version, and can join a caller-owned transaction.
 
 ## Non-negotiable invariants
 

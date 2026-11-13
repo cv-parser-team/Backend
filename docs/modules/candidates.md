@@ -16,8 +16,10 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
    claims directly, such as finding candidates with a given skill.
 5. **Edits archive the previous values** in `claim_revisions`, so the original
    values are never lost.
-6. **Ready for document parsing.** The `extracted` origin exists, and exported
-   claims include an empty `sources` list for document references.
+6. **Extracted evidence is physical.** New extracted claims persist their
+   source document plus PDF lines and coordinates or DOCX blocks and rows.
+   Parser-inferred sections are not stored as facts. Profile exports still use
+   an empty `sources` list until the read path is connected.
 7. **Six claim types:** skills, employment, education, certifications,
    languages, and projects. Languages keep their proficiency as written, such
    as "Native" or "C1"; one scale is left to normalization. Project dates are

@@ -33,5 +33,6 @@ export function createCandidateExtractionWriter(
 
 export type {
   CandidateExtractionWriter,
-  ExtractedClaimDraftInput
+  ExtractedClaimDraftInput,
+  ExtractedClaimSourceOccurrenceInput
 } from './candidates.extraction-writer.js';

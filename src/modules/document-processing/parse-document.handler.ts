@@ -159,7 +159,8 @@ export function createParseDocumentHandler({
         {
           documentId: processingJob.documentId,
           ownerUserId,
-          result: candidateExtraction
+          result: candidateExtraction,
+          sourceContent: extraction
         },
         transaction
       );

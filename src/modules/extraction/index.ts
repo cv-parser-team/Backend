@@ -36,6 +36,8 @@ export type {
   CandidateExtractionWorkflowInput,
   CandidateExtractionWorkflowResult
 } from './extraction.workflow.js';
+export { mapClaimSourceOccurrences } from './extraction.source-occurrences.js';
+export type { ClaimSourceOccurrenceDraft } from './extraction.source-occurrences.js';
 
 export interface CandidateExtractionWorkflowComposition {
   database: AppDatabase;

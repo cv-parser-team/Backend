@@ -3,12 +3,13 @@ import type {
   PersistedExtractionClaims
 } from './extraction.persistence.js';
 import type { CandidateExtractionService } from './extraction.service.js';
+import { buildAiInput, type ExtractionResult } from '../parsing/index.js';
 
 export interface CandidateExtractionWorkflowInput {
   documentId: string;
   ownerUserId: string;
   operationId: string;
-  input: string;
+  sourceContent: Pick<ExtractionResult, 'pages' | 'blocks'>;
 }
 
 export interface CandidateExtractionWorkflowResult {
@@ -32,13 +33,17 @@ export function createCandidateExtractionWorkflow({
   persistenceCoordinator
 }: CandidateExtractionWorkflowDependencies): CandidateExtractionWorkflow {
   return {
-    async run({ documentId, ownerUserId, operationId, input }) {
-      const result = await extractionService.extract({ operationId, input });
+    async run({ documentId, ownerUserId, operationId, sourceContent }) {
+      const result = await extractionService.extract({
+        operationId,
+        input: buildAiInput(sourceContent)
+      });
       const claims: PersistedExtractionClaims =
         await persistenceCoordinator.persist({
           documentId,
           ownerUserId,
-          result
+          result,
+          sourceContent
         });
 
       return {

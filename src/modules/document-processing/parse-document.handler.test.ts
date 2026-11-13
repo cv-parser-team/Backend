@@ -298,7 +298,8 @@ describe('parse document handler', () => {
       {
         documentId: job.documentId,
         ownerUserId: createDocument('processing').ownerUserId,
-        result: candidateExtraction
+        result: candidateExtraction,
+        sourceContent: result
       },
       transaction
     );

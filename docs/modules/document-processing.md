@@ -182,7 +182,8 @@ one transaction (the `UnitOfWork` in
 1. locks the job row under this claim (`SELECT … FOR UPDATE`), or stops with
    `stale` without writing anything;
 2. locks the document row, so a delete requested now waits for this attempt;
-3. saves the parsed extraction and its pending claims and unmapped data, then
+3. saves the parsed extraction, replaces its pending claims, persists their
+   physical source occurrences and the latest unmapped data snapshot, then
    completes the job and marks the document `ready`; or records retry/failure
    state when parsing or candidate extraction fails.
 

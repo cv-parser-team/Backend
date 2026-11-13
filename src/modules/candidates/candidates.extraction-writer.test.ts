@@ -44,11 +44,17 @@ function dependencies(
         updatedAt: timestamp
       }))
     );
+  const createClaimSourceOccurrences = vi
+    .fn<
+      CandidateExtractionWriterDependencies['repository']['createClaimSourceOccurrences']
+    >()
+    .mockImplementation(async (inputs) => inputs.length);
   const repository = {
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
-    createClaims
+    createClaims,
+    createClaimSourceOccurrences
   } as CandidateExtractionWriterDependencies['repository'];
 
   return {
@@ -56,6 +62,7 @@ function dependencies(
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
     createClaims,
+    createClaimSourceOccurrences,
     writer: createCandidateExtractionWriter({ repository })
   };
 }
@@ -64,6 +71,7 @@ describe('candidate extraction writer', () => {
   it('replaces same-document pending claims before saving new drafts', async () => {
     const {
       createClaims,
+      createClaimSourceOccurrences,
       deletePendingExtractedClaims,
       findCandidateByUserId,
       listReviewedExtractedClaims,
@@ -75,7 +83,22 @@ describe('candidate extraction writer', () => {
         values: { name: 'TypeScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },
-        current: false
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:9',
+            references: ['L9'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 9,
+              pageNumber: 1,
+              box: { x: 10, y: 20, width: 100, height: 12 },
+              text: 'TypeScript',
+              links: []
+            }
+          }
+        ]
       },
       {
         type: 'employment',
@@ -90,25 +113,41 @@ describe('candidate extraction writer', () => {
           jobTitle: ['L5'],
           startDate: ['L6']
         },
-        current: true
+        current: true,
+        sourceOccurrences: []
       }
     ];
 
-    await expect(
-      writer.saveExtractedClaims(
-        userId,
-        documentId,
-        invocationId,
-        drafts,
-        transaction
-      )
-    ).resolves.toHaveLength(2);
+    const saved = await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      drafts,
+      transaction
+    );
+    expect(saved).toHaveLength(2);
     expect(findCandidateByUserId).toHaveBeenCalledWith(userId, transaction);
     expect(deletePendingExtractedClaims).toHaveBeenCalledWith(
       candidateId,
       documentId,
       transaction
     );
+    expect(createClaimSourceOccurrences).toHaveBeenCalledWith(
+      [
+        {
+          claimId: saved[0]!.claimId,
+          documentId,
+          anchorKey: 'pdf:1:9',
+          sourceReferences: ['L9'],
+          fieldNames: ['name'],
+          anchor: drafts[0]!.sourceOccurrences[0]!.anchor
+        }
+      ],
+      transaction
+    );
+    expect(
+      createClaims.mock.invocationCallOrder[0]
+    ).toBeLessThan(createClaimSourceOccurrences.mock.invocationCallOrder[0]!);
     expect(listReviewedExtractedClaims).toHaveBeenCalledWith(
       candidateId,
       documentId,
@@ -173,7 +212,8 @@ describe('candidate extraction writer', () => {
         updatedAt: timestamp
       }
     ];
-    const { createClaims, writer } = dependencies(candidate, reviewedClaims);
+    const { createClaims, createClaimSourceOccurrences, writer } =
+      dependencies(candidate, reviewedClaims);
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'employment',
@@ -185,21 +225,66 @@ describe('candidate extraction writer', () => {
         },
         rawValues: {},
         fieldSources: {},
-        current: false
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:5',
+            references: ['L5'],
+            fields: ['employer'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 5,
+              pageNumber: 1,
+              box: { x: 10, y: 20, width: 100, height: 12 },
+              text: 'Example Labs',
+              links: []
+            }
+          }
+        ]
       },
       {
         type: 'skill',
         values: { name: 'TypeScript' },
         rawValues: {},
         fieldSources: {},
-        current: false
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:9',
+            references: ['L9'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 9,
+              pageNumber: 1,
+              box: { x: 10, y: 40, width: 100, height: 12 },
+              text: 'TypeScript',
+              links: []
+            }
+          }
+        ]
       },
       {
         type: 'skill',
         values: { name: 'Node.js' },
         rawValues: {},
         fieldSources: { name: ['L12'] },
-        current: false
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:12',
+            references: ['L12'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 12,
+              pageNumber: 1,
+              box: { x: 10, y: 60, width: 100, height: 12 },
+              text: 'Node.js',
+              links: []
+            }
+          }
+        ]
       }
     ];
 
@@ -222,11 +307,23 @@ describe('candidate extraction writer', () => {
       ],
       transaction
     );
+    expect(createClaimSourceOccurrences).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          documentId,
+          anchorKey: 'pdf:1:12',
+          sourceReferences: ['L12'],
+          fieldNames: ['name']
+        })
+      ],
+      transaction
+    );
   });
 
   it('writes nothing when the user has no candidate profile', async () => {
     const {
       createClaims,
+      createClaimSourceOccurrences,
       deletePendingExtractedClaims,
       listReviewedExtractedClaims,
       writer
@@ -244,5 +341,6 @@ describe('candidate extraction writer', () => {
     expect(deletePendingExtractedClaims).not.toHaveBeenCalled();
     expect(listReviewedExtractedClaims).not.toHaveBeenCalled();
     expect(createClaims).not.toHaveBeenCalled();
+    expect(createClaimSourceOccurrences).not.toHaveBeenCalled();
   });
 });

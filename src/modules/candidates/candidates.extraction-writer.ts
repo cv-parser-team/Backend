@@ -3,9 +3,18 @@ import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import type {
   CandidatesRepository,
   ClaimRecord,
+  CreateClaimSourceOccurrenceInput,
   ClaimValues,
   CreateClaimInput
 } from './candidates.repository.js';
+import type { ClaimSourceAnchor } from './candidates.table.js';
+
+export interface ExtractedClaimSourceOccurrenceInput {
+  anchorKey: string;
+  references: string[];
+  fields: string[];
+  anchor: ClaimSourceAnchor;
+}
 
 export interface ExtractedClaimDraftInput {
   type: CreateClaimInput['claimType'];
@@ -13,6 +22,7 @@ export interface ExtractedClaimDraftInput {
   rawValues: Record<string, string>;
   fieldSources: Record<string, string[]>;
   current: boolean;
+  sourceOccurrences: ExtractedClaimSourceOccurrenceInput[];
 }
 
 export interface CandidateExtractionWriter {
@@ -32,6 +42,7 @@ export interface CandidateExtractionWriterDependencies {
     | 'deletePendingExtractedClaims'
     | 'listReviewedExtractedClaims'
     | 'createClaims'
+    | 'createClaimSourceOccurrences'
   >;
 }
 
@@ -88,27 +99,47 @@ export function createCandidateExtractionWriter({
         )
       );
 
-      const inputs: CreateClaimInput[] = drafts
-        .filter(
-          (draft) =>
-            !reviewedClaimKeys.has(claimKey(draft.type, draft.values))
-        )
-        .map((draft) => ({
-          candidateId: candidate.candidateId,
-          claimType: draft.type,
-          origin: 'extracted',
-          status: 'pending',
-          values: draft.values,
-          extraction: {
-            invocationId,
-            sourceDocumentId: documentId,
-            rawValues: draft.rawValues,
-            fieldSources: draft.fieldSources,
-            current: draft.current
-          }
-        }));
+      const draftsToCreate = drafts.filter(
+        (draft) =>
+          !reviewedClaimKeys.has(claimKey(draft.type, draft.values))
+      );
+      const inputs: CreateClaimInput[] = draftsToCreate.map((draft) => ({
+        candidateId: candidate.candidateId,
+        claimType: draft.type,
+        origin: 'extracted',
+        status: 'pending',
+        values: draft.values,
+        extraction: {
+          invocationId,
+          sourceDocumentId: documentId,
+          rawValues: draft.rawValues,
+          fieldSources: draft.fieldSources,
+          current: draft.current
+        }
+      }));
 
-      return repository.createClaims(inputs, transaction);
+      const createdClaims = await repository.createClaims(inputs, transaction);
+      if (createdClaims.length !== draftsToCreate.length) {
+        throw new Error('Created claims did not match extraction drafts');
+      }
+
+      const occurrenceInputs: CreateClaimSourceOccurrenceInput[] =
+        createdClaims.flatMap((claim, index) =>
+          draftsToCreate[index]!.sourceOccurrences.map((occurrence) => ({
+            claimId: claim.claimId,
+            documentId,
+            anchorKey: occurrence.anchorKey,
+            sourceReferences: occurrence.references,
+            fieldNames: occurrence.fields,
+            anchor: occurrence.anchor
+          }))
+        );
+      await repository.createClaimSourceOccurrences(
+        occurrenceInputs,
+        transaction
+      );
+
+      return createdClaims;
     }
   };
 }

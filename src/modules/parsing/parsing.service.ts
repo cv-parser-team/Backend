@@ -14,7 +14,8 @@ export interface ParsingService {
     result: ExtractionResult,
     transaction?: DatabaseExecutor
   ): Promise<ExtractionRecord>;
-  // Replaces only AI-output items that could not become profile fields or claims.
+  // Replaces the latest AI-output snapshot of items that could not become
+  // profile fields or claims. An empty list clears the previous snapshot.
   saveUnmappedData(
     documentId: string,
     items: UnmappedItem[],

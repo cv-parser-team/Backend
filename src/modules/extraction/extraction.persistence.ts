@@ -6,8 +6,9 @@ import type {
   CandidateExtractionWriter,
   ExtractedClaimDraftInput
 } from '../candidates/index.js';
-import type { ParsingService } from '../parsing/index.js';
+import type { ExtractionResult, ParsingService } from '../parsing/index.js';
 import type { CandidateExtractionResult } from './extraction.service.js';
+import { mapClaimSourceOccurrences } from './extraction.source-occurrences.js';
 
 export type PersistedExtractionClaims = Awaited<
   ReturnType<CandidateExtractionWriter['saveExtractedClaims']>
@@ -17,6 +18,7 @@ export interface PersistCandidateExtractionInput {
   documentId: string;
   ownerUserId: string;
   result: CandidateExtractionResult;
+  sourceContent: Pick<ExtractionResult, 'pages' | 'blocks'>;
 }
 
 export interface ExtractionPersistenceCoordinator {
@@ -38,7 +40,12 @@ export function createExtractionPersistenceCoordinator({
   unitOfWork
 }: ExtractionPersistenceCoordinatorDependencies): ExtractionPersistenceCoordinator {
   async function persistWithTransaction(
-    { documentId, ownerUserId, result }: PersistCandidateExtractionInput,
+    {
+      documentId,
+      ownerUserId,
+      result,
+      sourceContent
+    }: PersistCandidateExtractionInput,
     transaction: DatabaseExecutor
   ): Promise<PersistedExtractionClaims> {
     const drafts: ExtractedClaimDraftInput[] = result.claims.map((claim) => ({
@@ -46,7 +53,8 @@ export function createExtractionPersistenceCoordinator({
       values: claim.values,
       rawValues: claim.rawValues,
       fieldSources: claim.fieldSources,
-      current: claim.current
+      current: claim.current,
+      sourceOccurrences: mapClaimSourceOccurrences(claim, sourceContent)
     }));
 
     const claims = await candidateWriter.saveExtractedClaims(

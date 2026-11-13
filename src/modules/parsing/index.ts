@@ -27,4 +27,14 @@ export const parsingModule = fastifyPlugin(registerParsing, {
 });
 
 export { buildAiInput } from './ai-input.js';
+export { resolveSourceReferences } from './source-references.js';
+export type {
+  DocxParagraphSourceAnchor,
+  DocxTableRowSourceAnchor,
+  PdfLineSourceAnchor,
+  PhysicalSourceAnchor,
+  ResolvedSourceReference,
+  SourceReferenceResolution
+} from './source-references.js';
+export type { ExtractionResult } from './parsing.types.js';
 export type { ParsingService } from './parsing.service.js';

@@ -42,6 +42,7 @@ import {
   employmentDetails,
   languageDetails,
   projectDetails,
+  sourceOccurrences,
   skillDetails
 } from './candidates.table.js';
 
@@ -109,6 +110,7 @@ function createRepositoryDouble(
       .mockResolvedValue({ status: 'saved', record: candidateRecord }),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     createClaims: vi.fn().mockResolvedValue([]),
+    createClaimSourceOccurrences: vi.fn().mockResolvedValue(0),
     deletePendingExtractedClaims: vi.fn().mockResolvedValue(0),
     listReviewedExtractedClaims: vi.fn().mockResolvedValue([]),
     reviewExtractedClaim: vi
@@ -198,6 +200,12 @@ describe('candidates tables', () => {
     expect(getTableConfig(candidates).foreignKeys).toHaveLength(1);
     expect(getTableConfig(claims).foreignKeys).toHaveLength(1);
     expect(getTableConfig(claimRevisions).foreignKeys).toHaveLength(1);
+    expect(getTableConfig(sourceOccurrences).foreignKeys).toHaveLength(2);
+    expect(
+      getTableConfig(sourceOccurrences).indexes.some(
+        (index) => index.config.name === 'source_occurrences_claim_anchor_unique'
+      )
+    ).toBe(true);
   });
 
   it('stores one details row per claim in the table of its type', () => {
