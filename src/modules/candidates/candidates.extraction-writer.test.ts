@@ -113,8 +113,65 @@ describe('candidate extraction writer', () => {
           jobTitle: ['L5'],
           startDate: ['L6']
         },
+        current: false,
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:5',
+            references: ['L5'],
+            fields: ['employer'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 5,
+              pageNumber: 1,
+              box: { x: 10, y: 50, width: 180, height: 12 },
+              text: 'Example Labs — Backend Engineer',
+              links: []
+            }
+          }
+        ]
+      },
+      {
+        type: 'employment',
+        values: {
+          employer: '  EXAMPLE   LABS ',
+          jobTitle: 'backend engineer',
+          startDate: '2022-01'
+        },
+        rawValues: { startDate: 'Jan 2022' },
+        fieldSources: {
+          employer: ['L5-6'],
+          jobTitle: ['L5-6'],
+          startDate: ['L6']
+        },
         current: true,
-        sourceOccurrences: []
+        sourceOccurrences: [
+          {
+            anchorKey: 'pdf:1:5',
+            references: ['L5-6'],
+            fields: ['jobTitle'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 5,
+              pageNumber: 1,
+              box: { x: 10, y: 50, width: 180, height: 12 },
+              text: 'Example Labs — Backend Engineer',
+              links: []
+            }
+          },
+          {
+            anchorKey: 'pdf:1:6',
+            references: ['L6'],
+            fields: ['startDate'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 6,
+              pageNumber: 1,
+              box: { x: 10, y: 65, width: 80, height: 12 },
+              text: 'January 2022',
+              links: []
+            }
+          }
+        ]
       }
     ];
 
@@ -141,6 +198,22 @@ describe('candidate extraction writer', () => {
           sourceReferences: ['L9'],
           fieldNames: ['name'],
           anchor: drafts[0]!.sourceOccurrences[0]!.anchor
+        },
+        {
+          claimId: saved[1]!.claimId,
+          documentId,
+          anchorKey: 'pdf:1:5',
+          sourceReferences: ['L5', 'L5-6'],
+          fieldNames: ['employer', 'jobTitle'],
+          anchor: drafts[1]!.sourceOccurrences[0]!.anchor
+        },
+        {
+          claimId: saved[1]!.claimId,
+          documentId,
+          anchorKey: 'pdf:1:6',
+          sourceReferences: ['L6'],
+          fieldNames: ['startDate'],
+          anchor: drafts[2]!.sourceOccurrences[1]!.anchor
         }
       ],
       transaction
@@ -173,7 +246,11 @@ describe('candidate extraction writer', () => {
             invocationId,
             sourceDocumentId: documentId,
             rawValues: drafts[1]!.rawValues,
-            fieldSources: drafts[1]!.fieldSources,
+            fieldSources: {
+              employer: ['L5', 'L5-6'],
+              jobTitle: ['L5', 'L5-6'],
+              startDate: ['L6']
+            },
             current: true
           }
         }
@@ -182,7 +259,7 @@ describe('candidate extraction writer', () => {
     );
   });
 
-  it('skips reviewed exact matches and saves changed or new drafts', async () => {
+  it('skips formatting-equivalent reviewed claims and saves meaningful differences', async () => {
     const reviewedClaims: ClaimRecord[] = [
       {
         claimId: randomUUID(),
@@ -190,9 +267,9 @@ describe('candidate extraction writer', () => {
         origin: 'extracted',
         status: 'accepted',
         values: {
-          skills: ['PostgreSQL', 'TypeScript'],
-          employer: 'Example Labs',
-          jobTitle: 'Backend Engineer',
+          skills: [' postgresql ', 'TYPESCRIPT'],
+          employer: '  EXAMPLE   LABS ',
+          jobTitle: 'Ｂａｃｋｅｎｄ Engineer',
           startDate: '2022-01'
         },
         extraction: null,
@@ -205,7 +282,18 @@ describe('candidate extraction writer', () => {
         claimType: 'skill',
         origin: 'extracted',
         status: 'rejected',
-        values: { name: 'TypeScript' },
+        values: { name: 'ＴｙｐｅＳｃｒｉｐｔ' },
+        extraction: null,
+        version: 2,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      },
+      {
+        claimId: randomUUID(),
+        claimType: 'skill',
+        origin: 'extracted',
+        status: 'accepted',
+        values: { name: 'NodeJS' },
         extraction: null,
         version: 2,
         createdAt: timestamp,
@@ -244,7 +332,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
-        values: { name: 'TypeScript' },
+        values: { name: 'typescript' },
         rawValues: {},
         fieldSources: {},
         current: false,
@@ -263,6 +351,19 @@ describe('candidate extraction writer', () => {
             }
           }
         ]
+      },
+      {
+        type: 'employment',
+        values: {
+          employer: 'Example Labs',
+          jobTitle: 'Backend Engineer',
+          startDate: '2022-01',
+          skills: ['TypeScript', 'PostgreSQL', 'Docker']
+        },
+        rawValues: {},
+        fieldSources: {},
+        current: false,
+        sourceOccurrences: []
       },
       {
         type: 'skill',
@@ -296,10 +397,19 @@ describe('candidate extraction writer', () => {
         drafts,
         transaction
       )
-    ).resolves.toHaveLength(1);
+    ).resolves.toHaveLength(2);
     expect(createClaims).toHaveBeenCalledOnce();
     expect(createClaims).toHaveBeenCalledWith(
       [
+        expect.objectContaining({
+          claimType: 'employment',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Backend Engineer',
+            startDate: '2022-01',
+            skills: ['TypeScript', 'PostgreSQL', 'Docker']
+          }
+        }),
         expect.objectContaining({
           claimType: 'skill',
           values: { name: 'Node.js' }

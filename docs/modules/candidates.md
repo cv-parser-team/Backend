@@ -18,8 +18,9 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
    values are never lost.
 6. **Extracted evidence is physical.** New extracted claims persist their
    source document plus PDF lines and coordinates or DOCX blocks and rows.
-   Parser-inferred sections are not stored as facts. Profile exports still use
-   an empty `sources` list until the read path is connected.
+   Parser-inferred sections are not stored as facts. Accepted claims expose
+   their exact persisted physical anchors in the profile export; manual and
+   legacy claims without occurrences use an empty `sources` list.
 7. **Six claim types:** skills, employment, education, certifications,
    languages, and projects. Languages keep their proficiency as written, such
    as "Native" or "C1"; one scale is left to normalization. Project dates are
@@ -110,3 +111,10 @@ Content-Type: application/json
 Manual or already-reviewed claims return `409 CLAIM_NOT_REVIEWABLE`. A stale
 `If-Match` returns `409 VERSION_CONFLICT`; another candidate's claim returns
 404. A successful review increments the version and returns the new `ETag`.
+
+Each exported claim has a `sources` array. A source contains `documentId`, the
+exact parser `references`, the claim `fields` supported by that occurrence, and
+a discriminated physical `anchor`: `pdf_line`, `docx_paragraph`, or
+`docx_table_row`. The array is empty when the claim has no surviving physical
+occurrence. Sources are loaded in one ownership-scoped query for the accepted
+claims, rather than one query per claim.

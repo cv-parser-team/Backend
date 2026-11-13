@@ -117,6 +117,7 @@ function createRepositoryDouble(
       .fn()
       .mockResolvedValue({ status: 'saved', record: extractedClaim('accepted', 2) }),
     listClaims: vi.fn().mockResolvedValue([]),
+    listClaimSourceOccurrences: vi.fn().mockResolvedValue([]),
     findClaim: vi.fn().mockResolvedValue(claimRecord()),
     updateClaimValues: vi
       .fn()
@@ -752,6 +753,38 @@ describe('candidates service', () => {
         values: { name: 'Shop API' }
       })
     ]);
+    vi.mocked(repository.listClaimSourceOccurrences).mockResolvedValue([
+      {
+        occurrenceId: '77777777-7777-4777-8777-777777777777',
+        claimId,
+        documentId: '88888888-8888-4888-8888-888888888888',
+        anchorKey: 'pdf:1:8',
+        sourceReferences: ['L8'],
+        fieldNames: ['name'],
+        anchor: {
+          kind: 'pdf_line',
+          order: 8,
+          pageNumber: 1,
+          box: { x: 40, y: 80, width: 100, height: 12 },
+          text: 'Python',
+          links: []
+        }
+      },
+      {
+        occurrenceId: '99999999-9999-4999-8999-999999999999',
+        claimId: '44444444-4444-4444-8444-444444444444',
+        documentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        anchorKey: 'docx:block:4',
+        sourceReferences: ['B4'],
+        fieldNames: ['title', 'issuer'],
+        anchor: {
+          kind: 'docx_paragraph',
+          blockIndex: 4,
+          text: 'AWS — Amazon',
+          links: []
+        }
+      }
+    ]);
     const service = createService(repository);
 
     const result = await service.exportProfile(userId);
@@ -769,9 +802,55 @@ describe('candidates service', () => {
       location: 'Amman',
       profileLinks: []
     });
-    expect(result.skills).toEqual([{ claimId, name: 'Python', sources: [] }]);
+    expect(repository.listClaimSourceOccurrences).toHaveBeenCalledWith(candidateId, [
+      claimId,
+      '44444444-4444-4444-8444-444444444444',
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666'
+    ]);
+    expect(result.skills).toEqual([
+      {
+        claimId,
+        name: 'Python',
+        sources: [
+          {
+            documentId: '88888888-8888-4888-8888-888888888888',
+            references: ['L8'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 8,
+              pageNumber: 1,
+              box: { x: 40, y: 80, width: 100, height: 12 },
+              text: 'Python',
+              links: []
+            }
+          }
+        ]
+      }
+    ]);
     expect(Object.keys(result.skills[0] ?? {})[0]).toBe('claimId');
-    expect(result.certifications).toHaveLength(1);
+    expect(result.certifications).toEqual([
+      {
+        claimId: '44444444-4444-4444-8444-444444444444',
+        title: 'AWS',
+        issuer: 'Amazon',
+        issueDate: '2023-01',
+        sources: [
+          {
+            documentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            references: ['B4'],
+            fields: ['title', 'issuer'],
+            anchor: {
+              kind: 'docx_paragraph',
+              blockIndex: 4,
+              text: 'AWS — Amazon',
+              links: []
+            }
+          }
+        ]
+      }
+    ]);
     expect(result.languages).toEqual([
       {
         claimId: '55555555-5555-4555-8555-555555555555',

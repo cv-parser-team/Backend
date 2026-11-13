@@ -46,8 +46,16 @@ export interface CandidateExtractionWriterDependencies {
   >;
 }
 
+function normalizeComparisonText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/gu, ' ')
+    .toLowerCase();
+}
+
 function normalizeList(values: string[]): string[] {
-  return [...new Set(values)].sort();
+  return [...new Set(values.map(normalizeComparisonText))].sort();
 }
 
 function claimKey(
@@ -58,10 +66,94 @@ function claimKey(
     .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
     .map(([key, value]) => [
       key,
-      Array.isArray(value) ? normalizeList(value) : value
+      Array.isArray(value) ? normalizeList(value) : normalizeComparisonText(value)
     ]);
 
   return JSON.stringify([claimType, normalizedValues]);
+}
+
+function mergeUnique(left: string[], right: string[]): string[] {
+  return [...new Set([...left, ...right])];
+}
+
+function mergeFieldSources(
+  left: Record<string, string[]>,
+  right: Record<string, string[]>
+): Record<string, string[]> {
+  const merged = Object.fromEntries(
+    Object.entries(left).map(([field, references]) => [field, [...references]])
+  );
+  for (const [field, references] of Object.entries(right)) {
+    merged[field] = mergeUnique(merged[field] ?? [], references);
+  }
+  return merged;
+}
+
+function mergeSourceOccurrences(
+  left: ExtractedClaimSourceOccurrenceInput[],
+  right: ExtractedClaimSourceOccurrenceInput[]
+): ExtractedClaimSourceOccurrenceInput[] {
+  const merged = new Map(
+    left.map((occurrence) => [
+      occurrence.anchorKey,
+      {
+        ...occurrence,
+        references: [...occurrence.references],
+        fields: [...occurrence.fields]
+      }
+    ])
+  );
+
+  for (const occurrence of right) {
+    const existing = merged.get(occurrence.anchorKey);
+    if (existing) {
+      existing.references = mergeUnique(
+        existing.references,
+        occurrence.references
+      );
+      existing.fields = mergeUnique(existing.fields, occurrence.fields);
+    } else {
+      merged.set(occurrence.anchorKey, {
+        ...occurrence,
+        references: [...occurrence.references],
+        fields: [...occurrence.fields]
+      });
+    }
+  }
+
+  return [...merged.values()];
+}
+
+function coalesceDrafts(
+  drafts: ExtractedClaimDraftInput[]
+): ExtractedClaimDraftInput[] {
+  const merged = new Map<string, ExtractedClaimDraftInput>();
+
+  for (const draft of drafts) {
+    const key = claimKey(draft.type, draft.values);
+    const existing = merged.get(key);
+    if (existing) {
+      existing.fieldSources = mergeFieldSources(
+        existing.fieldSources,
+        draft.fieldSources
+      );
+      existing.sourceOccurrences = mergeSourceOccurrences(
+        existing.sourceOccurrences,
+        draft.sourceOccurrences
+      );
+      existing.current ||= draft.current;
+    } else {
+      merged.set(key, {
+        ...draft,
+        values: { ...draft.values },
+        rawValues: { ...draft.rawValues },
+        fieldSources: mergeFieldSources({}, draft.fieldSources),
+        sourceOccurrences: mergeSourceOccurrences([], draft.sourceOccurrences)
+      });
+    }
+  }
+
+  return [...merged.values()];
 }
 
 export function createCandidateExtractionWriter({
@@ -99,7 +191,7 @@ export function createCandidateExtractionWriter({
         )
       );
 
-      const draftsToCreate = drafts.filter(
+      const draftsToCreate = coalesceDrafts(drafts).filter(
         (draft) =>
           !reviewedClaimKeys.has(claimKey(draft.type, draft.values))
       );

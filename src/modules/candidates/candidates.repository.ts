@@ -23,6 +23,7 @@ import {
 } from './candidates.table.js';
 
 export type CandidateRecord = typeof candidates.$inferSelect;
+export type ClaimSourceOccurrenceRecord = typeof sourceOccurrences.$inferSelect;
 export type CreateCandidateInput = Omit<
   typeof candidates.$inferInsert,
   'candidateId' | 'createdAt' | 'updatedAt'
@@ -155,6 +156,10 @@ export interface CandidatesRepository {
     expectedVersion?: number
   ): Promise<ReviewClaimResult>;
   listClaims(candidateId: string, filters?: ClaimFilters): Promise<ClaimRecord[]>;
+  listClaimSourceOccurrences(
+    candidateId: string,
+    claimIds: string[]
+  ): Promise<ClaimSourceOccurrenceRecord[]>;
   findClaim(candidateId: string, claimId: string): Promise<ClaimRecord | null>;
   updateClaimValues(input: UpdateClaimValuesInput): Promise<VersionedWrite<ClaimRecord>>;
   deleteClaim(
@@ -811,6 +816,29 @@ export function createCandidatesRepository(
           )
         )
       );
+    },
+
+    async listClaimSourceOccurrences(candidateId, claimIds) {
+      if (claimIds.length === 0) {
+        return [];
+      }
+
+      return withDbErrors('Claim source occurrences', async () => {
+        const rows = await database.db
+          .select({ occurrence: sourceOccurrences })
+          .from(sourceOccurrences)
+          .innerJoin(claims, eq(claims.claimId, sourceOccurrences.claimId))
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.status, 'accepted'),
+              inArray(claims.claimId, claimIds)
+            )
+          )
+          .orderBy(asc(sourceOccurrences.claimId), asc(sourceOccurrences.anchorKey));
+
+        return rows.map(({ occurrence }) => occurrence);
+      });
     },
 
     async findClaim(candidateId, claimId) {

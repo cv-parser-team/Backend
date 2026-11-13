@@ -13,6 +13,7 @@ import {
   CandidateRecord,
   CandidatesRepository,
   ClaimRecord,
+  ClaimSourceOccurrenceRecord,
   ClaimValues,
   UpdateCandidateInput
 } from './candidates.repository.js';
@@ -23,7 +24,7 @@ import {
   ReviewClaimBody,
   UpdateCandidateBody
 } from './candidates.schemas.js';
-import { ProfileLink } from './candidates.table.js';
+import { ClaimSourceAnchor, ProfileLink } from './candidates.table.js';
 
 export interface CandidateProfile {
   candidateId: string;
@@ -40,15 +41,17 @@ export interface CandidateProfile {
   updatedAt: Date;
 }
 
-// Filled once source documents and their parsed occurrences exist.
 export interface ClaimSourceReference {
   documentId: string;
-  pageNumber: number | null;
-  section: string | null;
-  textSpan: string | null;
+  references: string[];
+  fields: string[];
+  anchor: ClaimSourceAnchor;
 }
 
-export type ExportedClaim = ClaimValues & {
+export type ExportedClaim = Record<
+  string,
+  ClaimValues[string] | ClaimSourceReference[]
+> & {
   claimId: string;
   sources: ClaimSourceReference[];
 };
@@ -191,8 +194,22 @@ function hasSameValues(left: ClaimValues, right: ClaimValues): boolean {
   );
 }
 
-function toExportedClaim(claim: ClaimRecord): ExportedClaim {
-  return { claimId: claim.claimId, ...claim.values, sources: [] };
+function toSourceReference(
+  occurrence: ClaimSourceOccurrenceRecord
+): ClaimSourceReference {
+  return {
+    documentId: occurrence.documentId,
+    references: occurrence.sourceReferences,
+    fields: occurrence.fieldNames,
+    anchor: occurrence.anchor
+  };
+}
+
+function toExportedClaim(
+  claim: ClaimRecord,
+  sources: ClaimSourceReference[]
+): ExportedClaim {
+  return { claimId: claim.claimId, ...claim.values, sources };
 }
 
 export function createCandidatesService({
@@ -422,6 +439,16 @@ export function createCandidatesService({
         getEmail(userId),
         repository.listClaims(candidate.candidateId, { status: 'accepted' })
       ]);
+      const occurrences = await repository.listClaimSourceOccurrences(
+        candidate.candidateId,
+        acceptedClaims.map(({ claimId }) => claimId)
+      );
+      const sourcesByClaim = new Map<string, ClaimSourceReference[]>();
+      for (const occurrence of occurrences) {
+        const sources = sourcesByClaim.get(occurrence.claimId) ?? [];
+        sources.push(toSourceReference(occurrence));
+        sourcesByClaim.set(occurrence.claimId, sources);
+      }
 
       const exported: ExportedProfile = {
         personalInfo: {
@@ -443,7 +470,10 @@ export function createCandidatesService({
       };
 
       for (const claim of acceptedClaims) {
-        const exportedClaim = toExportedClaim(claim);
+        const exportedClaim = toExportedClaim(
+          claim,
+          sourcesByClaim.get(claim.claimId) ?? []
+        );
         switch (claim.claimType) {
           case 'skill':
             exported.skills.push(exportedClaim);

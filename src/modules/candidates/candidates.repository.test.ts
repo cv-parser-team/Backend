@@ -616,6 +616,66 @@ describe('creating claim source occurrences', () => {
   });
 });
 
+describe('reading claim source occurrences', () => {
+  it('loads accepted occurrences only for the candidate and requested claims', async () => {
+    const otherClaimId = '33333333-3333-4333-8333-333333333333';
+    const occurrence = {
+      occurrenceId: '44444444-4444-4444-8444-444444444444',
+      claimId,
+      documentId: '55555555-5555-4555-8555-555555555555',
+      anchorKey: 'pdf:1:8',
+      sourceReferences: ['L8'],
+      fieldNames: ['name'],
+      anchor: {
+        kind: 'pdf_line' as const,
+        order: 8,
+        pageNumber: 1,
+        box: { x: 40, y: 80, width: 100, height: 12 },
+        text: 'TypeScript',
+        links: []
+      }
+    };
+    const orderBy = vi.fn().mockResolvedValue([{ occurrence }]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const readQuery = {
+      innerJoin: () => readQuery,
+      where
+    };
+    const select = vi.fn(() => ({ from: () => readQuery }));
+    const repository = createCandidatesRepository({
+      db: { select }
+    } as unknown as AppDatabase);
+
+    await expect(
+      repository.listClaimSourceOccurrences(candidateId, [claimId, otherClaimId])
+    ).resolves.toEqual([occurrence]);
+
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.sql).toContain('"claims"."candidate_id" = $1');
+    expect(query?.sql).toContain('"claims"."status" = $2');
+    expect(query?.sql).toContain('"claims"."claim_id" in ($3, $4)');
+    expect(query?.params).toEqual([
+      candidateId,
+      'accepted',
+      claimId,
+      otherClaimId
+    ]);
+    expect(orderBy).toHaveBeenCalledOnce();
+  });
+
+  it('skips the database when there are no accepted claim IDs', async () => {
+    const select = vi.fn();
+    const repository = createCandidatesRepository({
+      db: { select }
+    } as unknown as AppDatabase);
+
+    await expect(
+      repository.listClaimSourceOccurrences(candidateId, [])
+    ).resolves.toEqual([]);
+    expect(select).not.toHaveBeenCalled();
+  });
+});
+
 describe('replacing pending extracted claims', () => {
   it('deletes only the candidate and source document pending set', async () => {
     const documentId = '44444444-4444-4444-8444-444444444444';

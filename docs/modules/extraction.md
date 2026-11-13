@@ -31,9 +31,17 @@ claims without document provenance, and claims from other documents are never
 deleted. Replacement and insertion share one transaction, so failed insertion
 restores the previous pending set. A newly extracted draft is not inserted when
 the same document already has an accepted or rejected extracted claim with the
-same type and values. Field order and string-array order or duplicates do not
-affect this exact comparison. Changed and new drafts remain pending; broader
-semantic matching is deferred.
+same type and formatting-equivalent values. The comparison normalizes Unicode,
+letter casing, surrounding or repeated whitespace, field order, and string-array
+order or duplicates. Punctuation and every persisted field remain significant,
+so changed and new drafts stay pending. Alias and broader semantic matching are
+deferred and never use parser-inferred headings.
+
+Formatting-equivalent drafts within one provider result are coalesced before
+insertion. The first draft supplies the persisted values and original wording;
+field references and physical occurrences are merged without duplication, and
+an explicit current marker is retained when any equivalent draft has it. This
+prevents duplicate pending claims without inventing semantic equivalence.
 
 Candidates review a pending claim through
 `PATCH /api/candidates/me/claims/:claimId/review`. Acceptance or rejection is a
@@ -278,7 +286,6 @@ taken from its proficiency. A field set aside on its own looks like this:
 
 Listed under "Revisit later" on the task:
 
-- Expose persisted physical occurrences in candidate profile exports.
 - Detect near or semantic duplicates against accepted or rejected claims.
 - Normalize aliases and detect conflicts.
 - Accept year-only dates and grades.
