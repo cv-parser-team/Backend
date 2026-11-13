@@ -149,8 +149,9 @@ sequenceDiagram
     end
 ```
 
-- A claim is normalized after it is created or its value changes, for manual
-  claims now and for extracted claims once they are saved.
+- A claim created or changed through the candidate service is normalized now.
+  Routing newly persisted extracted claims through this same boundary is the
+  next integration step; extraction must not read dictionary tables directly.
 - The claim is saved first. If normalization fails, the claim stays without a
   decision and is treated as unmatched; it can be normalized again later.
 - The candidates module calls the normalization service through a narrow

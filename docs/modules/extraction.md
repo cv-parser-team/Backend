@@ -12,8 +12,10 @@ with invented values.
 V1 sends compact parsing input through the tracked LLM service and maps the
 provider's structured output. Its persistence coordinator can atomically save
 pending claim drafts and the document's unmapped data. It does not yet persist
-profile drafts, normalize values, or resolve conflicts. The document-processing
-worker invokes extraction after a successful or partial parse.
+profile drafts, normalize extracted values through the
+[normalization module](normalization.md), or resolve conflicts. The
+document-processing worker invokes extraction after a successful or partial
+parse.
 
 The candidate extraction workflow is the callable boundary for an already
 parsed document. It runs provider extraction first, then passes the mapped

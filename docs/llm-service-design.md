@@ -229,18 +229,29 @@ Already implemented:
 
 - RabbitMQ document jobs, retries, leases, and dead-lettering;
 - deterministic PDF/DOCX parsing and referenced AI input;
-- extraction schema, item-level validation, and partial mapping;
-- exact canonical and approved-alias normalization.
+- the provider-neutral LLM client, Gemini adapter, configuration, invocation
+  ledger, and fake-client coverage;
+- extraction schema, item-level validation, partial mapping, and worker
+  integration;
+- idempotent persistence of extracted claims, unmapped data, and physical
+  PDF/DOCX source occurrences;
+- bounded extraction retries, permanent provenance-failure handling, and
+  duplicate-delivery coverage;
+- exact canonical and approved-alias normalization for claims created through
+  the candidate service.
 
 Next steps:
 
-1. Add the provider-neutral client, Gemini adapter, and invocation table.
-2. Add configuration and fake-client tests.
-3. Connect candidate extraction to the existing extraction contract.
-4. Persist extracted claims and unmapped data idempotently.
-5. Add worker tests for retries, invalid output, partial success, and duplicate
-   delivery.
-6. Add other AI tasks only when their owning feature is implemented.
+1. Normalize newly persisted extracted claims through the existing
+   [normalization boundary](modules/normalization.md).
+2. Conservatively consolidate duplicates only when exact canonical or approved
+   alias decisions establish equivalence and all other significant values
+   match, retaining every physical source occurrence.
+3. Add broader conflict handling separately; do not treat parser-inferred
+   headings as evidence or use them for semantic matching.
+4. Defer fuzzy and AI-assisted matching until candidate and reviewer decisions
+   are implemented.
+5. Add other AI tasks only when their owning feature is implemented.
 
 Normal tests use a fake client. Live Gemini tests are optional, manually
 enabled, use synthetic content, and have strict request limits.
@@ -273,4 +284,3 @@ enabled, use synthetic content, and have strict request limits.
 | `LLM-OQ-006` | How should per-stage document progress be stored so retries can reuse parsing? | Extraction persistence |
 | `LLM-OQ-007` | When do stages need separate queues or concurrency limits? | Scaling |
 | `LLM-OQ-008` | Are embeddings needed for contextual matching, and where should vectors live? | Normalization AI design |
-
