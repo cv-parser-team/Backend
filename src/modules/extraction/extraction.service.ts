@@ -9,7 +9,7 @@ import {
   aiGenerationSchema
 } from './extraction.schemas.js';
 
-export const EXTRACTION_PROMPT_VERSION = 'candidate-extraction-v2';
+export const EXTRACTION_PROMPT_VERSION = 'candidate-extraction-v3';
 
 export const EXTRACTION_PROMPT = `Extract candidate information from the supplied CV text.
 Use only explicitly stated information and never infer missing values or source references.
@@ -33,7 +33,7 @@ Claim fields by type:
 - language: name, proficiency
 - project: name is required; description, role, url, startDate, endDate, and skills are optional
 
-For a profile link, value is its URL and raw is its visible label; both are required. Use YYYY-MM for dates and never invent a month from a year-only date. An explicitly current end date omits value and instead has current true and its original wording in raw. Put unsupported or incomplete information, including year-only dates, awards, and courses, in unmapped with its original text and sources. Consolidate clearly identical claims and combine their source references. Do not emit null, empty values, unknown fields, or unsupported claim types. Return JSON only.`;
+For a profile link, value is its URL and raw is its visible label; both are required. Dates use YYYY when only a year is stated and YYYY-MM when a month is stated; never invent a month. Split ranges into distinct fields: "2037-2040" becomes startDate value "2037" and endDate value "2040", both with raw "2037-2040"; "2037-Present" becomes startDate value "2037" and endDate current true with raw "Present"; a lone "2037" remains value "2037"; "March 2037-2040" becomes startDate value "2037-03" and endDate value "2040". Never copy a complete range into either date value. Apply the same precision rules to education, project, issueDate, and expiryDate. An explicitly current end date omits value and instead has current true and its original wording in raw. Put awards, courses, and genuinely unsupported or incomplete information in unmapped with its original text and sources. Consolidate clearly identical claims and combine their source references. Do not emit null, empty values, unknown fields, or unsupported claim types. Return JSON only.`;
 
 export interface CandidateExtractionRequest {
   operationId: string;
@@ -55,13 +55,17 @@ export interface CandidateExtractionServiceDependencies {
   provider: string;
   model: string;
   timeoutMs: number;
+  // Inspection tools may observe the in-memory provider output. Production
+  // workflows omit this callback, so the application does not store or log it.
+  onProviderOutput?: (output: unknown) => void;
 }
 
 export function createCandidateExtractionService({
   llmService,
   provider,
   model,
-  timeoutMs
+  timeoutMs,
+  onProviderOutput
 }: CandidateExtractionServiceDependencies): CandidateExtractionService {
   return {
     async extract(request) {
@@ -77,6 +81,8 @@ export function createCandidateExtractionService({
         outputSchema: aiGenerationSchema,
         timeoutMs
       });
+
+      onProviderOutput?.(response.output);
 
       return {
         invocationId: response.invocationId,

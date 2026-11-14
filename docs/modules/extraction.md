@@ -148,6 +148,9 @@ items returned with it.
 
   A value without confidence or sources is invalid.
 - `raw` keeps the text as the CV wrote it, such as `Oct 2023`.
+- Dates use `YYYY` when the source states only a year and `YYYY-MM` when it
+  states a month. A range is split into separate start and end values without
+  inventing a month.
 - `unmapped` holds information the AI found that has no place in the profile,
   such as courses or awards.
 
@@ -162,9 +165,9 @@ claim, because a claim cannot exist without it.
 | Valid item | A pending extracted claim draft |
 | Value with low confidence | Kept, with its confidence, so the candidate can review it |
 | Required field missing | Whole claim unmapped, reason `missing_<field>`, such as `missing_start_date` |
-| Required field invalid, such as a start date of `2021` or an empty name | Whole claim unmapped, reason `invalid_date` or `invalid_value` |
+| Required field invalid, such as a start date of `2021-13` or an empty name | Whole claim unmapped, reason `invalid_date` or `invalid_value` |
 | Required field cites a reference absent from the supplied AI input | Whole claim unmapped, reason `invalid_source` |
-| Optional date not `YYYY-MM`, such as an end date of `2023` | Only that field unmapped, reason `invalid_date`; no month is invented |
+| Optional date not `YYYY` or `YYYY-MM`, such as an end date of `2023-13` | Only that field unmapped, reason `invalid_date` |
 | End date written as `Present` | `current: true`; the end date stays empty |
 | End date before start date | Only the end date unmapped, reason `invalid_date_order` |
 | Optional field too long, empty, or not part of the type | Only that field unmapped, reason `invalid_value` |
@@ -257,7 +260,7 @@ The language claim from the input is also a draft, with a confidence of 0.6
 taken from its proficiency. A field set aside on its own looks like this:
 
 ```json
-{ "label": "education.endDate", "text": "2023", "sources": ["L22"], "reason": "invalid_date" }
+{ "label": "education.endDate", "text": "2023-13", "sources": ["L22"], "reason": "invalid_date" }
 ```
 
 - `claims` are drafts with `origin: extracted` and `status: pending`. Each has
@@ -288,13 +291,11 @@ taken from its proficiency. A field set aside on its own looks like this:
    wording, sources, source document, and explicit current status; confidence
    can be added when a review or evaluation feature has a concrete use for it.
 
-## Version 2
-
-Listed under "Revisit later" on the task:
+## Revisit later
 
 - Detect near or semantic duplicates against accepted or rejected claims.
 - Normalize aliases and detect conflicts.
-- Accept year-only dates and grades.
+- Accept grades as structured education data.
 
 ## Manual inspection
 
@@ -305,8 +306,10 @@ npm run llm:inspect
 ```
 
 The command sends a deterministic referenced CV sample through the configured
-provider, prints the mapped profile, pending claim drafts, unmapped items, and
-invocation ID, and records the provider invocation in `llm_invocations`.
+provider, writes an HTML report containing the mapped result and the in-memory
+provider output, and records the provider invocation in `llm_invocations`.
+The provider output is escaped into that local report only; it is not stored
+in the application database or logs by the extraction workflow.
 Extracted claims and `unmapped_data` are not written by this command yet; that
 requires wiring the persistence coordinator into a workflow with a document
 and candidate owner.

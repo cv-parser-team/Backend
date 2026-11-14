@@ -152,19 +152,36 @@ function normalizeClaimValues(values: ClaimBody['values']): ClaimValues {
   return normalized;
 }
 
-// YYYY-MM strings sort chronologically, so plain comparison is sufficient.
+// A year-only start begins in January and a year-only end extends through
+// December. This rejects only ranges that cannot overlap without inventing a
+// month, such as start 2024 and end 2023.
+function dateLowerBound(value: string): string {
+  return value.length === 4 ? `${value}-01` : value;
+}
+
+function dateUpperBound(value: string): string {
+  return value.length === 4 ? `${value}-12` : value;
+}
+
+function dateRangeIsReversed(start: string, end: string): boolean {
+  return dateUpperBound(end) < dateLowerBound(start);
+}
+
 function assertValidClaimDates(input: ClaimBody): void {
   switch (input.type) {
     case 'employment':
     case 'education':
-      if (input.values.endDate && input.values.endDate < input.values.startDate) {
+      if (
+        input.values.endDate &&
+        dateRangeIsReversed(input.values.startDate, input.values.endDate)
+      ) {
         throw new InvalidClaimDatesError('End date cannot be before start date');
       }
       break;
     case 'certification':
       if (
         input.values.expiryDate &&
-        input.values.expiryDate < input.values.issueDate
+        dateRangeIsReversed(input.values.issueDate, input.values.expiryDate)
       ) {
         throw new InvalidClaimDatesError('Expiry date cannot be before issue date');
       }
@@ -173,7 +190,7 @@ function assertValidClaimDates(input: ClaimBody): void {
       if (
         input.values.startDate &&
         input.values.endDate &&
-        input.values.endDate < input.values.startDate
+        dateRangeIsReversed(input.values.startDate, input.values.endDate)
       ) {
         throw new InvalidClaimDatesError('End date cannot be before start date');
       }

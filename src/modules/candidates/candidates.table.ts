@@ -76,6 +76,12 @@ export const claimStatus = pgEnum('claim_status', [
   'rejected'
 ]);
 
+export const claimDatePrecision = pgEnum('claim_date_precision', [
+  'year',
+  'month'
+]);
+export type ClaimDatePrecision = (typeof claimDatePrecision.enumValues)[number];
+
 export const candidates = pgTable(
   'candidates',
   {
@@ -239,7 +245,11 @@ export const employmentDetails = pgTable(
     employer: text('employer').notNull(),
     jobTitle: text('job_title').notNull(),
     startDate: date('start_date', { mode: 'string' }).notNull(),
+    startDatePrecision: claimDatePrecision('start_date_precision')
+      .default('month')
+      .notNull(),
     endDate: date('end_date', { mode: 'string' }),
+    endDatePrecision: claimDatePrecision('end_date_precision'),
     location: text('location'),
     description: text('description'),
     skills: text('skills').array().default(sql`'{}'::text[]`).notNull()
@@ -249,6 +259,10 @@ export const employmentDetails = pgTable(
     check(
       'employment_details_dates_ordered',
       sql`${table.endDate} is null or ${table.endDate} >= ${table.startDate}`
+    ),
+    check(
+      'employment_details_end_precision_matches_date',
+      sql`(${table.endDate} is null) = (${table.endDatePrecision} is null)`
     )
   ]
 );
@@ -261,12 +275,20 @@ export const educationDetails = pgTable(
     degree: text('degree').notNull(),
     fieldOfStudy: text('field_of_study'),
     startDate: date('start_date', { mode: 'string' }).notNull(),
-    endDate: date('end_date', { mode: 'string' })
+    startDatePrecision: claimDatePrecision('start_date_precision')
+      .default('month')
+      .notNull(),
+    endDate: date('end_date', { mode: 'string' }),
+    endDatePrecision: claimDatePrecision('end_date_precision')
   },
   (table) => [
     check(
       'education_details_dates_ordered',
       sql`${table.endDate} is null or ${table.endDate} >= ${table.startDate}`
+    ),
+    check(
+      'education_details_end_precision_matches_date',
+      sql`(${table.endDate} is null) = (${table.endDatePrecision} is null)`
     )
   ]
 );
@@ -278,13 +300,21 @@ export const certificationDetails = pgTable(
     title: text('title').notNull(),
     issuer: text('issuer').notNull(),
     issueDate: date('issue_date', { mode: 'string' }).notNull(),
+    issueDatePrecision: claimDatePrecision('issue_date_precision')
+      .default('month')
+      .notNull(),
     expiryDate: date('expiry_date', { mode: 'string' }),
+    expiryDatePrecision: claimDatePrecision('expiry_date_precision'),
     credentialId: text('credential_id')
   },
   (table) => [
     check(
       'certification_details_dates_ordered',
       sql`${table.expiryDate} is null or ${table.expiryDate} >= ${table.issueDate}`
+    ),
+    check(
+      'certification_details_expiry_precision_matches_date',
+      sql`(${table.expiryDate} is null) = (${table.expiryDatePrecision} is null)`
     )
   ]
 );
@@ -307,7 +337,9 @@ export const projectDetails = pgTable(
     role: text('role'),
     url: text('url'),
     startDate: date('start_date', { mode: 'string' }),
+    startDatePrecision: claimDatePrecision('start_date_precision'),
     endDate: date('end_date', { mode: 'string' }),
+    endDatePrecision: claimDatePrecision('end_date_precision'),
     skills: text('skills').array().default(sql`'{}'::text[]`).notNull()
   },
   (table) => [
@@ -316,6 +348,14 @@ export const projectDetails = pgTable(
       'project_details_dates_ordered',
       sql`${table.startDate} is null or ${table.endDate} is null
         or ${table.endDate} >= ${table.startDate}`
+    ),
+    check(
+      'project_details_start_precision_matches_date',
+      sql`(${table.startDate} is null) = (${table.startDatePrecision} is null)`
+    ),
+    check(
+      'project_details_end_precision_matches_date',
+      sql`(${table.endDate} is null) = (${table.endDatePrecision} is null)`
     )
   ]
 );

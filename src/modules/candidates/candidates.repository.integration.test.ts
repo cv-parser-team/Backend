@@ -123,7 +123,7 @@ describeWithDatabase('candidates repository database integration', () => {
             values: {
               employer: 'Example Labs',
               jobTitle: 'Backend Engineer',
-              startDate: '2022-01',
+              startDate: '2022',
               skills: ['TypeScript', 'PostgreSQL']
             },
             extraction
@@ -133,7 +133,7 @@ describeWithDatabase('candidates repository database integration', () => {
             claimType: 'project',
             origin: 'extracted',
             status: 'pending',
-            values: { name: 'LuminaCV', startDate: '2025-01' },
+            values: { name: 'LuminaCV', startDate: '2025' },
             extraction
           }
         ],
@@ -153,10 +153,10 @@ describeWithDatabase('candidates repository database integration', () => {
       {
         employer: 'Example Labs',
         jobTitle: 'Backend Engineer',
-        startDate: '2022-01',
+        startDate: '2022',
         skills: ['TypeScript', 'PostgreSQL']
       },
-      { name: 'LuminaCV', startDate: '2025-01' }
+      { name: 'LuminaCV', startDate: '2025' }
     ]);
     expect(created.every((claim) =>
       claim.extraction?.sourceDocumentId === documentId
@@ -182,6 +182,14 @@ describeWithDatabase('candidates repository database integration', () => {
     expect(storedSkills).toHaveLength(2);
     expect(storedEmployment).toHaveLength(1);
     expect(storedProjects).toHaveLength(1);
+    expect(storedEmployment[0]).toMatchObject({
+      startDate: '2022-01-01',
+      startDatePrecision: 'year'
+    });
+    expect(storedProjects[0]).toMatchObject({
+      startDate: '2025-01-01',
+      startDatePrecision: 'year'
+    });
   });
 
   it('rolls back replacement when a detail row violates a constraint', async () => {

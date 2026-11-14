@@ -46,14 +46,14 @@ Content-Type: multipart/form-data; boundary=LuminaCVProcessingBoundary
 Content-Disposition: form-data; name="file"; filename="processing-test.pdf"
 Content-Type: application/pdf
 
-< ../testResumes/Alexander.pdf
+< ../testResumes/STEFANO.pdf
 --LuminaCVProcessingBoundary--
 
 ###
 @documentId = {{sourceUpload.response.body.data[0].document.documentId}}
 
 ### Check the processed document (200)
-# Wait for the worker log to report outcome=processed, then run this request.
+# Wait for the worker log to report outcome=processed, then run this   request.
 # Expected document status: ready.
 # To verify the latest database result, run this command in a terminal:
 # docker compose exec -T postgres psql -U postgres -d luminacv -c "SELECT d.document_id, d.status AS document_status, j.status AS job_status, j.attempt_count, e.status AS extraction_status, e.page_count, jsonb_array_length(e.content->'pages') AS parsed_pages, jsonb_array_length(e.content->'blocks') AS parsed_blocks, e.failures FROM documents d JOIN document_processing_jobs j USING (document_id) JOIN document_extractions e USING (document_id) ORDER BY e.updated_at DESC LIMIT 1;"

@@ -18,10 +18,11 @@ const phoneSchema = { type: 'string', minLength: 1, maxLength: 30 } as const;
 
 const contactEmailSchema = { type: 'string', format: 'email', maxLength: 320 } as const;
 
-// Year and month only (YYYY-MM), matching how CVs usually present dates.
-const monthSchema = {
+// Preserve the precision supplied by the candidate or CV. A year is valid on
+// its own; a month is never invented to make a partial date pass validation.
+const claimDateSchema = {
   type: 'string',
-  pattern: '^\\d{4}-(0[1-9]|1[0-2])$'
+  pattern: '^\\d{4}(-(0[1-9]|1[0-2]))?$'
 } as const;
 
 const profileLinkSchema = {
@@ -88,8 +89,8 @@ export const employmentValuesSchema = {
   properties: {
     employer: shortTextSchema,
     jobTitle: shortTextSchema,
-    startDate: monthSchema,
-    endDate: monthSchema,
+    startDate: claimDateSchema,
+    endDate: claimDateSchema,
     description: longTextSchema,
     location: shortTextSchema,
     skills: {
@@ -108,8 +109,8 @@ export const educationValuesSchema = {
     institution: shortTextSchema,
     degree: shortTextSchema,
     fieldOfStudy: shortTextSchema,
-    startDate: monthSchema,
-    endDate: monthSchema
+    startDate: claimDateSchema,
+    endDate: claimDateSchema
   },
   required: ['institution', 'degree', 'startDate'],
   additionalProperties: false
@@ -120,8 +121,8 @@ export const certificationValuesSchema = {
   properties: {
     title: shortTextSchema,
     issuer: shortTextSchema,
-    issueDate: monthSchema,
-    expiryDate: monthSchema,
+    issueDate: claimDateSchema,
+    expiryDate: claimDateSchema,
     credentialId: { type: 'string', minLength: 1, maxLength: 100, pattern: '\\S' }
   },
   required: ['title', 'issuer', 'issueDate'],
@@ -145,8 +146,8 @@ export const projectValuesSchema = {
     description: longTextSchema,
     role: shortTextSchema,
     url: { type: 'string', format: 'uri', maxLength: 2048 },
-    startDate: monthSchema,
-    endDate: monthSchema,
+    startDate: claimDateSchema,
+    endDate: claimDateSchema,
     skills: {
       type: 'array',
       maxItems: 50,

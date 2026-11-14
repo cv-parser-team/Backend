@@ -129,7 +129,10 @@ describe('parsing inspection report', () => {
       }]
     };
 
-    const report = buildParsingInspectionReport(result, 'resume<script>.pdf', trace);
+    const report = buildParsingInspectionReport(result, 'resume<script>.pdf', trace, {
+      styles: '.embedded-claims{color:green}',
+      content: '<section class="embedded-claims">Structured claims</section>'
+    });
 
     expect(report).toContain('resume&lt;script&gt;.pdf');
     expect(report).toContain('&lt;Sample &amp; Candidate&gt;');
@@ -149,6 +152,8 @@ describe('parsing inspection report', () => {
     expect(report).toContain('confirmed · cross-lane');
     expect(report).toContain('full-width-section');
     expect(report).toContain('Usual body height: <code>20</code>');
+    expect(report).toContain('.embedded-claims{color:green}');
+    expect(report).toContain('<section class="embedded-claims">Structured claims</section>');
     expect(report).toContain('1 active-content coverage');
     expect(report).toContain('title-area prominence');
     expect(report).toContain('entry candidate');

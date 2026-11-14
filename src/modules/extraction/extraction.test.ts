@@ -263,6 +263,40 @@ describe('AI output mapping', () => {
     });
   });
 
+  it('keeps year-only and mixed-precision dates without inventing months', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'employment',
+          fields: {
+            employer: field('Example Corp', ['L1']),
+            jobTitle: field('Developer', ['L1']),
+            startDate: field('2021', ['L2'], '2021-2024'),
+            endDate: field('2024', ['L2'], '2021-2024')
+          }
+        },
+        {
+          type: 'certification',
+          fields: {
+            title: field('Writing for Marketing', ['L3']),
+            issuer: field('Example Institute', ['L4']),
+            issueDate: field('2023', ['L3'], '2023')
+          }
+        }
+      ])
+    );
+
+    expect(result.unmapped).toEqual([]);
+    expect(result.claims[0]).toMatchObject({
+      values: { startDate: '2021', endDate: '2024' },
+      rawValues: { startDate: '2021-2024', endDate: '2021-2024' }
+    });
+    expect(result.claims[1]).toMatchObject({
+      type: 'certification',
+      values: { issueDate: '2023' }
+    });
+  });
+
   it.each([
     [
       'a required field is missing',
@@ -271,12 +305,12 @@ describe('AI output mapping', () => {
       'missing_employer'
     ],
     [
-      'the required start date has only a year',
+      'the required start date is malformed',
       'education',
       {
         institution: field('Sample University', ['L1']),
         degree: field('BSc', ['L1']),
-        startDate: field('2021', ['L2'])
+        startDate: field('2021-00', ['L2'])
       },
       'invalid_date'
     ],
@@ -296,13 +330,13 @@ describe('AI output mapping', () => {
 
   it.each([
     [
-      'the end date has only a year',
+      'the end date is malformed',
       'education',
       {
         institution: field('Sample University', ['L1']),
         degree: field('BSc', ['L1']),
         startDate: field('2019-09', ['L2']),
-        endDate: field('2023', ['L2'])
+        endDate: field('2023-13', ['L2'])
       },
       'endDate',
       'invalid_date'
@@ -365,7 +399,7 @@ describe('AI output mapping', () => {
           type: 'project',
           fields: {
             name: field('Shop API', ['L1'], undefined, 0.9),
-            endDate: field('2024', ['L2'], undefined, 0.2)
+            endDate: field('2024-13', ['L2'], undefined, 0.2)
           }
         }
       ])
@@ -488,7 +522,7 @@ describe('AI output mapping', () => {
           fields: {
             institution: field('Sample University', ['L1']),
             degree: field('BSc', ['L1']),
-            startDate: field('2021', ['L2'], 'Class of 2021')
+            startDate: field('2021-00', ['L2'], 'Class of 2021')
           }
         }
       ])
@@ -593,7 +627,7 @@ describe('AI output mapping', () => {
 
     expect(countByType).toEqual({
       employment: 2,
-      education: 1,
+      education: 2,
       certification: 1,
       skill: 3,
       language: 2,
@@ -607,7 +641,6 @@ describe('AI output mapping', () => {
     ).toBe(true);
     expect(result.claims[0]).toMatchObject({ current: true, confidence: 0.75 });
     expect(result.unmapped.map(({ label, reason }) => [label, reason])).toEqual([
-      ['education', 'invalid_date'],
       ['project.endDate', 'invalid_date_order'],
       ['award', 'invalid_item'],
       ['Courses', 'unsupported_section'],

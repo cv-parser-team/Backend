@@ -7,6 +7,7 @@ import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-wor
 import {
   candidates,
   certificationDetails,
+  type ClaimDatePrecision,
   ClaimExtractionMetadata,
   ClaimFieldValue,
   type ClaimSourceAnchor,
@@ -189,15 +190,32 @@ function readList(values: ClaimValues, fieldName: string): string[] {
   return Array.isArray(value) ? value : [];
 }
 
-// The API uses YYYY-MM; the database stores the first day of that month.
-function toDate(month: string): string;
-function toDate(month: string | null): string | null;
-function toDate(month: string | null): string | null {
-  return month === null ? null : `${month}-01`;
+interface StoredClaimDate {
+  date: string;
+  precision: ClaimDatePrecision;
 }
 
-function toMonth(date: string | null): string | null {
-  return date === null ? null : date.slice(0, 7);
+function toStoredDate(
+  value: string,
+  boundary: 'start' | 'end'
+): StoredClaimDate {
+  if (value.length === 4) {
+    return {
+      date: `${value}-${boundary === 'start' ? '01' : '12'}-01`,
+      precision: 'year'
+    };
+  }
+  return { date: `${value}-01`, precision: 'month' };
+}
+
+function fromStoredDate(
+  date: string | null,
+  precision: ClaimDatePrecision | null
+): string | null {
+  if (date === null || precision === null) {
+    return null;
+  }
+  return precision === 'year' ? date.slice(0, 4) : date.slice(0, 7);
 }
 
 // Optional fields that are empty are omitted, matching the request shape.
@@ -218,11 +236,16 @@ function toSkillRow(values: ClaimValues) {
 }
 
 function toEmploymentRow(values: ClaimValues) {
+  const startDate = toStoredDate(readRequiredText(values, 'startDate'), 'start');
+  const endValue = readText(values, 'endDate');
+  const endDate = endValue === null ? null : toStoredDate(endValue, 'end');
   return {
     employer: readRequiredText(values, 'employer'),
     jobTitle: readRequiredText(values, 'jobTitle'),
-    startDate: toDate(readRequiredText(values, 'startDate')),
-    endDate: toDate(readText(values, 'endDate')),
+    startDate: startDate.date,
+    startDatePrecision: startDate.precision,
+    endDate: endDate?.date ?? null,
+    endDatePrecision: endDate?.precision ?? null,
     location: readText(values, 'location'),
     description: readText(values, 'description'),
     skills: readList(values, 'skills')
@@ -230,21 +253,33 @@ function toEmploymentRow(values: ClaimValues) {
 }
 
 function toEducationRow(values: ClaimValues) {
+  const startDate = toStoredDate(readRequiredText(values, 'startDate'), 'start');
+  const endValue = readText(values, 'endDate');
+  const endDate = endValue === null ? null : toStoredDate(endValue, 'end');
   return {
     institution: readRequiredText(values, 'institution'),
     degree: readRequiredText(values, 'degree'),
     fieldOfStudy: readText(values, 'fieldOfStudy'),
-    startDate: toDate(readRequiredText(values, 'startDate')),
-    endDate: toDate(readText(values, 'endDate'))
+    startDate: startDate.date,
+    startDatePrecision: startDate.precision,
+    endDate: endDate?.date ?? null,
+    endDatePrecision: endDate?.precision ?? null
   };
 }
 
 function toCertificationRow(values: ClaimValues) {
+  const issueDate = toStoredDate(readRequiredText(values, 'issueDate'), 'start');
+  const expiryValue = readText(values, 'expiryDate');
+  const expiryDate = expiryValue === null
+    ? null
+    : toStoredDate(expiryValue, 'end');
   return {
     title: readRequiredText(values, 'title'),
     issuer: readRequiredText(values, 'issuer'),
-    issueDate: toDate(readRequiredText(values, 'issueDate')),
-    expiryDate: toDate(readText(values, 'expiryDate')),
+    issueDate: issueDate.date,
+    issueDatePrecision: issueDate.precision,
+    expiryDate: expiryDate?.date ?? null,
+    expiryDatePrecision: expiryDate?.precision ?? null,
     credentialId: readText(values, 'credentialId')
   };
 }
@@ -257,13 +292,19 @@ function toLanguageRow(values: ClaimValues) {
 }
 
 function toProjectRow(values: ClaimValues) {
+  const startValue = readText(values, 'startDate');
+  const endValue = readText(values, 'endDate');
+  const startDate = startValue === null ? null : toStoredDate(startValue, 'start');
+  const endDate = endValue === null ? null : toStoredDate(endValue, 'end');
   return {
     name: readRequiredText(values, 'name'),
     description: readText(values, 'description'),
     role: readText(values, 'role'),
     url: readText(values, 'url'),
-    startDate: toDate(readText(values, 'startDate')),
-    endDate: toDate(readText(values, 'endDate')),
+    startDate: startDate?.date ?? null,
+    startDatePrecision: startDate?.precision ?? null,
+    endDate: endDate?.date ?? null,
+    endDatePrecision: endDate?.precision ?? null,
     skills: readList(values, 'skills')
   };
 }
@@ -470,8 +511,11 @@ async function selectClaims(
       values = compactValues({
         employer: employment.employer,
         jobTitle: employment.jobTitle,
-        startDate: toMonth(employment.startDate),
-        endDate: toMonth(employment.endDate),
+        startDate: fromStoredDate(
+          employment.startDate,
+          employment.startDatePrecision
+        ),
+        endDate: fromStoredDate(employment.endDate, employment.endDatePrecision),
         location: employment.location,
         description: employment.description,
         skills: employment.skills
@@ -481,15 +525,21 @@ async function selectClaims(
         institution: education.institution,
         degree: education.degree,
         fieldOfStudy: education.fieldOfStudy,
-        startDate: toMonth(education.startDate),
-        endDate: toMonth(education.endDate)
+        startDate: fromStoredDate(education.startDate, education.startDatePrecision),
+        endDate: fromStoredDate(education.endDate, education.endDatePrecision)
       });
     } else if (claim.claimType === 'certification' && certification) {
       values = compactValues({
         title: certification.title,
         issuer: certification.issuer,
-        issueDate: toMonth(certification.issueDate),
-        expiryDate: toMonth(certification.expiryDate),
+        issueDate: fromStoredDate(
+          certification.issueDate,
+          certification.issueDatePrecision
+        ),
+        expiryDate: fromStoredDate(
+          certification.expiryDate,
+          certification.expiryDatePrecision
+        ),
         credentialId: certification.credentialId
       });
     } else if (claim.claimType === 'language' && language) {
@@ -503,8 +553,8 @@ async function selectClaims(
         description: project.description,
         role: project.role,
         url: project.url,
-        startDate: toMonth(project.startDate),
-        endDate: toMonth(project.endDate),
+        startDate: fromStoredDate(project.startDate, project.startDatePrecision),
+        endDate: fromStoredDate(project.endDate, project.endDatePrecision),
         skills: project.skills
       });
     }

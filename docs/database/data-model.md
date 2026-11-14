@@ -69,7 +69,9 @@ erDiagram
         text employer
         text job_title
         date start_date
+        claim_date_precision start_date_precision
         date end_date "nullable"
+        claim_date_precision end_date_precision "nullable"
         text location "nullable"
         text description "nullable"
         text[] skills
@@ -80,14 +82,18 @@ erDiagram
         text degree
         text field_of_study "nullable"
         date start_date
+        claim_date_precision start_date_precision
         date end_date "nullable"
+        claim_date_precision end_date_precision "nullable"
     }
     CERTIFICATION_DETAILS {
         uuid claim_id PK, FK
         text title
         text issuer
         date issue_date
+        claim_date_precision issue_date_precision
         date expiry_date "nullable"
+        claim_date_precision expiry_date_precision "nullable"
         text credential_id "nullable"
     }
     LANGUAGE_DETAILS {
@@ -102,7 +108,9 @@ erDiagram
         text role "nullable"
         text url "nullable"
         date start_date "nullable"
+        claim_date_precision start_date_precision "nullable"
         date end_date "nullable"
+        claim_date_precision end_date_precision "nullable"
         text[] skills
     }
     CANONICAL_TERMS {
@@ -348,9 +356,14 @@ claim foreign key, and rows cascade on claim deletion. Real columns, rather
 than generic JSON values, let profile search query and index claim data
 directly, such as finding candidates with a given skill.
 
-The API exchanges dates as `YYYY-MM`. The database stores them as `date` values
-on the first day of the month, so durations can be calculated and records can
-be sorted by date. Optional fields are omitted from API values when empty.
+The API exchanges dates as `YYYY` or `YYYY-MM`, preserving the precision stated
+by the candidate or CV. The database stores a `date` plus a precision column.
+Month values use the first day of that month. A year-only start or issue date
+uses January 1, while a year-only end or expiry date uses December 1; the
+precision column makes this storage boundary reversible and prevents those
+sentinel months from being exposed as source facts. Dates remain sortable and
+range constraints remain enforceable. Optional fields are omitted from API
+values when empty.
 
 ### `skill_details`
 
@@ -366,8 +379,10 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
 | `employer` | Text | Required | Employer name |
 | `job_title` | Text | Required | Job title |
-| `start_date` | Date | Required | First month of employment |
-| `end_date` | Date | Nullable, not before `start_date` | Last month; null for a current role |
+| `start_date` | Date | Required | Stored lower date bound for employment |
+| `start_date_precision` | `claim_date_precision` | Required | Whether the source supplied a year or month |
+| `end_date` | Date | Nullable, not before `start_date` | Stored upper date bound; null when absent |
+| `end_date_precision` | `claim_date_precision` | Null exactly when `end_date` is null | Whether the source supplied a year or month |
 | `location` | Text | Nullable | Work location, such as "Remote" |
 | `description` | Text | Nullable | Role description |
 | `skills` | Text array | Required, defaults to empty, GIN indexed | Skills used in the role |
@@ -380,8 +395,10 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `institution` | Text | Required | Educational institution |
 | `degree` | Text | Required | Degree, such as "BSc" |
 | `field_of_study` | Text | Nullable | Field of study |
-| `start_date` | Date | Required | First month of study |
-| `end_date` | Date | Nullable, not before `start_date` | Last month; null while studying |
+| `start_date` | Date | Required | Stored lower date bound for study |
+| `start_date_precision` | `claim_date_precision` | Required | Whether the source supplied a year or month |
+| `end_date` | Date | Nullable, not before `start_date` | Stored upper date bound; null when absent |
+| `end_date_precision` | `claim_date_precision` | Null exactly when `end_date` is null | Whether the source supplied a year or month |
 
 ### `certification_details`
 
@@ -390,8 +407,10 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
 | `title` | Text | Required | Certificate title |
 | `issuer` | Text | Required | Issuing organization |
-| `issue_date` | Date | Required | Issue month |
-| `expiry_date` | Date | Nullable, not before `issue_date` | Expiry month |
+| `issue_date` | Date | Required | Stored lower date bound for issue date |
+| `issue_date_precision` | `claim_date_precision` | Required | Whether the source supplied a year or month |
+| `expiry_date` | Date | Nullable, not before `issue_date` | Stored upper date bound for expiry date |
+| `expiry_date_precision` | `claim_date_precision` | Null exactly when `expiry_date` is null | Whether the source supplied a year or month |
 | `credential_id` | Text | Nullable | Issuer credential identifier |
 
 ### `language_details`
@@ -413,8 +432,10 @@ Many CVs list projects without dates, so both dates are optional.
 | `description` | Text | Nullable | What the project does |
 | `role` | Text | Nullable | The candidate's role, such as "Backend developer" |
 | `url` | Text | Nullable, valid URL | Project or repository link |
-| `start_date` | Date | Nullable | First month of the project |
-| `end_date` | Date | Nullable, not before `start_date` when both are set | Last month |
+| `start_date` | Date | Nullable | Stored lower date bound for the project |
+| `start_date_precision` | `claim_date_precision` | Null exactly when `start_date` is null | Whether the source supplied a year or month |
+| `end_date` | Date | Nullable, not before `start_date` when both are set | Stored upper date bound |
+| `end_date_precision` | `claim_date_precision` | Null exactly when `end_date` is null | Whether the source supplied a year or month |
 | `skills` | Text array | Required, defaults to empty, GIN indexed | Skills used in the project |
 
 ## Claim revisions
@@ -422,7 +443,7 @@ Many CVs list projects without dates, so both dates are optional.
 Owned by the `candidates` module.
 
 Before a claim's details are edited, its previous values are archived in
-`claim_revisions` in the API shape (camelCase fields, `YYYY-MM` dates). The
+`claim_revisions` in the API shape (camelCase fields, `YYYY` or `YYYY-MM` dates). The
 details tables therefore always hold current values, and the oldest revision of
 an edited claim holds its original values. Unchanged edits create no revision.
 Revisions are not searched and cascade on claim deletion.
@@ -440,6 +461,7 @@ Revisions are not searched and cascade on claim deletion.
   `language`, `project`
 - `claim_origin`: `manual`, `extracted`
 - `claim_status`: `pending`, `accepted`, `rejected`
+- `claim_date_precision`: `year`, `month`
 
 ## Normalization
 

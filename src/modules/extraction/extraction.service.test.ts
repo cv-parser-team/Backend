@@ -29,6 +29,24 @@ function dependencies() {
 }
 
 describe('candidate extraction service', () => {
+  it('exposes provider output only through an explicitly configured observer', async () => {
+    const generate = vi.fn<LlmService['generate']>();
+    const onProviderOutput = vi.fn();
+    const service = createCandidateExtractionService({
+      llmService: { generate },
+      provider: 'gemini',
+      model: 'gemini-test',
+      timeoutMs: 5_000,
+      onProviderOutput
+    });
+    const output = { version: AI_OUTPUT_VERSION, claims: [] };
+    generate.mockResolvedValue({ invocationId, output });
+
+    await service.extract({ operationId, input });
+
+    expect(onProviderOutput).toHaveBeenCalledWith(output);
+  });
+
   it('sends compact CV input through the tracked LLM contract and maps the output', async () => {
     const { generate, service } = dependencies();
     generate.mockResolvedValue({

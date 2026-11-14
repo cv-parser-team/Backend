@@ -135,9 +135,17 @@ const PROFILE_VALIDATORS = {
   profileLink: validatorFor(profileProperties.profileLinks.items)
 };
 
-// Year and month only, as manual claims require. A year alone is not enough,
+// Dates keep the precision supplied by the source. A year is valid on its own,
 // and no month is invented.
-const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const CLAIM_DATE = /^\d{4}(-(0[1-9]|1[0-2]))?$/;
+
+function dateLowerBound(value: string): string {
+  return value.length === 4 ? `${value}-01` : value;
+}
+
+function dateUpperBound(value: string): string {
+  return value.length === 4 ? `${value}-12` : value;
+}
 
 function toSnakeCase(fieldName: string): string {
   return fieldName.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
@@ -289,8 +297,8 @@ function mapClaim(claim: ExtractedClaim, availableSources?: ReadonlySet<string>)
       }
       continue;
     }
-    const isMonth = typeof field.value === 'string' && MONTH.test(field.value);
-    if (rules.dates?.includes(fieldName) && !isMonth) {
+    const isDate = typeof field.value === 'string' && CLAIM_DATE.test(field.value);
+    if (rules.dates?.includes(fieldName) && !isDate) {
       if (!setFieldAside(fieldName, 'invalid_date')) {
         return rejectClaim('invalid_date');
       }
@@ -305,11 +313,17 @@ function mapClaim(claim: ExtractedClaim, availableSources?: ReadonlySet<string>)
     return rejectClaim(`missing_${toSnakeCase(missing)}`);
   }
 
-  // YYYY-MM strings sort chronologically. The end date is always optional.
+  // A year-only end spans through December, while a year-only start begins in
+  // January. Reject only a range that cannot be chronologically valid.
   const [start, end] = rules.dates ?? [];
   const startDate = start ? values[start] : undefined;
   const endDate = end ? values[end] : undefined;
-  if (end && typeof startDate === 'string' && typeof endDate === 'string' && endDate < startDate) {
+  if (
+    end &&
+    typeof startDate === 'string' &&
+    typeof endDate === 'string' &&
+    dateUpperBound(endDate) < dateLowerBound(startDate)
+  ) {
     setFieldAside(end, 'invalid_date_order');
   }
 

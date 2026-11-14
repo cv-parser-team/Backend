@@ -227,10 +227,10 @@ describe('candidates tables', () => {
   });
 
   it('enforces date order in the database', () => {
-    expect(getTableConfig(employmentDetails).checks).toHaveLength(1);
-    expect(getTableConfig(educationDetails).checks).toHaveLength(1);
-    expect(getTableConfig(certificationDetails).checks).toHaveLength(1);
-    expect(getTableConfig(projectDetails).checks).toHaveLength(1);
+    expect(getTableConfig(employmentDetails).checks).toHaveLength(2);
+    expect(getTableConfig(educationDetails).checks).toHaveLength(2);
+    expect(getTableConfig(certificationDetails).checks).toHaveLength(2);
+    expect(getTableConfig(projectDetails).checks).toHaveLength(3);
   });
 
   it('indexes employment and project skills for search', () => {
@@ -473,6 +473,27 @@ describe('candidates service', () => {
       })
     ).rejects.toBeInstanceOf(InvalidClaimDatesError);
     expect(repository.createClaim).not.toHaveBeenCalled();
+  });
+
+  it('accepts year-only dates and compares their full possible range', async () => {
+    const repository = createRepositoryDouble();
+    const service = createService(repository);
+
+    await service.createClaim(userId, {
+      type: 'employment',
+      values: {
+        employer: 'Example Corp',
+        jobTitle: 'Developer',
+        startDate: '2021-06',
+        endDate: '2021'
+      }
+    });
+
+    expect(repository.createClaim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        values: expect.objectContaining({ startDate: '2021-06', endDate: '2021' })
+      })
+    );
   });
 
   it('sends the complete new values when a claim changes', async () => {
@@ -1015,6 +1036,30 @@ describe('candidates routes', () => {
     expect(service.createClaim).toHaveBeenCalledWith(userId, payload);
   });
 
+  it('accepts year-only claim dates without adding a month', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+    const payload = {
+      type: 'education',
+      values: {
+        institution: 'University of Jordan',
+        degree: 'BSc',
+        startDate: '2018',
+        endDate: '2022'
+      }
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims',
+      headers: authorization,
+      payload
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(service.createClaim).toHaveBeenCalledWith(userId, payload);
+  });
+
   it('applies the values schema that matches the claim type', async () => {
     const service = createServiceDouble();
     app = await createCandidatesApp(service);
@@ -1029,7 +1074,7 @@ describe('candidates routes', () => {
       { type: 'language', values: { name: 'English', proficiency: '' } },
       { type: 'project', values: { description: 'A shop API' } },
       { type: 'project', values: { name: 'Shop API', url: 'not a link' } },
-      { type: 'project', values: { name: 'Shop API', startDate: '2024' } },
+      { type: 'project', values: { name: 'Shop API', startDate: '2024-00' } },
       { type: 'award', values: { name: 'Best Graduate' } }
     ];
 

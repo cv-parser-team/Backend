@@ -542,7 +542,8 @@ describe('creating claims in a batch', () => {
           values: {
             employer: 'Example Labs',
             jobTitle: 'Engineer',
-            startDate: '2024-01'
+            startDate: '2024',
+            endDate: '2026'
           },
           extraction
         }
@@ -562,7 +563,10 @@ describe('creating claims in a batch', () => {
       expect.objectContaining({
         claimId: context.claimRows[1]!.claimId,
         employer: 'Example Labs',
-        startDate: '2024-01-01'
+        startDate: '2024-01-01',
+        startDatePrecision: 'year',
+        endDate: '2026-12-01',
+        endDatePrecision: 'year'
       })
     ]);
     expect(created.map(({ claimType }) => claimType)).toEqual([

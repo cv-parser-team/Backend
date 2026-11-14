@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { config } from '../config/config.js';
 import { AppDatabase } from '../infrastructure/database/database.js';
 import {
@@ -8,6 +10,7 @@ import {
   LlmError
 } from '../infrastructure/llm/index.js';
 import { createCandidateExtractionService } from '../modules/extraction/index.js';
+import { buildLlmInspectionReport } from '../modules/extraction/inspection-report.js';
 
 const inspectionInput = `[P1 R0 independent]
 ## L1 Samira Haddad
@@ -27,6 +30,7 @@ L11 Engineering Excellence Award, 2024`;
 
 async function main(): Promise<void> {
   let database: AppDatabase | undefined;
+  let providerOutput: unknown;
   try {
     const client = createGeminiLlmClient({
       apiKey: config.llm.apiKey,
@@ -41,14 +45,25 @@ async function main(): Promise<void> {
       llmService,
       provider: config.llm.provider,
       model: config.llm.model,
-      timeoutMs: config.llm.timeoutMs
+      timeoutMs: config.llm.timeoutMs,
+      onProviderOutput: (output) => {
+        providerOutput = output;
+      }
     });
     const result = await extractionService.extract({
       operationId: randomUUID(),
       input: inspectionInput
     });
+    const outputPath = resolve(process.argv[2] ?? 'llm-inspection.html');
 
-    console.log(JSON.stringify(result, null, 2));
+    await writeFile(
+      outputPath,
+      buildLlmInspectionReport(result, inspectionInput, providerOutput),
+      'utf8'
+    );
+    console.log(`Claims: ${result.claims.length}`);
+    console.log(`Unmapped: ${result.unmapped.length}`);
+    console.log(`Report: ${outputPath}`);
   } catch (error) {
     if (error instanceof LlmError) {
       console.error(

@@ -32,9 +32,9 @@ does not load `.env` files itself.
 | `npm run dev` | Start the API in watch mode |
 | `npm run worker:dev` | Start the document-processing worker in watch mode |
 | `npm run worker` | Start the compiled document-processing worker |
-| `npm run parsing:inspect` | Select a PDF or DOCX and write a visual HTML parsing report |
+| `npm run parsing:inspect -- [file] [output] [--llm]` | Write a visual HTML parsing report; `--llm` embeds structured AI claims in the same report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
-| `npm run llm:inspect` | Run one tracked candidate-extraction request against the configured LLM |
+| `npm run llm:inspect -- [output.html]` | Run one tracked candidate-extraction request and write a formatted HTML claims report (defaults to `llm-inspection.html`) |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |
