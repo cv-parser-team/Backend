@@ -32,3 +32,23 @@ export class InvalidExtractionProvenanceError extends Error {
     this.name = 'InvalidExtractionProvenanceError';
   }
 }
+
+export class ExtractionReviewVersionConflictError extends AppError {
+  readonly statusCode = 409;
+  readonly code = 'VERSION_CONFLICT';
+
+  constructor(current: unknown) {
+    super('Extraction review item was changed by another request. Reload it and try again', {
+      current
+    });
+  }
+}
+
+export class ExtractionReviewItemNotPendingError extends AppError {
+  readonly statusCode = 409;
+  readonly code = 'EXTRACTION_REVIEW_ITEM_NOT_PENDING';
+
+  constructor(current: unknown) {
+    super('Only pending extraction review items can be dismissed', { current });
+  }
+}

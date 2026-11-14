@@ -33,6 +33,20 @@ Resolved and dismissed review items remain as history. Unsupported sections,
 unknown claim types, and structurally broken items continue to use
 `document_extractions.unmapped_data`.
 
+Candidates can read their pending review items with
+`GET /api/candidates/me/extraction-review-items`. The optional `documentId`
+query parameter limits the result to one owned document. Without it, the
+service resolves all documents through the documents module's ownership
+boundary and queries review items by those IDs. Terminal items are excluded.
+The listing endpoint is read-only.
+
+A candidate can dismiss an item that should not become a claim with
+`PATCH /api/candidates/me/extraction-review-items/:reviewItemId/dismiss`.
+Dismissal verifies ownership through the source document, changes only a
+`pending` item, increments its version, and accepts the last-read version in
+`If-Match`. It does not delete the extracted evidence. Resolving a corrected
+item into a canonical claim remains a later transactional slice.
+
 Re-extracting a document replaces only that candidate's pending extracted
 claims from the same source document. Manual claims, reviewed claims, legacy
 claims without document provenance, and claims from other documents are never

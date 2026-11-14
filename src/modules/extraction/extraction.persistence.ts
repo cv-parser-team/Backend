@@ -36,7 +36,10 @@ export interface ExtractionPersistenceCoordinator {
 
 export interface ExtractionPersistenceCoordinatorDependencies {
   candidateWriter: CandidateExtractionWriter;
-  reviewRepository: ExtractionReviewRepository;
+  reviewRepository: Pick<
+    ExtractionReviewRepository,
+    'replacePendingForDocument'
+  >;
   parsingService: Pick<ParsingService, 'saveUnmappedData'>;
   unitOfWork: UnitOfWork;
 }

@@ -100,6 +100,8 @@ and always act on the authenticated user's own profile:
 - `GET /api/candidates/me/documents/:documentId`
 - `GET /api/candidates/me/documents/:documentId/content`
 - `DELETE /api/candidates/me/documents/:documentId`
+- `GET /api/candidates/me/extraction-review-items` (pending items; optional `documentId` filter)
+- `PATCH /api/candidates/me/extraction-review-items/:reviewItemId/dismiss`
 
 There is intentionally no health endpoint.
 
@@ -119,6 +121,10 @@ If-Match: "3"
 the record changed since, the request fails with `409 VERSION_CONFLICT`, and
 `error.details.current` holds the record as it is now. `If-Match` is optional
 for now; without it, edits are not checked.
+
+Dismissal of an extraction review item also accepts `If-Match` and returns the
+new version in its `ETag` header. Dismissed items no longer appear in the
+pending review-item list.
 
 Uploading a file whose earlier copy is still being deleted returns
 `409 DOCUMENT_BEING_DELETED` for that file; upload it again shortly. A request

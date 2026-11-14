@@ -1,3 +1,5 @@
+import type { FastifyPluginAsync } from 'fastify';
+import fastifyPlugin from 'fastify-plugin';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
 import { createUnitOfWork } from '../../infrastructure/database/unit-of-work.js';
 import { createCandidateExtractionWriter } from '../candidates/index.js';
@@ -7,6 +9,8 @@ import {
 } from './extraction.persistence.js';
 import type { CandidateExtractionService } from './extraction.service.js';
 import { createExtractionReviewRepository } from './extraction-review.repository.js';
+import { extractionReviewRoutes } from './extraction-review.routes.js';
+import { createExtractionReviewService } from './extraction-review.service.js';
 import {
   createCandidateExtractionWorkflow as createWorkflow,
   type CandidateExtractionWorkflow
@@ -18,6 +22,8 @@ export {
   EXTRACTION_PROMPT_VERSION
 } from './extraction.service.js';
 export {
+  ExtractionReviewItemNotPendingError,
+  ExtractionReviewVersionConflictError,
   InvalidExtractionProvenanceError,
   SourceReferenceResolutionError
 } from './extraction.errors.js';
@@ -52,6 +58,28 @@ export type {
   ExtractionReviewIssue,
   ExtractionReviewItemDraft
 } from './extraction.mapper.js';
+export type {
+  ExtractionReviewItem,
+  ExtractionReviewService
+} from './extraction-review.service.js';
+
+const registerExtractionReview: FastifyPluginAsync = async (fastify) => {
+  const service = createExtractionReviewService({
+    repository: createExtractionReviewRepository(fastify.database),
+    documentsService: fastify.candidateDocumentsService
+  });
+
+  await fastify.register(extractionReviewRoutes, {
+    prefix: '/api/candidates/me/extraction-review-items',
+    service,
+    guards: fastify.authGuards
+  });
+};
+
+export const extractionReviewModule = fastifyPlugin(registerExtractionReview, {
+  name: 'extraction-review',
+  dependencies: ['database', 'auth', 'documents']
+});
 
 export interface CandidateExtractionWorkflowComposition {
   database: AppDatabase;

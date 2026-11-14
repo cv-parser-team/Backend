@@ -34,6 +34,17 @@ Content-Type: application/json
 ###
 @accessToken = {{signIn.response.body.data.accessToken}}
 
+### Create the candidate profile (201 on the first run)
+# On later runs, this returns 409 because the profile already exists; continue
+# with the document upload.
+POST {{baseUrl}}/api/candidates/me
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "fullName": "Document Processing Test"
+}
+
 ### Upload a source document and schedule processing (201)
 # @name sourceUpload
 # The initial document status can be stored, processing, or ready depending on
@@ -46,7 +57,7 @@ Content-Type: multipart/form-data; boundary=LuminaCVProcessingBoundary
 Content-Disposition: form-data; name="file"; filename="processing-test.pdf"
 Content-Type: application/pdf
 
-< ../testResumes/STEFANO.pdf
+< ../testResumes/Arisha.pdf
 --LuminaCVProcessingBoundary--
 
 ###
@@ -63,6 +74,36 @@ Authorization: Bearer {{accessToken}}
 ### List ready source documents (200)
 # The uploaded document should be present after processing completes.
 GET {{baseUrl}}/api/candidates/me/documents?purpose=source&status=ready
+Authorization: Bearer {{accessToken}}
+
+### List all pending extraction review items (200)
+# Run after the worker finishes extraction. The response can be empty when the
+# AI output contains no incomplete or invalid recognized claims.
+GET {{baseUrl}}/api/candidates/me/extraction-review-items
+Authorization: Bearer {{accessToken}}
+
+### List pending extraction review items for the uploaded document (200)
+# @name documentReviewItems
+# Continue with the dismissal requests only when data contains at least one item.
+GET {{baseUrl}}/api/candidates/me/extraction-review-items?documentId={{documentId}}
+Authorization: Bearer {{accessToken}}
+
+###
+@reviewItemId = {{documentReviewItems.response.body.data[0].reviewItemId}}
+@reviewItemVersion = {{documentReviewItems.response.body.data[0].version}}
+
+### Dismiss one pending extraction review item (200)
+# @name dismissReviewItem
+# Expected response: status=dismissed, version incremented by one, and an ETag
+# header containing the new version. If-Match prevents a stale review action.
+PATCH {{baseUrl}}/api/candidates/me/extraction-review-items/{{reviewItemId}}/dismiss
+Authorization: Bearer {{accessToken}}
+If-Match: "{{reviewItemVersion}}"
+
+### Verify the dismissed item is no longer pending (200)
+# The dismissed reviewItemId should not be present in data. Other pending items
+# extracted from the same document can remain.
+GET {{baseUrl}}/api/candidates/me/extraction-review-items?documentId={{documentId}}
 Authorization: Bearer {{accessToken}}
 
 ### Upload the same source again (200; deduplicated=true)

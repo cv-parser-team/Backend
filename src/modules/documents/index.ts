@@ -6,6 +6,7 @@ import { createDocumentsRepository } from './documents.repository.js';
 import { documentsRoutes } from './documents.routes.js';
 import {
   createDocumentsService,
+  type DocumentsService,
   type ProcessingDocumentsService
 } from './documents.service.js';
 import { createLocalDocumentStorage } from './documents.storage.js';
@@ -13,6 +14,10 @@ import { createDocumentValidator } from './documents.validator.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
+    candidateDocumentsService: Pick<
+      DocumentsService,
+      'getDocument' | 'listDocuments'
+    >;
     processingDocumentsService: ProcessingDocumentsService;
   }
 }
@@ -27,6 +32,7 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
   const service = createDocumentsService({ repository, storage, validator });
 
   fastify.decorate('processingDocumentsService', service);
+  fastify.decorate('candidateDocumentsService', service);
 
   fastify.addHook('onListen', async () => {
     const stagingCutoff = new Date(
@@ -125,6 +131,7 @@ export const documentsModule = fastifyPlugin(registerDocuments, {
 });
 
 export type {
+  DocumentsService,
   DocumentContent,
   ProcessingDocumentsService
 } from './documents.service.js';
