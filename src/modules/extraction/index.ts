@@ -6,6 +6,7 @@ import {
   createExtractionPersistenceCoordinator as createPersistenceCoordinator
 } from './extraction.persistence.js';
 import type { CandidateExtractionService } from './extraction.service.js';
+import { createExtractionReviewRepository } from './extraction-review.repository.js';
 import {
   createCandidateExtractionWorkflow as createWorkflow,
   type CandidateExtractionWorkflow
@@ -42,6 +43,15 @@ export type {
 } from './extraction.workflow.js';
 export { mapClaimSourceOccurrences } from './extraction.source-occurrences.js';
 export type { ClaimSourceOccurrenceDraft } from './extraction.source-occurrences.js';
+export { createExtractionReviewRepository } from './extraction-review.repository.js';
+export type {
+  ExtractionReviewItemRecord,
+  ExtractionReviewRepository
+} from './extraction-review.repository.js';
+export type {
+  ExtractionReviewIssue,
+  ExtractionReviewItemDraft
+} from './extraction.mapper.js';
 
 export interface CandidateExtractionWorkflowComposition {
   database: AppDatabase;
@@ -58,6 +68,7 @@ export function composeCandidateExtractionWorkflow({
 }: CandidateExtractionWorkflowComposition): CandidateExtractionWorkflow {
   const persistenceCoordinator = createPersistenceCoordinator({
     candidateWriter: createCandidateExtractionWriter(database),
+    reviewRepository: createExtractionReviewRepository(database),
     parsingService,
     unitOfWork: createUnitOfWork(database)
   });

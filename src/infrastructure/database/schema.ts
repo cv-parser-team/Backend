@@ -4,6 +4,7 @@ export * from '../../modules/auth/auth.table.js';
 export * from '../../modules/candidates/candidates.table.js';
 export * from '../../modules/document-processing/document-processing.table.js';
 export * from '../../modules/documents/documents.table.js';
+export * from '../../modules/extraction/extraction-review.table.js';
 export * from '../../modules/normalization/normalization.table.js';
 export * from '../../modules/parsing/parsing.table.js';
 export * from '../../modules/users/users.table.js';

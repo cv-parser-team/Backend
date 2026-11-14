@@ -10,6 +10,7 @@ import {
 import { createCandidateExtractionWriter } from '../candidates/index.js';
 import {
   createCandidateExtractionService,
+  createExtractionReviewRepository,
   createExtractionPersistenceCoordinator,
   type CandidateExtractionService
 } from '../extraction/index.js';
@@ -58,6 +59,7 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
   const extractionPersistenceCoordinator =
     createExtractionPersistenceCoordinator({
       candidateWriter: createCandidateExtractionWriter(fastify.database),
+      reviewRepository: createExtractionReviewRepository(fastify.database),
       parsingService: fastify.parsingService,
       unitOfWork
     });

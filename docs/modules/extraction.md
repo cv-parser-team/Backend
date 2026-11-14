@@ -5,13 +5,13 @@
 The AI reads the compact text that parsing builds from a CV and returns what it
 found as JSON. This module checks that JSON and turns every valid item into a
 pending extracted claim draft, keeping the original values, the lines they
-came from, and how confident the AI was about each value. Invalid or
-incomplete values are kept as unmapped instead of being rejected or completed
-with invented values.
+came from, and how confident the AI was about each value. Recognized claims
+that are incomplete or invalid are retained as structured review items instead
+of being discarded or completed with invented values.
 
 V1 sends compact parsing input through the tracked LLM service and maps the
 provider's structured output. Its persistence coordinator can atomically save
-pending claim drafts and the document's unmapped data. It does not yet persist
+pending claim drafts, review items, and the document's unmapped data. It does not yet persist
 profile drafts, normalize extracted values through the
 [normalization module](normalization.md), or resolve conflicts. The
 document-processing worker invokes extraction after a successful or partial
@@ -24,8 +24,14 @@ the database transaction; only the final claim and `unmapped_data` writes are
 atomic. The module composition factory assembles that workflow from the
 database-backed candidate writer, parsing service, and `UnitOfWork`.
 Standalone persistence owns that transaction. A larger workflow can instead
-pass its existing database executor, allowing parsed content, claims, unmapped
-data, and processing state to share one transaction without nesting another.
+pass its existing database executor, allowing parsed content, claims, review
+items, unmapped data, and processing state to share one transaction without
+nesting another.
+
+Re-extraction replaces pending `extraction_review_items` for that document.
+Resolved and dismissed review items remain as history. Unsupported sections,
+unknown claim types, and structurally broken items continue to use
+`document_extractions.unmapped_data`.
 
 Re-extracting a document replaces only that candidate's pending extracted
 claims from the same source document. Manual claims, reviewed claims, legacy
@@ -156,24 +162,26 @@ items returned with it.
 
 ## Mapping rules
 
-An invalid **optional** field is set aside on its own and the claim keeps its
-other fields. An invalid or missing **required** field rejects the whole
-claim, because a claim cannot exist without it.
+An invalid **optional** field creates a review item and the claim keeps its
+valid fields. An invalid or missing **required** field prevents canonical claim
+creation but preserves the complete recognized claim as a review item.
 
 | Situation | Result |
 | --- | --- |
 | Valid item | A pending extracted claim draft |
 | Value with low confidence | Kept, with its confidence, so the candidate can review it |
-| Required field missing | Whole claim unmapped, reason `missing_<field>`, such as `missing_start_date` |
-| Required field invalid, such as a start date of `2021-13` or an empty name | Whole claim unmapped, reason `invalid_date` or `invalid_value` |
-| Required field cites a reference absent from the supplied AI input | Whole claim unmapped, reason `invalid_source` |
-| Optional date not `YYYY` or `YYYY-MM`, such as an end date of `2023-13` | Only that field unmapped, reason `invalid_date` |
+| Required field missing | No canonical claim; structured review item with `missing_<field>`, such as `missing_start_date` |
+| Required field invalid, such as a start date of `2021-13` or an empty name | No canonical claim; structured review item with `invalid_date` or `invalid_value` |
+| Required field cites a reference absent from the supplied AI input | No canonical claim; structured review item with `invalid_source` |
+| Optional date not `YYYY` or `YYYY-MM`, such as an end date of `2023-13` | Valid remainder becomes a claim and the original claim becomes a review item with `invalid_date` |
 | End date written as `Present` | `current: true`; the end date stays empty |
-| End date before start date | Only the end date unmapped, reason `invalid_date_order` |
-| Optional field too long, empty, or not part of the type | Only that field unmapped, reason `invalid_value` |
-| Optional field with `raw` text but no value | Only that field unmapped, reason `missing_value` |
-| Optional or profile field cites a reference absent from the supplied AI input | Only that field unmapped, reason `invalid_source` |
-| Unknown type or broken item | Whole item unmapped, reason `invalid_item` |
+| End date before start date | Valid remainder becomes a claim and a review item records `invalid_date_order` |
+| Optional field too long, empty, or not part of the type | Valid remainder becomes a claim and a review item records `invalid_value` |
+| Optional field with `raw` text but no value | Valid remainder becomes a claim and a review item records `missing_value` |
+| Optional claim field cites an absent reference | Valid remainder becomes a claim and a review item records `invalid_source` |
+| Invalid profile field cites an absent reference | Field remains unmapped with `invalid_source` |
+| Structurally invalid item with a supported type and fields object | Structured review item with `invalid_item` |
+| Unknown type or unrecognizable item | Whole item unmapped, reason `invalid_item` |
 | Invalid profile field, such as a bad email | Only that field unmapped, reason `invalid_value` |
 | Profile link without its link text | Only that link unmapped, reason `missing_label` |
 | Profile that does not follow the contract | Whole profile unmapped, reason `invalid_item`, keeping its text |
@@ -197,8 +205,8 @@ claim, because a claim cannot exist without it.
   row, retains every supporting claim field and reference token, and carries
   only physical evidence. Any missing or ambiguous anchor fails the mapping
   instead of silently losing provenance.
-- An unmapped field is labelled with its claim type and field, such as
-  `employment.endDate`.
+- A review issue identifies its `field`, machine-readable `code`, and whether
+  the field is required.
 
 ## Output
 
@@ -245,6 +253,7 @@ claim, because a claim cannot exist without it.
       }
     }
   ],
+  "reviewItems": [],
   "unmapped": [
     {
       "label": "Courses",
@@ -257,10 +266,16 @@ claim, because a claim cannot exist without it.
 ```
 
 The language claim from the input is also a draft, with a confidence of 0.6
-taken from its proficiency. A field set aside on its own looks like this:
+taken from its proficiency. A recognized incomplete claim looks like this:
 
 ```json
-{ "label": "education.endDate", "text": "2023-13", "sources": ["L22"], "reason": "invalid_date" }
+{
+  "claimType": "education",
+  "fields": { "endDate": { "value": "2023-13", "confidence": 0.8, "sources": ["L22"] } },
+  "issues": [{ "field": "endDate", "code": "invalid_date", "required": false }],
+  "sources": ["L22"],
+  "fingerprint": "..."
+}
 ```
 
 - `claims` are drafts with `origin: extracted` and `status: pending`. Each has
@@ -268,8 +283,8 @@ taken from its proficiency. A field set aside on its own looks like this:
   `sources`, and the sources of each field.
 - `rawValues` keep the text as the CV wrote it for fields that had a `raw`
   text, such as `Oct 2023` or `Present`, so original values are never lost.
-- An unmapped item keeps the CV's own wording: a field's `raw` text when given,
-  otherwise its value.
+- A review item retains the original structured fields, issue details, combined
+  sources, and a deterministic fingerprint.
 - `unmapped` items have the shape of `document_extractions.unmapped_data` and
   replace that field as the latest successful extraction snapshot. An empty
   result clears unmapped items from an older extraction.

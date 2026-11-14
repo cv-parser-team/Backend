@@ -91,6 +91,7 @@ describe('candidate extraction service', () => {
           fieldSources: { name: ['L2'] }
         }
       ],
+      reviewItems: [],
       unmapped: []
     });
     expect(generate).toHaveBeenCalledWith({
@@ -139,14 +140,18 @@ describe('candidate extraction service', () => {
     const result = await service.extract({ operationId, input });
 
     expect(result.claims).toEqual([]);
-    expect(result.unmapped).toEqual([
+    expect(result.reviewItems).toEqual([
       {
-        label: 'skill',
-        text: 'TypeScript',
+        claimType: 'skill',
+        fields: {
+          name: { value: 'TypeScript', confidence: 0.98, sources: ['L99'] }
+        },
+        issues: [{ field: 'name', code: 'invalid_source', required: true }],
         sources: ['L99'],
-        reason: 'invalid_source'
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/)
       }
     ]);
+    expect(result.unmapped).toEqual([]);
   });
 
   it('preserves an LLM failure without attempting to map it', async () => {

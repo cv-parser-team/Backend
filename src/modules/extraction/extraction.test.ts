@@ -320,12 +320,20 @@ describe('AI output mapping', () => {
       { name: field('x'.repeat(101), ['L1']) },
       'invalid_value'
     ]
-  ])('rejects the whole claim when %s', (_case, type, fields, reason) => {
+  ])('keeps the whole claim for review when %s', (_case, type, fields, reason) => {
     const result = mapAiOutput(output([{ type, fields }]));
 
     expect(result.claims).toEqual([]);
-    expect(result.unmapped).toEqual([expect.objectContaining({ label: type, reason })]);
-    expect(result.unmapped[0]!.sources.length).toBeGreaterThan(0);
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: type,
+        fields,
+        issues: [expect.objectContaining({ code: reason, required: true })]
+      })
+    ]);
+    expect(result.reviewItems[0]!.sources.length).toBeGreaterThan(0);
+    expect(result.reviewItems[0]!.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each([
@@ -381,14 +389,19 @@ describe('AI output mapping', () => {
       'startDate',
       'missing_value'
     ]
-  ])('sets only the field aside when %s', (_case, type, fields, fieldName, reason) => {
+  ])('keeps a valid remainder and sends the invalid field to review when %s', (_case, type, fields, fieldName, reason) => {
     const result = mapAiOutput(output([{ type, fields }]));
 
     expect(result.claims).toHaveLength(1);
     expect(result.claims[0]!.values).not.toHaveProperty(fieldName);
     expect(result.claims[0]!.fieldConfidence).not.toHaveProperty(fieldName);
-    expect(result.unmapped).toEqual([
-      expect.objectContaining({ label: `${type}.${fieldName}`, reason })
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: type,
+        fields,
+        issues: [{ field: fieldName, code: reason, required: false }]
+      })
     ]);
   });
 
@@ -424,13 +437,13 @@ describe('AI output mapping', () => {
     );
 
     expect(result.claims).toEqual([]);
-    expect(result.unmapped).toEqual([
-      {
-        label: 'employment',
-        text: 'Developer; Example Corp; 2021-03',
-        sources: ['L1', 'L99', 'L2'],
-        reason: 'invalid_source'
-      }
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'employment',
+        issues: [{ field: 'employer', code: 'invalid_source', required: true }],
+        sources: ['L1', 'L99', 'L2']
+      })
     ]);
   });
 
@@ -464,6 +477,13 @@ describe('AI output mapping', () => {
     expect(result.profile.values).toEqual({ fullName: 'Emma Carter' });
     expect(result.claims).toHaveLength(1);
     expect(result.claims[0]!.values).toEqual({ name: 'Shop API' });
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'project',
+        issues: [{ field: 'description', code: 'invalid_source', required: false }],
+        sources: ['B3', 'B99']
+      })
+    ]);
     expect(result.unmapped).toEqual([
       {
         label: 'profile.headline',
@@ -475,12 +495,6 @@ describe('AI output mapping', () => {
         label: 'profile.summary',
         text: 'API specialist',
         sources: ['L100'],
-        reason: 'invalid_source'
-      },
-      {
-        label: 'project.description',
-        text: 'Built payment APIs',
-        sources: ['B99'],
         reason: 'invalid_source'
       },
       {
@@ -514,7 +528,29 @@ describe('AI output mapping', () => {
     ]);
   });
 
-  it('keeps the text as written when a claim is unmapped', () => {
+  it('retains a structurally invalid recognized claim for review', () => {
+    const malformed = {
+      type: 'skill',
+      fields: {
+        name: { value: 'TypeScript', confidence: 0.9, sources: [] }
+      }
+    };
+
+    const result = mapAiOutput(output([malformed]));
+
+    expect(result.claims).toEqual([]);
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'skill',
+        fields: malformed.fields,
+        issues: [{ field: null, code: 'invalid_item', required: false }],
+        sources: []
+      })
+    ]);
+  });
+
+  it('keeps the text as written when a claim needs review', () => {
     const result = mapAiOutput(
       output([
         {
@@ -528,11 +564,12 @@ describe('AI output mapping', () => {
       ])
     );
 
-    expect(result.unmapped[0]).toEqual({
-      label: 'education',
-      text: 'Sample University; BSc; Class of 2021',
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems[0]).toMatchObject({
+      claimType: 'education',
+      fields: { startDate: { raw: 'Class of 2021' } },
       sources: ['L1', 'L2'],
-      reason: 'invalid_date'
+      issues: [{ field: 'startDate', code: 'invalid_date', required: true }]
     });
   });
 
@@ -640,8 +677,13 @@ describe('AI output mapping', () => {
       )
     ).toBe(true);
     expect(result.claims[0]).toMatchObject({ current: true, confidence: 0.75 });
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'project',
+        issues: [{ field: 'endDate', code: 'invalid_date_order', required: false }]
+      })
+    ]);
     expect(result.unmapped.map(({ label, reason }) => [label, reason])).toEqual([
-      ['project.endDate', 'invalid_date_order'],
       ['award', 'invalid_item'],
       ['Courses', 'unsupported_section'],
       ['Interests', 'unsupported_section']

@@ -177,6 +177,20 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    EXTRACTION_REVIEW_ITEMS {
+        uuid review_item_id PK
+        uuid document_id FK
+        uuid extraction_invocation_id
+        text claim_type
+        jsonb fields
+        jsonb issues
+        text[] sources
+        text fingerprint
+        extraction_review_status status
+        integer version
+        timestamptz created_at
+        timestamptz updated_at
+    }
     DOCUMENT_PROCESSING_JOBS {
         uuid job_id PK
         uuid document_id FK
@@ -210,6 +224,7 @@ erDiagram
     USERS ||--o| CANDIDATES : "has profile"
     USERS ||--o{ DOCUMENTS : owns
     DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
+    DOCUMENTS ||--o{ EXTRACTION_REVIEW_ITEMS : "has review items"
     DOCUMENTS ||--o{ DOCUMENT_PROCESSING_JOBS : schedules
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
@@ -710,6 +725,30 @@ references (such as `L12` or `B3`), and a `reason`, such as
 `unsupported_section` or `missing_start_date`. The parser does not fill it, and
 parsing a document again does not clear it yet; that is decided with the
 AI-output mapping.
+
+## Extraction review items
+
+Owned by the `extraction` module and defined in
+`src/modules/extraction/extraction-review.table.ts`.
+
+`extraction_review_items` retains supported claim types that cannot safely be
+written to canonical claim tables. Re-extraction deletes and replaces only the
+document's `pending` items; `resolved` and `dismissed` rows remain.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `review_item_id` | UUID | Primary key, generated | Stable review item identifier |
+| `document_id` | UUID | Required, document FK, cascade delete | Source document and ownership path |
+| `extraction_invocation_id` | UUID | Required | LLM invocation that produced the item |
+| `claim_type` | Text | Required, supported claim type check | Intended canonical claim type |
+| `fields` | JSONB | Required | Original structured extracted fields, including raw text and evidence |
+| `issues` | JSONB | Required, nonempty array | Field, code, and required flag for each mapping problem |
+| `sources` | Text array | Required | Combined AI-input evidence references |
+| `fingerprint` | Text | Required, nonblank | Deterministic identity of the extracted claim content |
+| `status` | `extraction_review_status` | Required, defaults to `pending` | Review lifecycle: `pending`, `resolved`, or `dismissed` |
+| `version` | Integer | Required, defaults to 1 | Optimistic review version for the future resolution API |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Latest update time |
 
 ## Maintenance rules
 

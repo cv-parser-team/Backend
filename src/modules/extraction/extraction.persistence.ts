@@ -12,6 +12,7 @@ import type {
   ParsingService
 } from '../parsing/index.js';
 import { InvalidExtractionProvenanceError } from './extraction.errors.js';
+import type { ExtractionReviewRepository } from './extraction-review.repository.js';
 import type { CandidateExtractionResult } from './extraction.service.js';
 import { mapClaimSourceOccurrences } from './extraction.source-occurrences.js';
 
@@ -35,12 +36,14 @@ export interface ExtractionPersistenceCoordinator {
 
 export interface ExtractionPersistenceCoordinatorDependencies {
   candidateWriter: CandidateExtractionWriter;
+  reviewRepository: ExtractionReviewRepository;
   parsingService: Pick<ParsingService, 'saveUnmappedData'>;
   unitOfWork: UnitOfWork;
 }
 
 export function createExtractionPersistenceCoordinator({
   candidateWriter,
+  reviewRepository,
   parsingService,
   unitOfWork
 }: ExtractionPersistenceCoordinatorDependencies): ExtractionPersistenceCoordinator {
@@ -80,6 +83,12 @@ export function createExtractionPersistenceCoordinator({
     await parsingService.saveUnmappedData(
       documentId,
       result.unmapped,
+      transaction
+    );
+    await reviewRepository.replacePendingForDocument(
+      documentId,
+      result.invocationId,
+      result.reviewItems,
       transaction
     );
 

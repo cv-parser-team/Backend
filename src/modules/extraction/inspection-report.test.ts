@@ -43,6 +43,15 @@ describe('LLM inspection report', () => {
           skills: ['L7']
         }
       }],
+      reviewItems: [{
+        claimType: 'education',
+        fields: {
+          institution: { value: 'Example University', confidence: 0.9, sources: ['L20'] }
+        },
+        issues: [{ field: 'startDate', code: 'missing_start_date', required: true }],
+        sources: ['L20'],
+        fingerprint: 'review-fingerprint'
+      }],
       unmapped: [{
         label: 'Awards',
         text: '<Engineering Excellence>',
@@ -55,6 +64,8 @@ describe('LLM inspection report', () => {
 
     expect(report).toContain('AI structured extraction');
     expect(report).toContain('Structured claims');
+    expect(report).toContain('Claims needing review');
+    expect(report).toContain('missing start date');
     expect(report).toContain('employment');
     expect(report).toContain('Backend &lt;Engineer&gt;');
     expect(report).toContain('<strong>72%</strong>');
@@ -84,6 +95,7 @@ describe('LLM inspection report', () => {
       version: 1,
       profile: { values: {}, rawValues: {}, confidence: {}, sources: {} },
       claims: [],
+      reviewItems: [],
       unmapped: []
     };
 

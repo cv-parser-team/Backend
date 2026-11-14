@@ -109,6 +109,7 @@ function createCandidateExtractionResult(): CandidateExtractionResult {
     version: 1,
     profile: { values: {}, rawValues: {}, confidence: {}, sources: {} },
     claims: [],
+    reviewItems: [],
     unmapped: []
   };
 }

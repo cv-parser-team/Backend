@@ -11,6 +11,7 @@ import {
   type ExtractionPersistenceCoordinatorDependencies
 } from './extraction.persistence.js';
 import type { CandidateExtractionResult } from './extraction.service.js';
+import type { ExtractionReviewRepository } from './extraction-review.repository.js';
 import {
   InvalidExtractionProvenanceError,
   SourceReferenceResolutionError
@@ -69,6 +70,17 @@ const result: CandidateExtractionResult = {
       fieldSources: { name: ['L8'] }
     }
   ],
+  reviewItems: [
+    {
+      claimType: 'employment',
+      fields: {
+        employer: { value: 'Example Corp', confidence: 0.9, sources: ['L12'] }
+      },
+      issues: [{ field: 'jobTitle', code: 'missing_job_title', required: true }],
+      sources: ['L12'],
+      fingerprint: 'review-fingerprint'
+    }
+  ],
   unmapped: [
     {
       label: 'Awards',
@@ -88,6 +100,9 @@ function dependencies() {
     .mockResolvedValue(
       {} as Awaited<ReturnType<ParsingService['saveUnmappedData']>>
     );
+  const replacePendingForDocument = vi
+    .fn<ExtractionReviewRepository['replacePendingForDocument']>()
+    .mockResolvedValue([]);
   const unitOfWork: UnitOfWork = {
     run: vi.fn(async (work) => work(transaction))
   };
@@ -95,9 +110,11 @@ function dependencies() {
   return {
     saveExtractedClaims,
     saveUnmappedData,
+    replacePendingForDocument,
     unitOfWork,
     coordinator: createExtractionPersistenceCoordinator({
       candidateWriter: { saveExtractedClaims },
+      reviewRepository: { replacePendingForDocument },
       parsingService: { saveUnmappedData },
       unitOfWork
     } satisfies ExtractionPersistenceCoordinatorDependencies)
@@ -110,6 +127,7 @@ describe('extraction persistence coordinator', () => {
       coordinator,
       saveExtractedClaims,
       saveUnmappedData,
+      replacePendingForDocument,
       unitOfWork
     } = dependencies();
 
@@ -152,6 +170,12 @@ describe('extraction persistence coordinator', () => {
       result.unmapped,
       transaction
     );
+    expect(replacePendingForDocument).toHaveBeenCalledWith(
+      documentId,
+      invocationId,
+      result.reviewItems,
+      transaction
+    );
   });
 
   it('joins a caller transaction and clears unmapped data with an empty snapshot', async () => {
@@ -159,6 +183,7 @@ describe('extraction persistence coordinator', () => {
       coordinator,
       saveExtractedClaims,
       saveUnmappedData,
+      replacePendingForDocument,
       unitOfWork
     } = dependencies();
 
@@ -167,7 +192,7 @@ describe('extraction persistence coordinator', () => {
         {
           documentId,
           ownerUserId,
-          result: { ...result, claims: [], unmapped: [] },
+          result: { ...result, claims: [], reviewItems: [], unmapped: [] },
           sourceContent
         },
         callerTransaction
@@ -186,10 +211,16 @@ describe('extraction persistence coordinator', () => {
       [],
       callerTransaction
     );
+    expect(replacePendingForDocument).toHaveBeenCalledWith(
+      documentId,
+      invocationId,
+      [],
+      callerTransaction
+    );
   });
 
   it('writes nothing when physical claim evidence cannot be resolved', async () => {
-    const { coordinator, saveExtractedClaims, saveUnmappedData } =
+    const { coordinator, saveExtractedClaims, saveUnmappedData, replacePendingForDocument } =
       dependencies();
 
     await expect(
@@ -205,10 +236,11 @@ describe('extraction persistence coordinator', () => {
     ).rejects.toBeInstanceOf(SourceReferenceResolutionError);
     expect(saveExtractedClaims).not.toHaveBeenCalled();
     expect(saveUnmappedData).not.toHaveBeenCalled();
+    expect(replacePendingForDocument).not.toHaveBeenCalled();
   });
 
   it('translates conflicting physical anchors at the extraction boundary', async () => {
-    const { coordinator, saveExtractedClaims, saveUnmappedData } = dependencies();
+    const { coordinator, saveExtractedClaims, saveUnmappedData, replacePendingForDocument } = dependencies();
     const conflict = new ConflictingSourceOccurrenceError('pdf:1:8');
     saveExtractedClaims.mockRejectedValueOnce(conflict);
 
@@ -222,5 +254,6 @@ describe('extraction persistence coordinator', () => {
     );
     await expect(persistence).rejects.toMatchObject({ cause: conflict });
     expect(saveUnmappedData).not.toHaveBeenCalled();
+    expect(replacePendingForDocument).not.toHaveBeenCalled();
   });
 });
