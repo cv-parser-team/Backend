@@ -15,15 +15,28 @@ export type DismissExtractionReviewItemResult =
   | { status: 'not_pending'; current: ExtractionReviewItemRecord }
   | { status: 'missing' };
 
+export type ResolveExtractionReviewItemResult =
+  | { status: 'saved'; record: ExtractionReviewItemRecord }
+  | { status: 'conflict'; current: ExtractionReviewItemRecord }
+  | { status: 'not_pending'; current: ExtractionReviewItemRecord }
+  | { status: 'missing' };
+
 export interface ExtractionReviewRepository {
-  listPendingForDocuments(
-    documentIds: string[]
+  listForDocuments(
+    documentIds: string[],
+    status: ExtractionReviewItemRecord['status']
   ): Promise<ExtractionReviewItemRecord[]>;
   findById(reviewItemId: string): Promise<ExtractionReviewItemRecord | null>;
   dismissPending(
     reviewItemId: string,
     expectedVersion?: number
   ): Promise<DismissExtractionReviewItemResult>;
+  resolvePending(
+    reviewItemId: string,
+    resolvedClaimId: string,
+    expectedVersion: number | undefined,
+    transaction: DatabaseExecutor
+  ): Promise<ResolveExtractionReviewItemResult>;
   replacePendingForDocument(
     documentId: string,
     extractionInvocationId: string,
@@ -36,7 +49,7 @@ export function createExtractionReviewRepository(
   database: AppDatabase
 ): ExtractionReviewRepository {
   return {
-    async listPendingForDocuments(documentIds) {
+    async listForDocuments(documentIds, status) {
       if (documentIds.length === 0) {
         return [];
       }
@@ -48,7 +61,7 @@ export function createExtractionReviewRepository(
           .where(
             and(
               inArray(extractionReviewItems.documentId, documentIds),
-              eq(extractionReviewItems.status, 'pending')
+              eq(extractionReviewItems.status, status)
             )
           )
           .orderBy(
@@ -93,6 +106,50 @@ export function createExtractionReviewRepository(
         }
 
         const [current] = await database.db
+          .select()
+          .from(extractionReviewItems)
+          .where(eq(extractionReviewItems.reviewItemId, reviewItemId))
+          .limit(1);
+        if (!current) {
+          return { status: 'missing' };
+        }
+        if (current.status !== 'pending') {
+          return { status: 'not_pending', current };
+        }
+        return { status: 'conflict', current };
+      });
+    },
+    async resolvePending(
+      reviewItemId,
+      resolvedClaimId,
+      expectedVersion,
+      transaction
+    ) {
+      return withDbErrors('Extraction review item', async () => {
+        const [saved] = await transaction
+          .update(extractionReviewItems)
+          .set({
+            status: 'resolved',
+            resolvedClaimId,
+            version: sql`${extractionReviewItems.version} + 1`,
+            updatedAt: new Date()
+          })
+          .where(
+            and(
+              eq(extractionReviewItems.reviewItemId, reviewItemId),
+              eq(extractionReviewItems.status, 'pending'),
+              expectedVersion === undefined
+                ? undefined
+                : eq(extractionReviewItems.version, expectedVersion)
+            )
+          )
+          .returning();
+
+        if (saved) {
+          return { status: 'saved', record: saved };
+        }
+
+        const [current] = await transaction
           .select()
           .from(extractionReviewItems)
           .where(eq(extractionReviewItems.reviewItemId, reviewItemId))

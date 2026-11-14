@@ -35,7 +35,7 @@ export interface ExtractionPersistenceCoordinator {
 }
 
 export interface ExtractionPersistenceCoordinatorDependencies {
-  candidateWriter: CandidateExtractionWriter;
+  candidateWriter: Pick<CandidateExtractionWriter, 'saveExtractedClaims'>;
   reviewRepository: Pick<
     ExtractionReviewRepository,
     'replacePendingForDocument'

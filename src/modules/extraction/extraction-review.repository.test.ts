@@ -9,6 +9,7 @@ import type { ExtractionReviewItemDraft } from './extraction.mapper.js';
 
 const documentId = '11111111-1111-4111-8111-111111111111';
 const invocationId = '22222222-2222-4222-8222-222222222222';
+const claimId = '33333333-3333-4333-8333-333333333333';
 const dialect = new PgDialect();
 
 const item: ExtractionReviewItemDraft = {
@@ -26,7 +27,7 @@ function database(db: unknown = {}): AppDatabase {
 }
 
 describe('extraction review repository', () => {
-  it('lists only pending items from the supplied owned documents', async () => {
+  it('lists the requested status from the supplied owned documents', async () => {
     const records = [{ reviewItemId: 'review-1' }];
     const orderBy = vi.fn(async () => records);
     const where = vi.fn((_condition: SQL) => ({ orderBy }));
@@ -38,11 +39,11 @@ describe('extraction review repository', () => {
     const repository = createExtractionReviewRepository(database({ select }));
 
     await expect(
-      repository.listPendingForDocuments([documentId])
+      repository.listForDocuments([documentId], 'resolved')
     ).resolves.toBe(records);
 
     const query = dialect.sqlToQuery(where.mock.calls[0]![0]);
-    expect(query.params).toEqual([documentId, 'pending']);
+    expect(query.params).toEqual([documentId, 'resolved']);
     expect(orderBy).toHaveBeenCalledOnce();
   });
 
@@ -50,7 +51,7 @@ describe('extraction review repository', () => {
     const select = vi.fn();
     const repository = createExtractionReviewRepository(database({ select }));
 
-    await expect(repository.listPendingForDocuments([])).resolves.toEqual([]);
+    await expect(repository.listForDocuments([], 'resolved')).resolves.toEqual([]);
     expect(select).not.toHaveBeenCalled();
   });
 
@@ -70,6 +71,34 @@ describe('extraction review repository', () => {
       record: saved
     });
 
+    const query = dialect.sqlToQuery(where.mock.calls[0]![0]);
+    expect(query.params).toEqual(['review-1', 'pending', 1]);
+  });
+
+  it('links the claim while resolving only a pending item at the expected version', async () => {
+    const saved = {
+      reviewItemId: 'review-1',
+      status: 'resolved',
+      resolvedClaimId: claimId,
+      version: 2
+    };
+    const returning = vi.fn(async () => [saved]);
+    const where = vi.fn((_condition: SQL) => ({ returning }));
+    const set = vi.fn((_values: unknown) => ({ where }));
+    const update = vi.fn((table: unknown) => {
+      expect(table).toBe(extractionReviewItems);
+      return { set };
+    });
+    const transaction = { update } as unknown as DatabaseExecutor;
+    const repository = createExtractionReviewRepository(database());
+
+    await expect(
+      repository.resolvePending('review-1', claimId, 1, transaction)
+    ).resolves.toEqual({ status: 'saved', record: saved });
+
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'resolved', resolvedClaimId: claimId })
+    );
     const query = dialect.sqlToQuery(where.mock.calls[0]![0]);
     expect(query.params).toEqual(['review-1', 'pending', 1]);
   });

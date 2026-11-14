@@ -44,6 +44,19 @@ function dependencies(
         updatedAt: timestamp
       }))
     );
+  const createClaim = vi
+    .fn<CandidateExtractionWriterDependencies['repository']['createClaim']>()
+    .mockImplementation(async (input) => ({
+      claimId: randomUUID(),
+      claimType: input.claimType,
+      origin: input.origin,
+      status: input.status,
+      values: input.values,
+      extraction: input.origin === 'extracted' ? input.extraction : null,
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }));
   const createClaimSourceOccurrences = vi
     .fn<
       CandidateExtractionWriterDependencies['repository']['createClaimSourceOccurrences']
@@ -53,6 +66,7 @@ function dependencies(
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
+    createClaim,
     createClaims,
     createClaimSourceOccurrences
   } as CandidateExtractionWriterDependencies['repository'];
@@ -61,6 +75,7 @@ function dependencies(
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
+    createClaim,
     createClaims,
     createClaimSourceOccurrences,
     writer: createCandidateExtractionWriter({ repository })
@@ -524,5 +539,63 @@ describe('candidate extraction writer', () => {
     expect(listReviewedExtractedClaims).not.toHaveBeenCalled();
     expect(createClaims).not.toHaveBeenCalled();
     expect(createClaimSourceOccurrences).not.toHaveBeenCalled();
+  });
+
+  it('creates a corrected review item as an accepted extracted claim', async () => {
+    const { createClaim, writer } = dependencies(candidate);
+
+    await expect(
+      writer.saveResolvedClaim(
+        userId,
+        {
+          type: 'employment',
+          values: {
+            employer: ' Example Corp ',
+            jobTitle: ' Engineer ',
+            startDate: '2024'
+          },
+          documentId,
+          invocationId,
+          rawValues: { startDate: '2024' },
+          fieldSources: { employer: ['L1'], startDate: ['L2'] },
+          current: false
+        },
+        transaction
+      )
+    ).resolves.toMatchObject({ status: 'accepted', origin: 'extracted' });
+    expect(createClaim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId,
+        claimType: 'employment',
+        status: 'accepted',
+        values: {
+          employer: 'Example Corp',
+          jobTitle: 'Engineer',
+          startDate: '2024'
+        }
+      }),
+      transaction
+    );
+  });
+
+  it('does not create a claim when corrected values are invalid', async () => {
+    const { createClaim, writer } = dependencies(candidate);
+
+    await expect(
+      writer.saveResolvedClaim(
+        userId,
+        {
+          type: 'employment',
+          values: { employer: 'Example Corp' },
+          documentId,
+          invocationId,
+          rawValues: {},
+          fieldSources: {},
+          current: false
+        },
+        transaction
+      )
+    ).rejects.toMatchObject({ code: 'INVALID_CLAIM_VALUES' });
+    expect(createClaim).not.toHaveBeenCalled();
   });
 });

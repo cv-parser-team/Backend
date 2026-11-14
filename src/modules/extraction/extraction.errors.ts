@@ -49,6 +49,6 @@ export class ExtractionReviewItemNotPendingError extends AppError {
   readonly code = 'EXTRACTION_REVIEW_ITEM_NOT_PENDING';
 
   constructor(current: unknown) {
-    super('Only pending extraction review items can be dismissed', { current });
+    super('Only pending extraction review items can be changed', { current });
   }
 }

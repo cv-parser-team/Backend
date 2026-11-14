@@ -6,9 +6,9 @@ import {
   CandidateProfileExistsError,
   ClaimNotReviewableError,
   ClaimTypeMismatchError,
-  InvalidClaimDatesError,
   VersionConflictError
 } from './candidates.errors.js';
+import { prepareClaimValues } from './candidates.claim-values.js';
 import {
   CandidateRecord,
   CandidatesRepository,
@@ -81,6 +81,7 @@ export interface CandidatesService {
   ): Promise<CandidateProfile>;
   createClaim(userId: string, input: ClaimBody): Promise<ClaimRecord>;
   listClaims(userId: string, query: ListClaimsQuery): Promise<ClaimRecord[]>;
+  getClaim(userId: string, claimId: string): Promise<ClaimRecord>;
   updateClaim(
     userId: string,
     claimId: string,
@@ -136,69 +137,6 @@ function toCandidateProfile(
     createdAt: candidate.createdAt,
     updatedAt: candidate.updatedAt
   };
-}
-
-function normalizeClaimValues(values: ClaimBody['values']): ClaimValues {
-  const normalized: ClaimValues = {};
-
-  for (const [fieldName, value] of Object.entries(values)) {
-    if (typeof value === 'string') {
-      normalized[fieldName] = value.trim();
-    } else if (Array.isArray(value) && value.length > 0) {
-      normalized[fieldName] = [...new Set(value.map((item) => item.trim()))];
-    }
-  }
-
-  return normalized;
-}
-
-// A year-only start begins in January and a year-only end extends through
-// December. This rejects only ranges that cannot overlap without inventing a
-// month, such as start 2024 and end 2023.
-function dateLowerBound(value: string): string {
-  return value.length === 4 ? `${value}-01` : value;
-}
-
-function dateUpperBound(value: string): string {
-  return value.length === 4 ? `${value}-12` : value;
-}
-
-function dateRangeIsReversed(start: string, end: string): boolean {
-  return dateUpperBound(end) < dateLowerBound(start);
-}
-
-function assertValidClaimDates(input: ClaimBody): void {
-  switch (input.type) {
-    case 'employment':
-    case 'education':
-      if (
-        input.values.endDate &&
-        dateRangeIsReversed(input.values.startDate, input.values.endDate)
-      ) {
-        throw new InvalidClaimDatesError('End date cannot be before start date');
-      }
-      break;
-    case 'certification':
-      if (
-        input.values.expiryDate &&
-        dateRangeIsReversed(input.values.issueDate, input.values.expiryDate)
-      ) {
-        throw new InvalidClaimDatesError('Expiry date cannot be before issue date');
-      }
-      break;
-    case 'project':
-      if (
-        input.values.startDate &&
-        input.values.endDate &&
-        dateRangeIsReversed(input.values.startDate, input.values.endDate)
-      ) {
-        throw new InvalidClaimDatesError('End date cannot be before start date');
-      }
-      break;
-    case 'skill':
-    case 'language':
-      break;
-  }
 }
 
 function hasSameValues(left: ClaimValues, right: ClaimValues): boolean {
@@ -352,7 +290,6 @@ export function createCandidatesService({
 
     async createClaim(userId, input) {
       const candidate = await requireCandidate(userId);
-      assertValidClaimDates(input);
 
       // Candidate-entered information needs no review and has no source document.
       const claim = await repository.createClaim({
@@ -360,7 +297,7 @@ export function createCandidatesService({
         claimType: input.type,
         origin: 'manual',
         status: 'accepted',
-        values: normalizeClaimValues(input.values)
+        values: prepareClaimValues(input)
       });
       await normalize(claim);
       return claim;
@@ -372,6 +309,11 @@ export function createCandidatesService({
         claimType: query.type,
         status: query.status
       });
+    },
+
+    async getClaim(userId, claimId) {
+      const candidate = await requireCandidate(userId);
+      return requireClaim(candidate.candidateId, claimId);
     },
 
     async updateClaim(userId, claimId, input, expectedVersion) {
@@ -386,9 +328,7 @@ export function createCandidatesService({
       if (claim.claimType !== input.type) {
         throw new ClaimTypeMismatchError();
       }
-      assertValidClaimDates(input);
-
-      const values = normalizeClaimValues(input.values);
+      const values = prepareClaimValues(input);
       if (hasSameValues(claim.values, values)) {
         return claim;
       }

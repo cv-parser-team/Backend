@@ -7,8 +7,11 @@ import {
   extractionReviewItemParamsSchema,
   listExtractionReviewItemsQuerySchema,
   listExtractionReviewItemsResponseSchema,
+  resolveExtractionReviewItemBodySchema,
+  resolveExtractionReviewItemResponseSchema,
   type ExtractionReviewItemParams,
-  type ListExtractionReviewItemsQuery
+  type ListExtractionReviewItemsQuery,
+  type ResolveExtractionReviewItemBody
 } from './extraction-review.schemas.js';
 import type {
   ExtractionReviewItem,
@@ -39,9 +42,10 @@ export const extractionReviewRoutes: FastifyPluginAsync<
       preHandler: candidateOnly
     },
     async (request) => {
-      const data = await service.listPending(
+      const data = await service.list(
         request.auth.userId,
-        request.query.documentId
+        request.query.documentId,
+        request.query.status
       );
       const response: ApiResponse<ExtractionReviewItem[]> = {
         success: true,
@@ -76,6 +80,40 @@ export const extractionReviewRoutes: FastifyPluginAsync<
       };
 
       return reply.header('etag', versionEtag(data.version)).send(response);
+    }
+  );
+
+  fastify.post<{
+    Params: ExtractionReviewItemParams;
+    Body: ResolveExtractionReviewItemBody;
+  }>(
+    '/:reviewItemId/resolve',
+    {
+      schema: {
+        params: extractionReviewItemParamsSchema,
+        body: resolveExtractionReviewItemBodySchema,
+        response: { 201: resolveExtractionReviewItemResponseSchema }
+      },
+      preHandler: candidateOnly
+    },
+    async (request, reply) => {
+      const data = await service.resolve(
+        request.auth.userId,
+        request.params.reviewItemId,
+        request.body.values,
+        parseIfMatchVersion(request.headers['if-match'])
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        message: 'Extraction review item resolved successfully',
+        timestamp: new Date().toISOString()
+      };
+
+      return reply
+        .status(201)
+        .header('etag', versionEtag(data.reviewItem.version))
+        .send(response);
     }
   );
 };

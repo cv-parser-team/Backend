@@ -34,6 +34,7 @@ export function createCandidateExtractionWriter(
 export type {
   CandidateExtractionWriter,
   ExtractedClaimDraftInput,
-  ExtractedClaimSourceOccurrenceInput
+  ExtractedClaimSourceOccurrenceInput,
+  ResolvedExtractionClaimInput
 } from './candidates.extraction-writer.js';
 export { ConflictingSourceOccurrenceError } from './candidates.extraction-writer.js';

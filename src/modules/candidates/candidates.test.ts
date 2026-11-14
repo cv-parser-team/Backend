@@ -316,6 +316,16 @@ describe('candidates service', () => {
     ).rejects.toBeInstanceOf(RecordNotFoundError);
   });
 
+  it('reads a claim through the candidate ownership scope', async () => {
+    const repository = createRepositoryDouble();
+    const service = createService(repository);
+
+    await expect(service.getClaim(userId, claimId)).resolves.toEqual(
+      claimRecord()
+    );
+    expect(repository.findClaim).toHaveBeenCalledWith(candidateId, claimId);
+  });
+
   it('clears optional profile fields set to null', async () => {
     const repository = createRepositoryDouble();
     const service = createService(repository);
@@ -929,6 +939,7 @@ function createServiceDouble(): CandidatesService {
     updateProfile: vi.fn().mockResolvedValue(profile),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     listClaims: vi.fn().mockResolvedValue([claimRecord()]),
+    getClaim: vi.fn().mockResolvedValue(claimRecord()),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
     reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
@@ -1244,6 +1255,25 @@ describe('candidates routes', () => {
 
     expect(languages.statusCode).toBe(200);
     expect(service.listClaims).toHaveBeenCalledWith(userId, { type: 'language' });
+  });
+
+  it('returns one owned claim with its entity tag', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/candidates/me/claims/${claimId}`,
+      headers: authorization
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe('"1"');
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { claimId, version: 1 }
+    });
+    expect(service.getClaim).toHaveBeenCalledWith(userId, claimId);
   });
 
   describe('versions', () => {

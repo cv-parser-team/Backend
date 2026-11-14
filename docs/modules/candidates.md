@@ -50,6 +50,10 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     claims are normalized; rejected claims remain available for audit but are
     excluded from export.
 
+`GET /api/candidates/me/claims/:claimId` reads one ownership-scoped claim and
+returns its version in `ETag`. A missing claim and another candidate's claim
+both return 404.
+
 ## Editing a claim
 
 ```mermaid

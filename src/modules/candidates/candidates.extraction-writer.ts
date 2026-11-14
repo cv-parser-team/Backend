@@ -9,6 +9,7 @@ import type {
   CreateClaimInput
 } from './candidates.repository.js';
 import type { ClaimSourceAnchor } from './candidates.table.js';
+import { prepareUnknownClaimValues } from './candidates.claim-values.js';
 
 export interface ExtractedClaimSourceOccurrenceInput {
   anchorKey: string;
@@ -34,6 +35,21 @@ export interface CandidateExtractionWriter {
     drafts: ExtractedClaimDraftInput[],
     transaction: DatabaseExecutor
   ): Promise<ClaimRecord[]>;
+  saveResolvedClaim(
+    userId: string,
+    input: ResolvedExtractionClaimInput,
+    transaction: DatabaseExecutor
+  ): Promise<ClaimRecord>;
+}
+
+export interface ResolvedExtractionClaimInput {
+  type: CreateClaimInput['claimType'];
+  values: unknown;
+  documentId: string;
+  invocationId: string;
+  rawValues: Record<string, string>;
+  fieldSources: Record<string, string[]>;
+  current: boolean;
 }
 
 export interface CandidateExtractionWriterDependencies {
@@ -42,6 +58,7 @@ export interface CandidateExtractionWriterDependencies {
     | 'findCandidateByUserId'
     | 'deletePendingExtractedClaims'
     | 'listReviewedExtractedClaims'
+    | 'createClaim'
     | 'createClaims'
     | 'createClaimSourceOccurrences'
   >;
@@ -263,6 +280,30 @@ export function createCandidateExtractionWriter({
       );
 
       return createdClaims;
+    },
+    async saveResolvedClaim(userId, input, transaction) {
+      const candidate = await repository.findCandidateByUserId(userId, transaction);
+      if (!candidate) {
+        throw new RecordNotFoundError('Candidate profile');
+      }
+
+      return repository.createClaim(
+        {
+          candidateId: candidate.candidateId,
+          claimType: input.type,
+          origin: 'extracted',
+          status: 'accepted',
+          values: prepareUnknownClaimValues(input.type, input.values),
+          extraction: {
+            invocationId: input.invocationId,
+            sourceDocumentId: input.documentId,
+            rawValues: input.rawValues,
+            fieldSources: input.fieldSources,
+            current: input.current
+          }
+        },
+        transaction
+      );
     }
   };
 }

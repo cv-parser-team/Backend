@@ -66,7 +66,11 @@ export type {
 const registerExtractionReview: FastifyPluginAsync = async (fastify) => {
   const service = createExtractionReviewService({
     repository: createExtractionReviewRepository(fastify.database),
-    documentsService: fastify.candidateDocumentsService
+    documentsService: fastify.candidateDocumentsService,
+    candidateWriter: createCandidateExtractionWriter(fastify.database),
+    unitOfWork: createUnitOfWork(fastify.database),
+    normalizer: fastify.normalizationService,
+    logger: fastify.log
   });
 
   await fastify.register(extractionReviewRoutes, {
@@ -78,7 +82,7 @@ const registerExtractionReview: FastifyPluginAsync = async (fastify) => {
 
 export const extractionReviewModule = fastifyPlugin(registerExtractionReview, {
   name: 'extraction-review',
-  dependencies: ['database', 'auth', 'documents']
+  dependencies: ['database', 'auth', 'documents', 'normalization']
 });
 
 export interface CandidateExtractionWorkflowComposition {

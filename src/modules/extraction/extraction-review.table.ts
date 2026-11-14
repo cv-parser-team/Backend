@@ -8,9 +8,11 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
 import { documents } from '../documents/documents.table.js';
+import { claims } from '../candidates/candidates.table.js';
 import type {
   ExtractionReviewIssue
 } from './extraction.mapper.js';
@@ -36,6 +38,9 @@ export const extractionReviewItems = pgTable(
     sources: text('sources').array().notNull(),
     fingerprint: text('fingerprint').notNull(),
     status: extractionReviewStatus('status').default('pending').notNull(),
+    resolvedClaimId: uuid('resolved_claim_id').references(() => claims.claimId, {
+      onDelete: 'set null'
+    }),
     version: integer('version').default(1).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
       .defaultNow()
@@ -49,6 +54,9 @@ export const extractionReviewItems = pgTable(
     index('extraction_review_items_document_status_idx').on(
       table.documentId,
       table.status
+    ),
+    uniqueIndex('extraction_review_items_resolved_claim_unique').on(
+      table.resolvedClaimId
     ),
     check(
       'extraction_review_items_claim_type_valid',

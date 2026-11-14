@@ -84,7 +84,8 @@ Authorization: Bearer {{accessToken}}
 
 ### List pending extraction review items for the uploaded document (200)
 # @name documentReviewItems
-# Continue with the dismissal requests only when data contains at least one item.
+# Continue only when data contains at least one item. Resolve and dismiss below
+# are alternatives for that same pending item; run one, not both.
 GET {{baseUrl}}/api/candidates/me/extraction-review-items?documentId={{documentId}}
 Authorization: Bearer {{accessToken}}
 
@@ -92,7 +93,33 @@ Authorization: Bearer {{accessToken}}
 @reviewItemId = {{documentReviewItems.response.body.data[0].reviewItemId}}
 @reviewItemVersion = {{documentReviewItems.response.body.data[0].version}}
 
-### Dismiss one pending extraction review item (200)
+### Alternative A: resolve one corrected extraction review item (201)
+# @name resolveReviewItem
+# Replace values with a complete valid object for the returned claimType. The
+# claim type itself comes from the review item and cannot be changed here.
+POST {{baseUrl}}/api/candidates/me/extraction-review-items/{{reviewItemId}}/resolve
+Authorization: Bearer {{accessToken}}
+If-Match: "{{reviewItemVersion}}"
+Content-Type: application/json
+
+{
+  "values": {
+    "employer": "Really Great Site",
+    "jobTitle": "Software Engineer",
+    "startDate": "2037",
+    "endDate": "2040"
+  }
+}
+
+###
+@resolvedClaimId = {{resolveReviewItem.response.body.data.claim.claimId}}
+
+### Read the claim created by resolution (200)
+# Run after Alternative A. Expected ETag: "1".
+GET {{baseUrl}}/api/candidates/me/claims/{{resolvedClaimId}}
+Authorization: Bearer {{accessToken}}
+
+### Alternative B: dismiss one pending extraction review item (200)
 # @name dismissReviewItem
 # Expected response: status=dismissed, version incremented by one, and an ETag
 # header containing the new version. If-Match prevents a stale review action.
@@ -100,10 +127,28 @@ PATCH {{baseUrl}}/api/candidates/me/extraction-review-items/{{reviewItemId}}/dis
 Authorization: Bearer {{accessToken}}
 If-Match: "{{reviewItemVersion}}"
 
-### Verify the dismissed item is no longer pending (200)
-# The dismissed reviewItemId should not be present in data. Other pending items
-# extracted from the same document can remain.
+### Verify the resolved or dismissed item is no longer pending (200)
+# The handled reviewItemId should not be present in data. Other pending items
+# from the same document can remain. After resolution, GET /claims should also
+# contain the accepted claim returned by the resolve request.
 GET {{baseUrl}}/api/candidates/me/extraction-review-items?documentId={{documentId}}
+Authorization: Bearer {{accessToken}}
+
+### Verify accepted claims after resolving (200)
+# Run after Alternative A. The response should contain the claimId returned by
+# the resolve request.
+GET {{baseUrl}}/api/candidates/me/claims?status=accepted
+Authorization: Bearer {{accessToken}}
+
+### List resolved extraction review history (200)
+# Run after Alternative A. The handled item should include resolvedClaimId.
+GET {{baseUrl}}/api/candidates/me/extraction-review-items?documentId={{documentId}}&status=resolved
+Authorization: Bearer {{accessToken}}
+
+### List dismissed extraction review history (200)
+# Run after Alternative B. Dismissed items retain their original evidence and
+# have resolvedClaimId=null.
+GET {{baseUrl}}/api/candidates/me/extraction-review-items?documentId={{documentId}}&status=dismissed
 Authorization: Bearer {{accessToken}}
 
 ### Upload the same source again (200; deduplicated=true)

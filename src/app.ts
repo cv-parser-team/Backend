@@ -72,8 +72,8 @@ export async function createApp(
   await app.register(authModule);
   await app.register(usersModule);
   await app.register(documentsModule);
-  await app.register(extractionReviewModule);
   await app.register(normalizationModule);
+  await app.register(extractionReviewModule);
   await app.register(candidatesModule, {
     prefix: '/api/candidates'
   });

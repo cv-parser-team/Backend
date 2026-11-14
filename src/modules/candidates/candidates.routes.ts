@@ -132,6 +132,27 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     }
   );
 
+  fastify.get<{ Params: ClaimParams }>(
+    '/me/claims/:claimId',
+    {
+      schema: { params: claimParamsSchema },
+      preHandler: candidateOnly
+    },
+    async (request, reply) => {
+      const data = await service.getClaim(
+        request.auth.userId,
+        request.params.claimId
+      );
+      const response: ApiResponse<ClaimRecord> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return reply.header('etag', versionEtag(data.version)).send(response);
+    }
+  );
+
   fastify.put<{ Params: ClaimParams; Body: ClaimBody }>(
     '/me/claims/:claimId',
     {

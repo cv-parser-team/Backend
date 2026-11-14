@@ -3,7 +3,12 @@ import { FromSchema } from 'json-schema-to-ts';
 export const listExtractionReviewItemsQuerySchema = {
   type: 'object',
   properties: {
-    documentId: { type: 'string', format: 'uuid' }
+    documentId: { type: 'string', format: 'uuid' },
+    status: {
+      type: 'string',
+      enum: ['pending', 'resolved', 'dismissed'],
+      default: 'pending'
+    }
   },
   additionalProperties: false
 } as const;
@@ -33,6 +38,9 @@ const extractionReviewItemProperties = {
   fields: { type: 'object', additionalProperties: true },
   issues: { type: 'array', items: reviewIssueSchema },
   sources: { type: 'array', items: { type: 'string' } },
+  resolvedClaimId: {
+    anyOf: [{ type: 'string', format: 'uuid' }, { type: 'null' }]
+  },
   version: { type: 'integer', minimum: 1 }
 } as const;
 
@@ -44,14 +52,18 @@ const extractionReviewItemRequired = [
   'issues',
   'sources',
   'status',
+  'resolvedClaimId',
   'version'
 ] as const;
 
-const pendingExtractionReviewItemSchema = {
+const extractionReviewItemSchema = {
   type: 'object',
   properties: {
     ...extractionReviewItemProperties,
-    status: { const: 'pending' }
+    status: {
+      type: 'string',
+      enum: ['pending', 'resolved', 'dismissed']
+    }
   },
   required: extractionReviewItemRequired,
   additionalProperties: false
@@ -61,7 +73,7 @@ export const listExtractionReviewItemsResponseSchema = {
   type: 'object',
   properties: {
     success: { const: true },
-    data: { type: 'array', items: pendingExtractionReviewItemSchema },
+    data: { type: 'array', items: extractionReviewItemSchema },
     timestamp: { type: 'string', format: 'date-time' }
   },
   required: ['success', 'data', 'timestamp'],
@@ -81,6 +93,19 @@ export type ExtractionReviewItemParams = FromSchema<
   typeof extractionReviewItemParamsSchema
 >;
 
+export const resolveExtractionReviewItemBodySchema = {
+  type: 'object',
+  properties: {
+    values: { type: 'object', minProperties: 1, additionalProperties: true }
+  },
+  required: ['values'],
+  additionalProperties: false
+} as const;
+
+export type ResolveExtractionReviewItemBody = FromSchema<
+  typeof resolveExtractionReviewItemBodySchema
+>;
+
 export const dismissExtractionReviewItemResponseSchema = {
   type: 'object',
   properties: {
@@ -92,6 +117,87 @@ export const dismissExtractionReviewItemResponseSchema = {
         status: { const: 'dismissed' }
       },
       required: extractionReviewItemRequired,
+      additionalProperties: false
+    },
+    message: { type: 'string' },
+    timestamp: { type: 'string', format: 'date-time' }
+  },
+  required: ['success', 'data', 'message', 'timestamp'],
+  additionalProperties: false
+} as const;
+
+const resolvedReviewItemSchema = {
+  type: 'object',
+  properties: {
+    ...extractionReviewItemProperties,
+    status: { const: 'resolved' },
+    resolvedClaimId: { type: 'string', format: 'uuid' }
+  },
+  required: extractionReviewItemRequired,
+  additionalProperties: false
+} as const;
+
+const resolvedClaimSchema = {
+  type: 'object',
+  properties: {
+    claimId: { type: 'string', format: 'uuid' },
+    claimType: extractionReviewItemProperties.claimType,
+    origin: { const: 'extracted' },
+    status: { const: 'accepted' },
+    values: { type: 'object', additionalProperties: true },
+    extraction: {
+      type: 'object',
+      properties: {
+        invocationId: { type: 'string', format: 'uuid' },
+        sourceDocumentId: { type: 'string', format: 'uuid' },
+        rawValues: { type: 'object', additionalProperties: { type: 'string' } },
+        fieldSources: {
+          type: 'object',
+          additionalProperties: {
+            type: 'array',
+            items: { type: 'string' }
+          }
+        },
+        current: { type: 'boolean' }
+      },
+      required: [
+        'invocationId',
+        'sourceDocumentId',
+        'rawValues',
+        'fieldSources',
+        'current'
+      ],
+      additionalProperties: false
+    },
+    version: { type: 'integer', minimum: 1 },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' }
+  },
+  required: [
+    'claimId',
+    'claimType',
+    'origin',
+    'status',
+    'values',
+    'extraction',
+    'version',
+    'createdAt',
+    'updatedAt'
+  ],
+  additionalProperties: false
+} as const;
+
+export const resolveExtractionReviewItemResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { const: true },
+    data: {
+      type: 'object',
+      properties: {
+        reviewItem: resolvedReviewItemSchema,
+        claim: resolvedClaimSchema
+      },
+      required: ['reviewItem', 'claim'],
       additionalProperties: false
     },
     message: { type: 'string' },

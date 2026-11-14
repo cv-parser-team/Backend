@@ -187,6 +187,7 @@ erDiagram
         text[] sources
         text fingerprint
         extraction_review_status status
+        uuid resolved_claim_id "nullable, FK, UK"
         integer version
         timestamptz created_at
         timestamptz updated_at
@@ -225,6 +226,7 @@ erDiagram
     USERS ||--o{ DOCUMENTS : owns
     DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
     DOCUMENTS ||--o{ EXTRACTION_REVIEW_ITEMS : "has review items"
+    CLAIMS |o--o| EXTRACTION_REVIEW_ITEMS : "resolves from"
     DOCUMENTS ||--o{ DOCUMENT_PROCESSING_JOBS : schedules
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
@@ -746,7 +748,8 @@ document's `pending` items; `resolved` and `dismissed` rows remain.
 | `sources` | Text array | Required | Combined AI-input evidence references |
 | `fingerprint` | Text | Required, nonblank | Deterministic identity of the extracted claim content |
 | `status` | `extraction_review_status` | Required, defaults to `pending` | Review lifecycle: `pending`, `resolved`, or `dismissed` |
-| `version` | Integer | Required, defaults to 1 | Optimistic review version for the future resolution API |
+| `resolved_claim_id` | UUID | Nullable, unique claim FK, set null on claim deletion | Accepted claim created from the corrected item |
+| `version` | Integer | Required, defaults to 1 | Optimistic version for dismissal and resolution |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Latest update time |
 
