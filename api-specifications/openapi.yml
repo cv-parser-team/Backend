@@ -1250,6 +1250,7 @@ components:
       pattern: '^\d{4}(-(0[1-9]|1[0-2]))?$'
       example: 2024-06
     SkillClaimValues:
+      title: Skill
       type: object
       required:
         - name
@@ -1261,6 +1262,7 @@ components:
           maxLength: 100
           pattern: '\S'
     EmploymentClaimValues:
+      title: Employment
       type: object
       required:
         - employer
@@ -1301,6 +1303,7 @@ components:
             maxLength: 100
             pattern: '\S'
     EducationClaimValues:
+      title: Education
       type: object
       required:
         - institution
@@ -1328,6 +1331,7 @@ components:
         endDate:
           $ref: "#/components/schemas/ClaimDate"
     CertificationClaimValues:
+      title: Certification
       type: object
       required:
         - title
@@ -1355,6 +1359,7 @@ components:
           maxLength: 100
           pattern: '\S'
     LanguageClaimValues:
+      title: Language
       type: object
       required:
         - name
@@ -1371,6 +1376,7 @@ components:
           maxLength: 100
           pattern: '\S'
     ProjectClaimValues:
+      title: Project
       type: object
       required:
         - name
@@ -1408,6 +1414,7 @@ components:
             maxLength: 100
             pattern: '\S'
     SkillClaimRecord:
+      title: Skill claim
       allOf:
         - $ref: "#/components/schemas/ClaimRecordBase"
         - type: object
@@ -1422,6 +1429,7 @@ components:
             values:
               $ref: "#/components/schemas/SkillClaimValues"
     EmploymentClaimRecord:
+      title: Employment claim
       allOf:
         - $ref: "#/components/schemas/ClaimRecordBase"
         - type: object
@@ -1436,6 +1444,7 @@ components:
             values:
               $ref: "#/components/schemas/EmploymentClaimValues"
     EducationClaimRecord:
+      title: Education claim
       allOf:
         - $ref: "#/components/schemas/ClaimRecordBase"
         - type: object
@@ -1450,6 +1459,7 @@ components:
             values:
               $ref: "#/components/schemas/EducationClaimValues"
     CertificationClaimRecord:
+      title: Certification claim
       allOf:
         - $ref: "#/components/schemas/ClaimRecordBase"
         - type: object
@@ -1464,6 +1474,7 @@ components:
             values:
               $ref: "#/components/schemas/CertificationClaimValues"
     LanguageClaimRecord:
+      title: Language claim
       allOf:
         - $ref: "#/components/schemas/ClaimRecordBase"
         - type: object
@@ -1478,6 +1489,7 @@ components:
             values:
               $ref: "#/components/schemas/LanguageClaimValues"
     ProjectClaimRecord:
+      title: Project claim
       allOf:
         - $ref: "#/components/schemas/ClaimRecordBase"
         - type: object
@@ -1583,6 +1595,7 @@ components:
           docx_paragraph: "#/components/schemas/DocxParagraphAnchor"
           docx_table_row: "#/components/schemas/DocxTableRowAnchor"
     PdfLineAnchor:
+      title: PDF line anchor
       type: object
       required:
         - kind
@@ -1627,6 +1640,7 @@ components:
           items:
             type: string
     DocxParagraphAnchor:
+      title: DOCX paragraph anchor
       type: object
       required:
         - kind
@@ -1649,6 +1663,7 @@ components:
           items:
             type: string
     DocxTableRowAnchor:
+      title: DOCX table row anchor
       type: object
       required:
         - kind
@@ -1948,7 +1963,8 @@ components:
                 $ref: "#/components/schemas/DocumentRecord"
     DocumentUploadResult:
       oneOf:
-        - type: object
+        - title: Upload succeeded
+          type: object
           required:
             - success
             - filename
@@ -1966,7 +1982,8 @@ components:
               $ref: "#/components/schemas/DocumentRecord"
             deduplicated:
               type: boolean
-        - type: object
+        - title: Upload failed
+          type: object
           required:
             - success
             - filename
@@ -2206,9 +2223,14 @@ components:
       additionalProperties: false
       properties:
         values:
-          type: object
-          minProperties: 1
-          additionalProperties: true
+          description: Must match the claim type stored on the review item.
+          oneOf:
+            - $ref: "#/components/schemas/SkillClaimValues"
+            - $ref: "#/components/schemas/EmploymentClaimValues"
+            - $ref: "#/components/schemas/EducationClaimValues"
+            - $ref: "#/components/schemas/CertificationClaimValues"
+            - $ref: "#/components/schemas/LanguageClaimValues"
+            - $ref: "#/components/schemas/ProjectClaimValues"
     ProfileLink:
       type: object
       required: [label, url]
@@ -2260,8 +2282,14 @@ components:
         type:
           $ref: "#/components/schemas/ClaimType"
         values:
-          type: object
-          description: Fields depend on the selected claim type.
+          description: Must match the selected claim type. On update, the type must also match the existing claim.
+          oneOf:
+            - $ref: "#/components/schemas/SkillClaimValues"
+            - $ref: "#/components/schemas/EmploymentClaimValues"
+            - $ref: "#/components/schemas/EducationClaimValues"
+            - $ref: "#/components/schemas/CertificationClaimValues"
+            - $ref: "#/components/schemas/LanguageClaimValues"
+            - $ref: "#/components/schemas/ProjectClaimValues"
     ClaimReview:
       type: object
       required: [status]

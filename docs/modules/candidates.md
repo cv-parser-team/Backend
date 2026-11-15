@@ -49,6 +49,10 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     ownership and the optional `If-Match` version in one update. Accepted
     claims are normalized; rejected claims remain available for audit but are
     excluded from export.
+13. **Duplicate merging is candidate-controlled.** The MVP design compares
+    claim pairs only, keeps extracted enrichment staged, gives candidate
+    values precedence, and preserves source provenance. See
+    [Merge duplicate claims and resolve related conflicts](../merge-duplicate-claims.md).
 
 `GET /api/candidates/me/claims/:claimId` reads one ownership-scoped claim and
 returns its version in `ETag`. A missing claim and another candidate's claim
