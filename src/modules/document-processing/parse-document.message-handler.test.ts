@@ -81,7 +81,13 @@ describe('parse document message handler', () => {
         {
           jobId: job.jobId,
           documentId: job.documentId,
-          outcome: result.outcome
+          outcome: result.outcome,
+          ...(result.outcome === 'retrying' || result.outcome === 'cancelled'
+            ? {
+                attemptCount: result.processingJob.attemptCount,
+                failureCode: result.processingJob.failureCode
+              }
+            : {})
         },
         'Handled document processing job'
       );
@@ -114,7 +120,9 @@ describe('parse document message handler', () => {
       {
         jobId: job.jobId,
         documentId: job.documentId,
-        outcome: 'failed'
+        outcome: 'failed',
+        attemptCount: failedJob.attemptCount,
+        failureCode: failedJob.failureCode
       },
       'Handled document processing job'
     );

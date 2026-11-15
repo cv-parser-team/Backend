@@ -13,6 +13,7 @@ import { authModule } from './modules/auth/index.js';
 import { candidatesModule } from './modules/candidates/index.js';
 import { documentProcessingModule } from './modules/document-processing/index.js';
 import { documentsModule } from './modules/documents/index.js';
+import { extractionReviewModule } from './modules/extraction/index.js';
 import { normalizationModule } from './modules/normalization/index.js';
 import { parsingModule } from './modules/parsing/index.js';
 import { usersModule } from './modules/users/index.js';
@@ -45,6 +46,25 @@ export async function createApp(
         title: 'LuminaCV API',
         description: 'API documentation for the LuminaCV backend',
         version: '1.0.0'
+      },
+      servers: [
+        { url: 'http://localhost:4000', description: 'Local development' }
+      ],
+      tags: [
+        { name: 'Auth', description: 'Registration and access-token lifecycle' },
+        { name: 'Users', description: 'User administration and lookup' },
+        { name: 'Candidates', description: 'Candidate profiles and claims' },
+        { name: 'Documents', description: 'Candidate document management' },
+        { name: 'Extraction', description: 'Document extraction review' }
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT'
+          }
+        }
       }
     }
   });
@@ -72,6 +92,7 @@ export async function createApp(
   await app.register(usersModule);
   await app.register(documentsModule);
   await app.register(normalizationModule);
+  await app.register(extractionReviewModule);
   await app.register(candidatesModule, {
     prefix: '/api/candidates'
   });

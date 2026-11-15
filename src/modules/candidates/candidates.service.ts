@@ -4,14 +4,16 @@ import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
+  ClaimNotReviewableError,
   ClaimTypeMismatchError,
-  InvalidClaimDatesError,
   VersionConflictError
 } from './candidates.errors.js';
+import { prepareClaimValues } from './candidates.claim-values.js';
 import {
   CandidateRecord,
   CandidatesRepository,
   ClaimRecord,
+  ClaimSourceOccurrenceRecord,
   ClaimValues,
   UpdateCandidateInput
 } from './candidates.repository.js';
@@ -19,9 +21,10 @@ import {
   ClaimBody,
   CreateCandidateBody,
   ListClaimsQuery,
+  ReviewClaimBody,
   UpdateCandidateBody
 } from './candidates.schemas.js';
-import { ProfileLink } from './candidates.table.js';
+import { ClaimSourceAnchor, ProfileLink } from './candidates.table.js';
 
 export interface CandidateProfile {
   candidateId: string;
@@ -38,15 +41,17 @@ export interface CandidateProfile {
   updatedAt: Date;
 }
 
-// Filled once source documents and their parsed occurrences exist.
 export interface ClaimSourceReference {
   documentId: string;
-  pageNumber: number | null;
-  section: string | null;
-  textSpan: string | null;
+  references: string[];
+  fields: string[];
+  anchor: ClaimSourceAnchor;
 }
 
-export type ExportedClaim = ClaimValues & {
+export type ExportedClaim = Record<
+  string,
+  ClaimValues[string] | ClaimSourceReference[]
+> & {
   claimId: string;
   sources: ClaimSourceReference[];
 };
@@ -76,10 +81,17 @@ export interface CandidatesService {
   ): Promise<CandidateProfile>;
   createClaim(userId: string, input: ClaimBody): Promise<ClaimRecord>;
   listClaims(userId: string, query: ListClaimsQuery): Promise<ClaimRecord[]>;
+  getClaim(userId: string, claimId: string): Promise<ClaimRecord>;
   updateClaim(
     userId: string,
     claimId: string,
     input: ClaimBody,
+    expectedVersion?: number
+  ): Promise<ClaimRecord>;
+  reviewClaim(
+    userId: string,
+    claimId: string,
+    input: ReviewClaimBody,
     expectedVersion?: number
   ): Promise<ClaimRecord>;
   deleteClaim(userId: string, claimId: string, expectedVersion?: number): Promise<void>;
@@ -127,52 +139,6 @@ function toCandidateProfile(
   };
 }
 
-function normalizeClaimValues(values: ClaimBody['values']): ClaimValues {
-  const normalized: ClaimValues = {};
-
-  for (const [fieldName, value] of Object.entries(values)) {
-    if (typeof value === 'string') {
-      normalized[fieldName] = value.trim();
-    } else if (Array.isArray(value) && value.length > 0) {
-      normalized[fieldName] = [...new Set(value.map((item) => item.trim()))];
-    }
-  }
-
-  return normalized;
-}
-
-// YYYY-MM strings sort chronologically, so plain comparison is sufficient.
-function assertValidClaimDates(input: ClaimBody): void {
-  switch (input.type) {
-    case 'employment':
-    case 'education':
-      if (input.values.endDate && input.values.endDate < input.values.startDate) {
-        throw new InvalidClaimDatesError('End date cannot be before start date');
-      }
-      break;
-    case 'certification':
-      if (
-        input.values.expiryDate &&
-        input.values.expiryDate < input.values.issueDate
-      ) {
-        throw new InvalidClaimDatesError('Expiry date cannot be before issue date');
-      }
-      break;
-    case 'project':
-      if (
-        input.values.startDate &&
-        input.values.endDate &&
-        input.values.endDate < input.values.startDate
-      ) {
-        throw new InvalidClaimDatesError('End date cannot be before start date');
-      }
-      break;
-    case 'skill':
-    case 'language':
-      break;
-  }
-}
-
 function hasSameValues(left: ClaimValues, right: ClaimValues): boolean {
   const fieldNames = Object.keys(left);
   return (
@@ -183,8 +149,22 @@ function hasSameValues(left: ClaimValues, right: ClaimValues): boolean {
   );
 }
 
-function toExportedClaim(claim: ClaimRecord): ExportedClaim {
-  return { claimId: claim.claimId, ...claim.values, sources: [] };
+function toSourceReference(
+  occurrence: ClaimSourceOccurrenceRecord
+): ClaimSourceReference {
+  return {
+    documentId: occurrence.documentId,
+    references: occurrence.sourceReferences,
+    fields: occurrence.fieldNames,
+    anchor: occurrence.anchor
+  };
+}
+
+function toExportedClaim(
+  claim: ClaimRecord,
+  sources: ClaimSourceReference[]
+): ExportedClaim {
+  return { claimId: claim.claimId, ...claim.values, sources };
 }
 
 export function createCandidatesService({
@@ -310,7 +290,6 @@ export function createCandidatesService({
 
     async createClaim(userId, input) {
       const candidate = await requireCandidate(userId);
-      assertValidClaimDates(input);
 
       // Candidate-entered information needs no review and has no source document.
       const claim = await repository.createClaim({
@@ -318,7 +297,7 @@ export function createCandidatesService({
         claimType: input.type,
         origin: 'manual',
         status: 'accepted',
-        values: normalizeClaimValues(input.values)
+        values: prepareClaimValues(input)
       });
       await normalize(claim);
       return claim;
@@ -330,6 +309,11 @@ export function createCandidatesService({
         claimType: query.type,
         status: query.status
       });
+    },
+
+    async getClaim(userId, claimId) {
+      const candidate = await requireCandidate(userId);
+      return requireClaim(candidate.candidateId, claimId);
     },
 
     async updateClaim(userId, claimId, input, expectedVersion) {
@@ -344,9 +328,7 @@ export function createCandidatesService({
       if (claim.claimType !== input.type) {
         throw new ClaimTypeMismatchError();
       }
-      assertValidClaimDates(input);
-
-      const values = normalizeClaimValues(input.values);
+      const values = prepareClaimValues(input);
       if (hasSameValues(claim.values, values)) {
         return claim;
       }
@@ -385,12 +367,45 @@ export function createCandidatesService({
       }
     },
 
+    async reviewClaim(userId, claimId, input, expectedVersion) {
+      const candidate = await requireCandidate(userId);
+      const result = await repository.reviewExtractedClaim(
+        candidate.candidateId,
+        claimId,
+        input.status,
+        expectedVersion
+      );
+      switch (result.status) {
+        case 'saved':
+          if (result.record.status === 'accepted') {
+            await normalize(result.record);
+          }
+          return result.record;
+        case 'conflict':
+          throw new VersionConflictError('Claim', result.current);
+        case 'not_reviewable':
+          throw new ClaimNotReviewableError(result.current);
+        case 'missing':
+          throw new RecordNotFoundError('Claim', claimId);
+      }
+    },
+
     async exportProfile(userId) {
       const candidate = await requireCandidate(userId);
       const [email, acceptedClaims] = await Promise.all([
         getEmail(userId),
         repository.listClaims(candidate.candidateId, { status: 'accepted' })
       ]);
+      const occurrences = await repository.listClaimSourceOccurrences(
+        candidate.candidateId,
+        acceptedClaims.map(({ claimId }) => claimId)
+      );
+      const sourcesByClaim = new Map<string, ClaimSourceReference[]>();
+      for (const occurrence of occurrences) {
+        const sources = sourcesByClaim.get(occurrence.claimId) ?? [];
+        sources.push(toSourceReference(occurrence));
+        sourcesByClaim.set(occurrence.claimId, sources);
+      }
 
       const exported: ExportedProfile = {
         personalInfo: {
@@ -412,7 +427,10 @@ export function createCandidatesService({
       };
 
       for (const claim of acceptedClaims) {
-        const exportedClaim = toExportedClaim(claim);
+        const exportedClaim = toExportedClaim(
+          claim,
+          sourcesByClaim.get(claim.claimId) ?? []
+        );
         switch (claim.claimType) {
           case 'skill':
             exported.skills.push(exportedClaim);

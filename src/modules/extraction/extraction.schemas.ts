@@ -105,6 +105,78 @@ export const extractedUnmappedSchema = {
 
 export type ExtractedUnmapped = FromSchema<typeof extractedUnmappedSchema>;
 
+// The configured Gemini model rejects the complete nested contract as too
+// complex. Provider generation therefore enforces the stable envelope and
+// item containers only. The prompt describes the detailed contract, and the
+// local validators below remain authoritative for fields, values, and sources.
+const generatedFieldSchema = {
+  type: 'object',
+  properties: {
+    value: {
+      anyOf: [
+        { type: 'string' },
+        { type: 'array', items: { type: 'string' } }
+      ]
+    },
+    raw: { type: 'string' },
+    current: { type: 'boolean' },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    sources: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['confidence', 'sources'],
+  additionalProperties: false
+} as const;
+
+export const aiGenerationSchema = {
+  type: 'object',
+  properties: {
+    version: { type: 'integer' },
+    profile: {
+      type: 'object',
+      properties: {
+        fullName: generatedFieldSchema,
+        headline: generatedFieldSchema,
+        summary: generatedFieldSchema,
+        phone: generatedFieldSchema,
+        location: generatedFieldSchema,
+        contactEmail: generatedFieldSchema,
+        links: { type: 'array', items: generatedFieldSchema }
+      },
+      additionalProperties: false
+    },
+    claims: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          type: { type: 'string' },
+          fields: {
+            type: 'object',
+            additionalProperties: generatedFieldSchema
+          }
+        },
+        required: ['type', 'fields'],
+        additionalProperties: false
+      }
+    },
+    unmapped: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          label: { type: 'string' },
+          text: { type: 'string' },
+          sources: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['label', 'text', 'sources'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['version', 'profile', 'claims', 'unmapped'],
+  additionalProperties: false
+} as const;
+
 // Only the envelope is checked as a whole. Each claim, profile, and unmapped
 // item is checked on its own, so one invalid item never rejects the others.
 export const aiOutputEnvelopeSchema = {

@@ -1,22 +1,30 @@
-import { and, asc, eq, sql, SQL } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, asc, eq, inArray, sql, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import {
   candidates,
   certificationDetails,
+  type ClaimDatePrecision,
+  ClaimExtractionMetadata,
   ClaimFieldValue,
+  type ClaimSourceAnchor,
   claimRevisions,
   claims,
   ClaimSnapshot,
   educationDetails,
   employmentDetails,
   languageDetails,
+  NewClaimExtractionMetadata,
   projectDetails,
+  sourceOccurrences,
   skillDetails
 } from './candidates.table.js';
 
 export type CandidateRecord = typeof candidates.$inferSelect;
+export type ClaimSourceOccurrenceRecord = typeof sourceOccurrences.$inferSelect;
 export type CreateCandidateInput = Omit<
   typeof candidates.$inferInsert,
   'candidateId' | 'createdAt' | 'updatedAt'
@@ -37,24 +45,40 @@ export type UpdateCandidateInput = Partial<
 type ClaimRow = typeof claims.$inferSelect;
 export type ClaimValues = ClaimSnapshot;
 
+export interface CreateClaimSourceOccurrenceInput {
+  claimId: string;
+  documentId: string;
+  anchorKey: string;
+  sourceReferences: string[];
+  fieldNames: string[];
+  anchor: ClaimSourceAnchor;
+}
+
 export interface ClaimRecord {
   claimId: string;
   claimType: ClaimRow['claimType'];
   origin: ClaimRow['origin'];
   status: ClaimRow['status'];
   values: ClaimValues;
+  extraction: ClaimExtractionMetadata | null;
   version: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
-export interface CreateClaimInput {
+interface CreateClaimBase {
   candidateId: string;
   claimType: ClaimRow['claimType'];
-  origin: ClaimRow['origin'];
   status: ClaimRow['status'];
   values: ClaimValues;
 }
+
+export type CreateClaimInput =
+  | (CreateClaimBase & { origin: 'manual'; extraction?: never })
+  | (CreateClaimBase & {
+    origin: 'extracted';
+    extraction: NewClaimExtractionMetadata;
+  });
 
 export interface ClaimFilters {
   claimType?: ClaimRow['claimType'];
@@ -82,16 +106,61 @@ export type VersionedDelete<T> =
   | { status: 'conflict'; current: T }
   | { status: 'missing' };
 
+export type ClaimReviewStatus = Extract<
+  ClaimRow['status'],
+  'accepted' | 'rejected'
+>;
+
+export type ReviewClaimResult =
+  | { status: 'saved'; record: ClaimRecord }
+  | { status: 'conflict'; current: ClaimRecord }
+  | { status: 'not_reviewable'; current: ClaimRecord }
+  | { status: 'missing' };
+
 export interface CandidatesRepository {
-  findCandidateByUserId(userId: string): Promise<CandidateRecord | null>;
+  findCandidateByUserId(
+    userId: string,
+    transaction?: DatabaseExecutor
+  ): Promise<CandidateRecord | null>;
   createCandidate(input: CreateCandidateInput): Promise<CandidateRecord>;
   updateCandidate(
     candidateId: string,
     input: UpdateCandidateInput,
     expectedVersion?: number
   ): Promise<VersionedWrite<CandidateRecord>>;
-  createClaim(input: CreateClaimInput): Promise<ClaimRecord>;
+  createClaim(
+    input: CreateClaimInput,
+    transaction?: DatabaseExecutor
+  ): Promise<ClaimRecord>;
+  createClaims(
+    inputs: CreateClaimInput[],
+    transaction: DatabaseExecutor
+  ): Promise<ClaimRecord[]>;
+  createClaimSourceOccurrences(
+    inputs: CreateClaimSourceOccurrenceInput[],
+    transaction: DatabaseExecutor
+  ): Promise<number>;
+  deletePendingExtractedClaims(
+    candidateId: string,
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<number>;
+  listReviewedExtractedClaims(
+    candidateId: string,
+    documentId: string,
+    transaction: DatabaseExecutor
+  ): Promise<ClaimRecord[]>;
+  reviewExtractedClaim(
+    candidateId: string,
+    claimId: string,
+    status: ClaimReviewStatus,
+    expectedVersion?: number
+  ): Promise<ReviewClaimResult>;
   listClaims(candidateId: string, filters?: ClaimFilters): Promise<ClaimRecord[]>;
+  listClaimSourceOccurrences(
+    candidateId: string,
+    claimIds: string[]
+  ): Promise<ClaimSourceOccurrenceRecord[]>;
   findClaim(candidateId: string, claimId: string): Promise<ClaimRecord | null>;
   updateClaimValues(input: UpdateClaimValuesInput): Promise<VersionedWrite<ClaimRecord>>;
   deleteClaim(
@@ -121,15 +190,32 @@ function readList(values: ClaimValues, fieldName: string): string[] {
   return Array.isArray(value) ? value : [];
 }
 
-// The API uses YYYY-MM; the database stores the first day of that month.
-function toDate(month: string): string;
-function toDate(month: string | null): string | null;
-function toDate(month: string | null): string | null {
-  return month === null ? null : `${month}-01`;
+interface StoredClaimDate {
+  date: string;
+  precision: ClaimDatePrecision;
 }
 
-function toMonth(date: string | null): string | null {
-  return date === null ? null : date.slice(0, 7);
+function toStoredDate(
+  value: string,
+  boundary: 'start' | 'end'
+): StoredClaimDate {
+  if (value.length === 4) {
+    return {
+      date: `${value}-${boundary === 'start' ? '01' : '12'}-01`,
+      precision: 'year'
+    };
+  }
+  return { date: `${value}-01`, precision: 'month' };
+}
+
+function fromStoredDate(
+  date: string | null,
+  precision: ClaimDatePrecision | null
+): string | null {
+  if (date === null || precision === null) {
+    return null;
+  }
+  return precision === 'year' ? date.slice(0, 4) : date.slice(0, 7);
 }
 
 // Optional fields that are empty are omitted, matching the request shape.
@@ -150,11 +236,16 @@ function toSkillRow(values: ClaimValues) {
 }
 
 function toEmploymentRow(values: ClaimValues) {
+  const startDate = toStoredDate(readRequiredText(values, 'startDate'), 'start');
+  const endValue = readText(values, 'endDate');
+  const endDate = endValue === null ? null : toStoredDate(endValue, 'end');
   return {
     employer: readRequiredText(values, 'employer'),
     jobTitle: readRequiredText(values, 'jobTitle'),
-    startDate: toDate(readRequiredText(values, 'startDate')),
-    endDate: toDate(readText(values, 'endDate')),
+    startDate: startDate.date,
+    startDatePrecision: startDate.precision,
+    endDate: endDate?.date ?? null,
+    endDatePrecision: endDate?.precision ?? null,
     location: readText(values, 'location'),
     description: readText(values, 'description'),
     skills: readList(values, 'skills')
@@ -162,21 +253,33 @@ function toEmploymentRow(values: ClaimValues) {
 }
 
 function toEducationRow(values: ClaimValues) {
+  const startDate = toStoredDate(readRequiredText(values, 'startDate'), 'start');
+  const endValue = readText(values, 'endDate');
+  const endDate = endValue === null ? null : toStoredDate(endValue, 'end');
   return {
     institution: readRequiredText(values, 'institution'),
     degree: readRequiredText(values, 'degree'),
     fieldOfStudy: readText(values, 'fieldOfStudy'),
-    startDate: toDate(readRequiredText(values, 'startDate')),
-    endDate: toDate(readText(values, 'endDate'))
+    startDate: startDate.date,
+    startDatePrecision: startDate.precision,
+    endDate: endDate?.date ?? null,
+    endDatePrecision: endDate?.precision ?? null
   };
 }
 
 function toCertificationRow(values: ClaimValues) {
+  const issueDate = toStoredDate(readRequiredText(values, 'issueDate'), 'start');
+  const expiryValue = readText(values, 'expiryDate');
+  const expiryDate = expiryValue === null
+    ? null
+    : toStoredDate(expiryValue, 'end');
   return {
     title: readRequiredText(values, 'title'),
     issuer: readRequiredText(values, 'issuer'),
-    issueDate: toDate(readRequiredText(values, 'issueDate')),
-    expiryDate: toDate(readText(values, 'expiryDate')),
+    issueDate: issueDate.date,
+    issueDatePrecision: issueDate.precision,
+    expiryDate: expiryDate?.date ?? null,
+    expiryDatePrecision: expiryDate?.precision ?? null,
     credentialId: readText(values, 'credentialId')
   };
 }
@@ -189,13 +292,19 @@ function toLanguageRow(values: ClaimValues) {
 }
 
 function toProjectRow(values: ClaimValues) {
+  const startValue = readText(values, 'startDate');
+  const endValue = readText(values, 'endDate');
+  const startDate = startValue === null ? null : toStoredDate(startValue, 'start');
+  const endDate = endValue === null ? null : toStoredDate(endValue, 'end');
   return {
     name: readRequiredText(values, 'name'),
     description: readText(values, 'description'),
     role: readText(values, 'role'),
     url: readText(values, 'url'),
-    startDate: toDate(readText(values, 'startDate')),
-    endDate: toDate(readText(values, 'endDate')),
+    startDate: startDate?.date ?? null,
+    startDatePrecision: startDate?.precision ?? null,
+    endDate: endDate?.date ?? null,
+    endDatePrecision: endDate?.precision ?? null,
     skills: readList(values, 'skills')
   };
 }
@@ -235,6 +344,88 @@ async function insertDetails(
         .insert(projectDetails)
         .values({ claimId, ...toProjectRow(values) });
       break;
+  }
+}
+
+interface ClaimWithId {
+  claimId: string;
+  input: CreateClaimInput;
+}
+
+function toClaimInsert({ claimId, input }: ClaimWithId): typeof claims.$inferInsert {
+  return {
+    claimId,
+    candidateId: input.candidateId,
+    claimType: input.claimType,
+    origin: input.origin,
+    status: input.status,
+    extractionInvocationId:
+      input.origin === 'extracted' ? input.extraction.invocationId : null,
+    extractionDocumentId:
+      input.origin === 'extracted' ? input.extraction.sourceDocumentId : null,
+    extractionRawValues:
+      input.origin === 'extracted' ? input.extraction.rawValues : null,
+    extractionFieldSources:
+      input.origin === 'extracted' ? input.extraction.fieldSources : null,
+    extractionCurrent:
+      input.origin === 'extracted' ? input.extraction.current : null
+  };
+}
+
+async function insertDetailsBatch(
+  executor: QueryExecutor,
+  claimsWithIds: ClaimWithId[]
+): Promise<void> {
+  const skillRows: (typeof skillDetails.$inferInsert)[] = [];
+  const employmentRows: (typeof employmentDetails.$inferInsert)[] = [];
+  const educationRows: (typeof educationDetails.$inferInsert)[] = [];
+  const certificationRows: (typeof certificationDetails.$inferInsert)[] = [];
+  const languageRows: (typeof languageDetails.$inferInsert)[] = [];
+  const projectRows: (typeof projectDetails.$inferInsert)[] = [];
+
+  for (const { claimId, input } of claimsWithIds) {
+    switch (input.claimType) {
+      case 'skill':
+        skillRows.push({ claimId, ...toSkillRow(input.values) });
+        break;
+      case 'employment':
+        employmentRows.push({ claimId, ...toEmploymentRow(input.values) });
+        break;
+      case 'education':
+        educationRows.push({ claimId, ...toEducationRow(input.values) });
+        break;
+      case 'certification':
+        certificationRows.push({
+          claimId,
+          ...toCertificationRow(input.values)
+        });
+        break;
+      case 'language':
+        languageRows.push({ claimId, ...toLanguageRow(input.values) });
+        break;
+      case 'project':
+        projectRows.push({ claimId, ...toProjectRow(input.values) });
+        break;
+    }
+  }
+
+  if (skillRows.length > 0) {
+    await executor.insert(skillDetails).values(skillRows);
+  }
+  if (employmentRows.length > 0) {
+    await executor.insert(employmentDetails).values(employmentRows);
+  }
+  if (educationRows.length > 0) {
+    await executor.insert(educationDetails).values(educationRows);
+  }
+  if (certificationRows.length > 0) {
+    await executor.insert(certificationDetails).values(certificationRows);
+  }
+  if (languageRows.length > 0) {
+    await executor.insert(languageDetails).values(languageRows);
+  }
+  if (projectRows.length > 0) {
+    await executor.insert(projectDetails).values(projectRows);
   }
 }
 
@@ -320,8 +511,11 @@ async function selectClaims(
       values = compactValues({
         employer: employment.employer,
         jobTitle: employment.jobTitle,
-        startDate: toMonth(employment.startDate),
-        endDate: toMonth(employment.endDate),
+        startDate: fromStoredDate(
+          employment.startDate,
+          employment.startDatePrecision
+        ),
+        endDate: fromStoredDate(employment.endDate, employment.endDatePrecision),
         location: employment.location,
         description: employment.description,
         skills: employment.skills
@@ -331,15 +525,21 @@ async function selectClaims(
         institution: education.institution,
         degree: education.degree,
         fieldOfStudy: education.fieldOfStudy,
-        startDate: toMonth(education.startDate),
-        endDate: toMonth(education.endDate)
+        startDate: fromStoredDate(education.startDate, education.startDatePrecision),
+        endDate: fromStoredDate(education.endDate, education.endDatePrecision)
       });
     } else if (claim.claimType === 'certification' && certification) {
       values = compactValues({
         title: certification.title,
         issuer: certification.issuer,
-        issueDate: toMonth(certification.issueDate),
-        expiryDate: toMonth(certification.expiryDate),
+        issueDate: fromStoredDate(
+          certification.issueDate,
+          certification.issueDatePrecision
+        ),
+        expiryDate: fromStoredDate(
+          certification.expiryDate,
+          certification.expiryDatePrecision
+        ),
         credentialId: certification.credentialId
       });
     } else if (claim.claimType === 'language' && language) {
@@ -353,8 +553,8 @@ async function selectClaims(
         description: project.description,
         role: project.role,
         url: project.url,
-        startDate: toMonth(project.startDate),
-        endDate: toMonth(project.endDate),
+        startDate: fromStoredDate(project.startDate, project.startDatePrecision),
+        endDate: fromStoredDate(project.endDate, project.endDatePrecision),
         skills: project.skills
       });
     }
@@ -365,6 +565,20 @@ async function selectClaims(
       origin: claim.origin,
       status: claim.status,
       values,
+      extraction:
+        claim.origin === 'extracted' &&
+          claim.extractionInvocationId !== null &&
+          claim.extractionRawValues !== null &&
+          claim.extractionFieldSources !== null &&
+          claim.extractionCurrent !== null
+          ? {
+            invocationId: claim.extractionInvocationId,
+            sourceDocumentId: claim.extractionDocumentId,
+            rawValues: claim.extractionRawValues,
+            fieldSources: claim.extractionFieldSources,
+            current: claim.extractionCurrent
+          }
+          : null,
       version: claim.version,
       createdAt: claim.createdAt,
       updatedAt: claim.updatedAt
@@ -372,13 +586,91 @@ async function selectClaims(
   });
 }
 
+async function insertClaim(
+  executor: QueryExecutor,
+  input: CreateClaimInput
+): Promise<ClaimRecord> {
+  const [createdClaim] = await executor
+    .insert(claims)
+    .values({
+      candidateId: input.candidateId,
+      claimType: input.claimType,
+      origin: input.origin,
+      status: input.status,
+      extractionInvocationId:
+        input.origin === 'extracted' ? input.extraction.invocationId : null,
+      extractionDocumentId:
+        input.origin === 'extracted' ? input.extraction.sourceDocumentId : null,
+      extractionRawValues:
+        input.origin === 'extracted' ? input.extraction.rawValues : null,
+      extractionFieldSources:
+        input.origin === 'extracted' ? input.extraction.fieldSources : null,
+      extractionCurrent:
+        input.origin === 'extracted' ? input.extraction.current : null
+    })
+    .returning({ claimId: claims.claimId });
+
+  if (!createdClaim) {
+    throw new Error('Claim creation did not return a record');
+  }
+
+  await insertDetails(
+    executor,
+    createdClaim.claimId,
+    input.claimType,
+    input.values
+  );
+
+  const [claim] = await selectClaims(
+    executor,
+    eq(claims.claimId, createdClaim.claimId)
+  );
+  if (!claim) {
+    throw new Error('Created claim could not be read');
+  }
+  return claim;
+}
+
+async function insertClaims(
+  executor: QueryExecutor,
+  inputs: CreateClaimInput[]
+): Promise<ClaimRecord[]> {
+  if (inputs.length === 0) {
+    return [];
+  }
+
+  const claimsWithIds = inputs.map((input) => ({
+    claimId: randomUUID(),
+    input
+  }));
+  await executor.insert(claims).values(claimsWithIds.map(toClaimInsert));
+  await insertDetailsBatch(executor, claimsWithIds);
+
+  const claimIds = claimsWithIds.map(({ claimId }) => claimId);
+  const createdClaims = await selectClaims(
+    executor,
+    inArray(claims.claimId, claimIds)
+  );
+  const claimsById = new Map(
+    createdClaims.map((claim) => [claim.claimId, claim])
+  );
+
+  return claimIds.map((claimId) => {
+    const claim = claimsById.get(claimId);
+    if (!claim) {
+      throw new Error('Created claim could not be read');
+    }
+    return claim;
+  });
+}
+
 export function createCandidatesRepository(
   database: AppDatabase
 ): CandidatesRepository {
   return {
-    async findCandidateByUserId(userId) {
+    async findCandidateByUserId(userId, transaction = database.db) {
       return withDbErrors('Candidate', async () => {
-        const [candidate] = await database.db
+        const [candidate] = await transaction
           .select()
           .from(candidates)
           .where(eq(candidates.userId, userId))
@@ -434,42 +726,133 @@ export function createCandidatesRepository(
       });
     },
 
-    // Both claim writes are whole transactions, so a transient failure rolls
-    // back and the transaction runs again.
-    async createClaim(input) {
-      return withTransientRetry(() => withDbErrors('Claim', () => {
-        return database.db.transaction(async (transaction) => {
-          const [createdClaim] = await transaction
-            .insert(claims)
-            .values({
-              candidateId: input.candidateId,
-              claimType: input.claimType,
-              origin: input.origin,
-              status: input.status
-            })
-            .returning({ claimId: claims.claimId });
+    // A caller-owned transaction lets extraction save all claims and unmapped
+    // data atomically. Manual creation keeps its own retried transaction.
+    async createClaim(input, transaction) {
+      if (transaction) {
+        return withDbErrors('Claim', () => insertClaim(transaction, input));
+      }
 
-          if (!createdClaim) {
-            throw new Error('Claim creation did not return a record');
-          }
+      return withTransientRetry(() =>
+        withDbErrors('Claim', () =>
+          database.db.transaction((createdTransaction) =>
+            insertClaim(createdTransaction, input)
+          )
+        )
+      );
+    },
 
-          await insertDetails(
-            transaction,
-            createdClaim.claimId,
-            input.claimType,
-            input.values
+    async createClaims(inputs, transaction) {
+      return withDbErrors('Claims', () =>
+        insertClaims(transaction, inputs)
+      );
+    },
+
+    async createClaimSourceOccurrences(inputs, transaction) {
+      if (inputs.length === 0) {
+        return 0;
+      }
+      return withDbErrors('Claim source occurrences', async () => {
+        await transaction.insert(sourceOccurrences).values(inputs);
+        return inputs.length;
+      });
+    },
+
+    async deletePendingExtractedClaims(
+      candidateId,
+      documentId,
+      transaction
+    ) {
+      return withDbErrors('Claims', async () => {
+        const deleted = await transaction
+          .delete(claims)
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.origin, 'extracted'),
+              eq(claims.status, 'pending'),
+              eq(claims.extractionDocumentId, documentId)
+            )
+          )
+          .returning({ claimId: claims.claimId });
+
+        return deleted.length;
+      });
+    },
+
+    async listReviewedExtractedClaims(
+      candidateId,
+      documentId,
+      transaction
+    ) {
+      return withDbErrors('Claims', () =>
+        selectClaims(
+          transaction,
+          and(
+            eq(claims.candidateId, candidateId),
+            eq(claims.origin, 'extracted'),
+            inArray(claims.status, ['accepted', 'rejected']),
+            eq(claims.extractionDocumentId, documentId)
+          )
+        )
+      );
+    },
+
+    async reviewExtractedClaim(
+      candidateId,
+      claimId,
+      status,
+      expectedVersion
+    ) {
+      return withDbErrors('Claim', async (): Promise<ReviewClaimResult> => {
+        const [reviewed] = await database.db
+          .update(claims)
+          .set({ status, version: sql`${claims.version} + 1` })
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.claimId, claimId),
+              eq(claims.origin, 'extracted'),
+              eq(claims.status, 'pending'),
+              expectedVersion === undefined
+                ? undefined
+                : eq(claims.version, expectedVersion)
+            )
+          )
+          .returning({ claimId: claims.claimId });
+
+        if (reviewed) {
+          const [record] = await selectClaims(
+            database.db,
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.claimId, claimId)
+            )
           );
-
-          const [claim] = await selectClaims(
-            transaction,
-            eq(claims.claimId, createdClaim.claimId)
-          );
-          if (!claim) {
-            throw new Error('Created claim could not be read');
+          if (!record) {
+            throw new Error('Reviewed claim could not be read');
           }
-          return claim;
-        });
-      }));
+          return { status: 'saved', record };
+        }
+
+        const [current] = await selectClaims(
+          database.db,
+          and(
+            eq(claims.candidateId, candidateId),
+            eq(claims.claimId, claimId)
+          )
+        );
+        if (!current) {
+          return { status: 'missing' };
+        }
+        if (
+          expectedVersion !== undefined &&
+          current.version !== expectedVersion
+        ) {
+          return { status: 'conflict', current };
+        }
+        return { status: 'not_reviewable', current };
+      });
     },
 
     async listClaims(candidateId, filters = {}) {
@@ -483,6 +866,29 @@ export function createCandidatesRepository(
           )
         )
       );
+    },
+
+    async listClaimSourceOccurrences(candidateId, claimIds) {
+      if (claimIds.length === 0) {
+        return [];
+      }
+
+      return withDbErrors('Claim source occurrences', async () => {
+        const rows = await database.db
+          .select({ occurrence: sourceOccurrences })
+          .from(sourceOccurrences)
+          .innerJoin(claims, eq(claims.claimId, sourceOccurrences.claimId))
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.status, 'accepted'),
+              inArray(claims.claimId, claimIds)
+            )
+          )
+          .orderBy(asc(sourceOccurrences.claimId), asc(sourceOccurrences.anchorKey));
+
+        return rows.map(({ occurrence }) => occurrence);
+      });
     },
 
     async findClaim(candidateId, claimId) {

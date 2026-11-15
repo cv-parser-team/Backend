@@ -29,6 +29,20 @@ export interface DocumentsRoutesOptions {
   maximumUploadFiles: number;
 }
 
+function documentedResponse(description: string) {
+  return {
+    description,
+    type: 'object',
+    additionalProperties: true
+  } as const;
+}
+
+const documentSecurity = [{ bearerAuth: [] }];
+const documentAccessResponses = {
+  401: documentedResponse('Authentication required or token is invalid'),
+  403: documentedResponse('Active candidate account required')
+};
+
 // Source documents are processed until they succeed. The status, not whether
 // the upload was deduplicated, decides: a re-upload schedules a document whose
 // earlier scheduling failed (still `stored`) or whose processing failed.
@@ -127,7 +141,44 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
   fastify.post<{ Querystring: UploadDocumentQuery }>(
     '/',
     {
-      schema: { querystring: uploadDocumentQuerySchema },
+      schema: {
+        tags: ['Documents'],
+        summary: 'Upload candidate documents',
+        description:
+          "Uploads one or more multipart files using repeated 'file' fields. " +
+          'Each file is processed independently.',
+        security: documentSecurity,
+        consumes: ['multipart/form-data'],
+        querystring: uploadDocumentQuerySchema,
+        response: {
+          200: documentedResponse('All uploaded files were deduplicated'),
+          201: documentedResponse('Documents uploaded successfully'),
+          207: documentedResponse('Upload completed with per-file results'),
+          400: documentedResponse('Invalid purpose or multipart upload'),
+          ...documentAccessResponses,
+          413: documentedResponse('Upload exceeds the configured size limit')
+        }
+      },
+      config: {
+        swaggerTransform: ({ schema, url }) => ({
+          url,
+          schema: {
+            ...schema,
+            body: {
+              type: 'object',
+              required: ['file'],
+              properties: {
+                file: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: maximumUploadFiles,
+                  items: { type: 'string', format: 'binary' }
+                }
+              }
+            }
+          }
+        })
+      },
       preHandler: candidateOnly
     },
     async (request, reply) => {
@@ -220,7 +271,17 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
   fastify.get<{ Querystring: ListDocumentsQuery }>(
     '/',
     {
-      schema: { querystring: listDocumentsQuerySchema },
+      schema: {
+        tags: ['Documents'],
+        summary: 'List my documents',
+        security: documentSecurity,
+        querystring: listDocumentsQuerySchema,
+        response: {
+          200: documentedResponse('Candidate documents'),
+          400: documentedResponse('Invalid document filters'),
+          ...documentAccessResponses
+        }
+      },
       preHandler: candidateOnly
     },
     async (request) => {
@@ -241,7 +302,18 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
   fastify.get<{ Params: DocumentParams }>(
     '/:documentId',
     {
-      schema: { params: documentParamsSchema },
+      schema: {
+        tags: ['Documents'],
+        summary: 'Get document metadata',
+        security: documentSecurity,
+        params: documentParamsSchema,
+        response: {
+          200: documentedResponse('Document metadata'),
+          400: documentedResponse('Invalid document ID'),
+          ...documentAccessResponses,
+          404: documentedResponse('Document not found')
+        }
+      },
       preHandler: candidateOnly
     },
     async (request) => {
@@ -262,7 +334,18 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
   fastify.delete<{ Params: DocumentParams }>(
     '/:documentId',
     {
-      schema: { params: documentParamsSchema },
+      schema: {
+        tags: ['Documents'],
+        summary: 'Delete a document',
+        security: documentSecurity,
+        params: documentParamsSchema,
+        response: {
+          204: documentedResponse('Document deleted successfully'),
+          400: documentedResponse('Invalid document ID'),
+          ...documentAccessResponses,
+          404: documentedResponse('Document not found')
+        }
+      },
       preHandler: candidateOnly
     },
     async (request, reply) => {
@@ -278,7 +361,27 @@ export const documentsRoutes: FastifyPluginAsync<DocumentsRoutesOptions> = async
   fastify.get<{ Params: DocumentParams }>(
     '/:documentId/content',
     {
-      schema: { params: documentParamsSchema },
+      schema: {
+        tags: ['Documents'],
+        summary: 'Download document content',
+        security: documentSecurity,
+        produces: [
+          'application/pdf',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'image/jpeg',
+          'image/png'
+        ],
+        params: documentParamsSchema,
+        response: {
+          200: {
+            description: 'Original document bytes',
+            type: 'string'
+          },
+          400: documentedResponse('Invalid document ID'),
+          ...documentAccessResponses,
+          404: documentedResponse('Document not found')
+        }
+      },
       preHandler: candidateOnly
     },
     async (request, reply) => {

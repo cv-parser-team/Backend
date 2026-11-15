@@ -68,6 +68,16 @@ export const config = {
       process.env.RABBITMQ_URL ||
       'amqp://luminacv:luminacvpassword@localhost:5672'
   },
+  llm: {
+    provider: process.env.LLM_PROVIDER || 'gemini',
+    model: process.env.LLM_MODEL || 'gemini-3.5-flash-lite',
+    apiKey: process.env.LLM_API_KEY || undefined,
+    timeoutMs: extractPositiveIntegerOrDefault('LLM_TIMEOUT_MS', 30_000),
+    maximumInputCharacters: extractPositiveIntegerOrDefault(
+      'LLM_MAX_INPUT_CHARS',
+      100_000
+    )
+  },
   auth: {
     jwtSecret,
     issuer: extractOrThrow('JWT_ISSUER'),

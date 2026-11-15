@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { InvalidAiOutputError } from './extraction.errors.js';
-import { mapAiOutput } from './extraction.mapper.js';
+import { collectAiInputReferences, mapAiOutput } from './extraction.mapper.js';
+import { aiGenerationSchema } from './extraction.schemas.js';
 import {
   validateClaim,
   validateEnvelope,
@@ -22,6 +23,31 @@ const employment = {
 };
 
 describe('AI output contract', () => {
+  it('uses a provider-compatible nested schema without weakening local mapping', () => {
+    const validateGenerationOutput = validatorFor(aiGenerationSchema);
+    const generatedOutput = {
+      version: 1,
+      profile: {},
+      claims: [employment],
+      unmapped: []
+    };
+
+    expect(validateGenerationOutput(generatedOutput).valid).toBe(true);
+    expect(
+      validateGenerationOutput({
+        ...generatedOutput,
+        claims: [{ type: 'employment', fields: { employer: employment.fields.employer } }]
+      }).valid
+    ).toBe(true);
+    expect(
+      validateGenerationOutput({
+        ...generatedOutput,
+        claims: [{ type: 'skill', notes: 'extra', fields: {} }]
+      }).valid
+    ).toBe(false);
+    expect(validateEnvelope({ version: 1, claims: generatedOutput.claims }).valid).toBe(true);
+  });
+
   it('accepts a version 1 output with claims', () => {
     expect(validateEnvelope({ version: 1, claims: [], unmapped: [] })).toEqual({
       valid: true,
@@ -121,6 +147,19 @@ function output(claims: unknown[], extra: Record<string, unknown> = {}) {
 }
 
 describe('AI output mapping', () => {
+  it('collects exact PDF and DOCX references while ignoring headers and table columns', () => {
+    expect(
+      [...collectAiInputReferences([
+        '[P1 R0 header]',
+        '## L5 Profile',
+        'L6-8,10 Experience spanning lines',
+        '## B3 Skills',
+        'Columns: Skill | Level',
+        'B4.1 TypeScript | Advanced'
+      ].join('\n'))]
+    ).toEqual(['L5', 'L6-8,10', 'B3', 'B4.1']);
+  });
+
   it('turns a valid claim into a pending extracted draft with its sources', () => {
     const result = mapAiOutput(output([employment]));
 
@@ -224,6 +263,40 @@ describe('AI output mapping', () => {
     });
   });
 
+  it('keeps year-only and mixed-precision dates without inventing months', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'employment',
+          fields: {
+            employer: field('Example Corp', ['L1']),
+            jobTitle: field('Developer', ['L1']),
+            startDate: field('2021', ['L2'], '2021-2024'),
+            endDate: field('2024', ['L2'], '2021-2024')
+          }
+        },
+        {
+          type: 'certification',
+          fields: {
+            title: field('Writing for Marketing', ['L3']),
+            issuer: field('Example Institute', ['L4']),
+            issueDate: field('2023', ['L3'], '2023')
+          }
+        }
+      ])
+    );
+
+    expect(result.unmapped).toEqual([]);
+    expect(result.claims[0]).toMatchObject({
+      values: { startDate: '2021', endDate: '2024' },
+      rawValues: { startDate: '2021-2024', endDate: '2021-2024' }
+    });
+    expect(result.claims[1]).toMatchObject({
+      type: 'certification',
+      values: { issueDate: '2023' }
+    });
+  });
+
   it.each([
     [
       'a required field is missing',
@@ -232,12 +305,12 @@ describe('AI output mapping', () => {
       'missing_employer'
     ],
     [
-      'the required start date has only a year',
+      'the required start date is malformed',
       'education',
       {
         institution: field('Sample University', ['L1']),
         degree: field('BSc', ['L1']),
-        startDate: field('2021', ['L2'])
+        startDate: field('2021-00', ['L2'])
       },
       'invalid_date'
     ],
@@ -247,23 +320,31 @@ describe('AI output mapping', () => {
       { name: field('x'.repeat(101), ['L1']) },
       'invalid_value'
     ]
-  ])('rejects the whole claim when %s', (_case, type, fields, reason) => {
+  ])('keeps the whole claim for review when %s', (_case, type, fields, reason) => {
     const result = mapAiOutput(output([{ type, fields }]));
 
     expect(result.claims).toEqual([]);
-    expect(result.unmapped).toEqual([expect.objectContaining({ label: type, reason })]);
-    expect(result.unmapped[0]!.sources.length).toBeGreaterThan(0);
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: type,
+        fields,
+        issues: [expect.objectContaining({ code: reason, required: true })]
+      })
+    ]);
+    expect(result.reviewItems[0]!.sources.length).toBeGreaterThan(0);
+    expect(result.reviewItems[0]!.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each([
     [
-      'the end date has only a year',
+      'the end date is malformed',
       'education',
       {
         institution: field('Sample University', ['L1']),
         degree: field('BSc', ['L1']),
         startDate: field('2019-09', ['L2']),
-        endDate: field('2023', ['L2'])
+        endDate: field('2023-13', ['L2'])
       },
       'endDate',
       'invalid_date'
@@ -308,14 +389,19 @@ describe('AI output mapping', () => {
       'startDate',
       'missing_value'
     ]
-  ])('sets only the field aside when %s', (_case, type, fields, fieldName, reason) => {
+  ])('keeps a valid remainder and sends the invalid field to review when %s', (_case, type, fields, fieldName, reason) => {
     const result = mapAiOutput(output([{ type, fields }]));
 
     expect(result.claims).toHaveLength(1);
     expect(result.claims[0]!.values).not.toHaveProperty(fieldName);
     expect(result.claims[0]!.fieldConfidence).not.toHaveProperty(fieldName);
-    expect(result.unmapped).toEqual([
-      expect.objectContaining({ label: `${type}.${fieldName}`, reason })
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: type,
+        fields,
+        issues: [{ field: fieldName, code: reason, required: false }]
+      })
     ]);
   });
 
@@ -326,13 +412,104 @@ describe('AI output mapping', () => {
           type: 'project',
           fields: {
             name: field('Shop API', ['L1'], undefined, 0.9),
-            endDate: field('2024', ['L2'], undefined, 0.2)
+            endDate: field('2024-13', ['L2'], undefined, 0.2)
           }
         }
       ])
     );
 
     expect(result.claims[0]!.confidence).toBe(0.9);
+  });
+
+  it('rejects a claim when a required field cites an unknown source', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'employment',
+          fields: {
+            jobTitle: field('Developer', ['L1']),
+            employer: field('Example Corp', ['L99']),
+            startDate: field('2021-03', ['L2'])
+          }
+        }
+      ]),
+      new Set(['L1', 'L2'])
+    );
+
+    expect(result.claims).toEqual([]);
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'employment',
+        issues: [{ field: 'employer', code: 'invalid_source', required: true }],
+        sources: ['L1', 'L99', 'L2']
+      })
+    ]);
+  });
+
+  it('sets aside only optional and profile fields with unknown sources', () => {
+    const result = mapAiOutput(
+      output(
+        [
+          {
+            type: 'project',
+            fields: {
+              name: field('Shop API', ['B3']),
+              description: field('Built payment APIs', ['B99'])
+            }
+          }
+        ],
+        {
+          profile: {
+            fullName: field('Emma Carter', ['L5-7']),
+            headline: field('Backend Developer', ['L8']),
+            summary: { raw: 'API specialist', confidence: 0.7, sources: ['L100'] }
+          },
+          unmapped: [
+            { label: 'Award', text: 'Best Graduate', sources: ['L50'] },
+            { label: 'Course', text: 'Advanced TypeScript', sources: ['B4.1'] }
+          ]
+        }
+      ),
+      new Set(['L5-7', 'B3', 'B4.1'])
+    );
+
+    expect(result.profile.values).toEqual({ fullName: 'Emma Carter' });
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0]!.values).toEqual({ name: 'Shop API' });
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'project',
+        issues: [{ field: 'description', code: 'invalid_source', required: false }],
+        sources: ['B3', 'B99']
+      })
+    ]);
+    expect(result.unmapped).toEqual([
+      {
+        label: 'profile.headline',
+        text: 'Backend Developer',
+        sources: ['L8'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'profile.summary',
+        text: 'API specialist',
+        sources: ['L100'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'Award',
+        text: 'Best Graduate',
+        sources: ['L50'],
+        reason: 'invalid_source'
+      },
+      {
+        label: 'Course',
+        text: 'Advanced TypeScript',
+        sources: ['B4.1'],
+        reason: 'unsupported_section'
+      }
+    ]);
   });
 
   it('keeps valid claims when other items in the same output are invalid', () => {
@@ -351,7 +528,29 @@ describe('AI output mapping', () => {
     ]);
   });
 
-  it('keeps the text as written when a claim is unmapped', () => {
+  it('retains a structurally invalid recognized claim for review', () => {
+    const malformed = {
+      type: 'skill',
+      fields: {
+        name: { value: 'TypeScript', confidence: 0.9, sources: [] }
+      }
+    };
+
+    const result = mapAiOutput(output([malformed]));
+
+    expect(result.claims).toEqual([]);
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'skill',
+        fields: malformed.fields,
+        issues: [{ field: null, code: 'invalid_item', required: false }],
+        sources: []
+      })
+    ]);
+  });
+
+  it('keeps the text as written when a claim needs review', () => {
     const result = mapAiOutput(
       output([
         {
@@ -359,17 +558,18 @@ describe('AI output mapping', () => {
           fields: {
             institution: field('Sample University', ['L1']),
             degree: field('BSc', ['L1']),
-            startDate: field('2021', ['L2'], 'Class of 2021')
+            startDate: field('2021-00', ['L2'], 'Class of 2021')
           }
         }
       ])
     );
 
-    expect(result.unmapped[0]).toEqual({
-      label: 'education',
-      text: 'Sample University; BSc; Class of 2021',
+    expect(result.unmapped).toEqual([]);
+    expect(result.reviewItems[0]).toMatchObject({
+      claimType: 'education',
+      fields: { startDate: { raw: 'Class of 2021' } },
       sources: ['L1', 'L2'],
-      reason: 'invalid_date'
+      issues: [{ field: 'startDate', code: 'invalid_date', required: true }]
     });
   });
 
@@ -464,7 +664,7 @@ describe('AI output mapping', () => {
 
     expect(countByType).toEqual({
       employment: 2,
-      education: 1,
+      education: 2,
       certification: 1,
       skill: 3,
       language: 2,
@@ -477,9 +677,13 @@ describe('AI output mapping', () => {
       )
     ).toBe(true);
     expect(result.claims[0]).toMatchObject({ current: true, confidence: 0.75 });
+    expect(result.reviewItems).toEqual([
+      expect.objectContaining({
+        claimType: 'project',
+        issues: [{ field: 'endDate', code: 'invalid_date_order', required: false }]
+      })
+    ]);
     expect(result.unmapped.map(({ label, reason }) => [label, reason])).toEqual([
-      ['education', 'invalid_date'],
-      ['project.endDate', 'invalid_date_order'],
       ['award', 'invalid_item'],
       ['Courses', 'unsupported_section'],
       ['Interests', 'unsupported_section']

@@ -184,6 +184,7 @@ Why retries cannot duplicate side effects:
 | Parsing result | One row per document, R3 |
 | Status change | R2 |
 | Claim edit and revision | R4, one transaction |
+| Re-extracted pending claims | Replaced only for the same candidate and source document; formatting-equivalent matches to reviewed same-document claims are suppressed in the completion transaction |
 
 ## 9. Errors and logging
 

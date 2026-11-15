@@ -132,7 +132,7 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> queued: job created
     queued --> processing: worker claims job
-    processing --> completed: parsing succeeds
+    processing --> completed: parsing and extraction succeed
     processing --> retrying: retryable failure
     retrying --> queued: delay expires
     processing --> queued: lease expires
@@ -141,15 +141,35 @@ stateDiagram-v2
     failed --> [*]: message dead-lettered
 ```
 
-In the normal failure path, the handler allows three claimed parsing attempts.
-Thrown parser errors and extraction results with `status = failed` use the
-same failure path; a failed result is still saved. Failures on attempts one
-and two move the job to `retrying` for 30 seconds. The current RabbitMQ
+In the normal failure path, the handler allows three claimed processing
+attempts. Thrown parser errors, parser results with `status = failed`, and
+candidate extraction failures use the same retry and final-failure path. A
+failed parser result is still saved; a candidate extraction failure keeps the
+successful parse result and records `EXTRACTION_FAILED`. Failures on attempts
+one and two move the job to `retrying` for 30 seconds. The current RabbitMQ
 delivery is acknowledged after that durable transition; the retry publisher
 later releases and republishes the job. A failure on attempt three marks both
 the document and job failed and rejects the message without requeueing, which
-sends it to the dead-letter queue. `succeeded` and `partial` extractions
-complete the job and mark the document ready.
+sends it to the dead-letter queue. Successful or partial parses complete only
+after candidate extraction is also persisted.
+
+`INVALID_EXTRACTION_PROVENANCE` is terminal on its first occurrence. It means
+one stable physical `anchorKey` resolved to contradictory anchor content, so
+repeating the same parse cannot repair it. The completion transaction rolls
+back, then a separate transaction re-locks the job and document, saves the
+valid parsing result for inspection, and marks both failed without scheduling a
+retry. Unknown persistence and database failures are not classified this way;
+they continue through the existing thrown-error and lease-recovery path.
+
+Missing or ambiguous AI source references use the retryable
+`EXTRACTION_FAILED` path instead. A later attempt reruns candidate extraction
+against the same saved parse and may produce valid references; the normal
+attempt limit still applies.
+
+Structured completion logs include the failure code and attempt count for
+retrying, cancelled, and terminally failed jobs. They contain workflow
+metadata only and never include parsed CV content, source anchors, prompts, or
+provider responses.
 
 Every claim creates a five-minute processing lease. If a worker exits before
 settling the job, the recovery publisher moves the expired `processing` job
@@ -172,15 +192,18 @@ job only matches it while it is still `processing` with that attempt count.
 After a lease expires and another worker claims the job, the older attempt
 matches nothing and stops with the outcome `stale`.
 
-**An attempt ends in one transaction.** The document is read and parsed outside
-any transaction. The attempt then ends in one transaction (the `UnitOfWork` in
+**An attempt ends in one transaction.** The document is read, parsed, and sent
+through candidate extraction outside any transaction. The attempt then ends in
+one transaction (the `UnitOfWork` in
 `infrastructure/database`) that:
 
 1. locks the job row under this claim (`SELECT … FOR UPDATE`), or stops with
    `stale` without writing anything;
 2. locks the document row, so a delete requested now waits for this attempt;
-3. saves the extraction, then completes, retries, or fails the job, and marks
-   the document `ready` or `failed`.
+3. saves the parsed extraction, replaces its pending claims, persists their
+   physical source occurrences and the latest unmapped data snapshot, then
+   completes the job and marks the document `ready`; or records retry/failure
+   state when parsing or candidate extraction fails.
 
 If any write fails, nothing is saved and the job stays `processing` until its
 lease expires. A completed job therefore always has its extraction and a
@@ -258,6 +281,9 @@ Run the API and worker as separate processes:
 npm run dev
 npm run worker:dev
 ```
+
+`LLM_API_KEY` must be configured for candidate extraction; a missing or invalid
+credential follows the normal `EXTRACTION_FAILED` retry and failure path.
 
 For compiled output, run `npm run build`, then `npm start` and
 `npm run worker` in separate processes.

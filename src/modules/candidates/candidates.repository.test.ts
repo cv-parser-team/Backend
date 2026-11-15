@@ -2,12 +2,19 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
 import {
   type CandidateRecord,
   type ClaimRecord,
   createCandidatesRepository
 } from './candidates.repository.js';
-import { claimRevisions, claims } from './candidates.table.js';
+import {
+  claimRevisions,
+  claims,
+  employmentDetails,
+  sourceOccurrences,
+  skillDetails
+} from './candidates.table.js';
 
 const candidateId = '11111111-1111-4111-8111-111111111111';
 const claimId = '22222222-2222-4222-8222-222222222222';
@@ -26,6 +33,7 @@ const claim: ClaimRecord = {
   origin: 'manual',
   status: 'accepted',
   values: { name: 'TypeScript' },
+  extraction: null,
   version: 1,
   createdAt: timestamp,
   updatedAt: timestamp
@@ -40,6 +48,11 @@ function claimRow(version: number, name = 'TypeScript') {
       claimType: 'skill',
       origin: 'manual',
       status: 'accepted',
+      extractionInvocationId: null,
+      extractionDocumentId: null,
+      extractionRawValues: null,
+      extractionFieldSources: null,
+      extractionCurrent: null,
       version,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -331,5 +344,464 @@ describe('retrying claim transactions', () => {
       createCandidatesRepository(database).updateClaimValues(edit)
     ).rejects.toMatchObject({ statusCode: 503, code: 'TRANSIENT_DATABASE_ERROR' });
     expect(transaction).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('creating a claim with extraction provenance', () => {
+  function creationContext(row: unknown) {
+    const returning = vi.fn().mockResolvedValue([{ claimId }]);
+    const claimValues = vi.fn(() => ({ returning }));
+    const detailValues = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn((table: unknown) => ({
+      values: table === claims ? claimValues : detailValues
+    }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where: () => ({ orderBy: () => Promise.resolve([row]) })
+    };
+    const select = vi.fn(() => ({ from: () => readQuery }));
+    const databaseTransaction = vi.fn();
+    const repository = createCandidatesRepository({
+      db: { transaction: databaseTransaction }
+    } as unknown as AppDatabase);
+    const transaction = { insert, select } as unknown as DatabaseExecutor;
+
+    return { claimValues, databaseTransaction, repository, transaction };
+  }
+
+  it('stores and returns extracted evidence and its source document', async () => {
+    const extraction = {
+      invocationId: '33333333-3333-4333-8333-333333333333',
+      sourceDocumentId: '44444444-4444-4444-8444-444444444444',
+      rawValues: { name: 'TypeScript' },
+      fieldSources: { name: ['L12'] },
+      current: false
+    };
+    const extractedRow = {
+      ...claimRow(1),
+      claim: {
+        ...claimRow(1).claim,
+        origin: 'extracted' as const,
+        status: 'pending' as const,
+        extractionInvocationId: extraction.invocationId,
+        extractionDocumentId: extraction.sourceDocumentId,
+        extractionRawValues: extraction.rawValues,
+        extractionFieldSources: extraction.fieldSources,
+        extractionCurrent: extraction.current
+      }
+    };
+    const { claimValues, databaseTransaction, repository, transaction } =
+      creationContext(extractedRow);
+
+    await expect(
+      repository.createClaim(
+        {
+          candidateId,
+          claimType: 'skill',
+          origin: 'extracted',
+          status: 'pending',
+          values: { name: 'TypeScript' },
+          extraction
+        },
+        transaction
+      )
+    ).resolves.toMatchObject({
+      origin: 'extracted',
+      extraction
+    });
+    expect(claimValues).toHaveBeenCalledWith({
+      candidateId,
+      claimType: 'skill',
+      origin: 'extracted',
+      status: 'pending',
+      extractionInvocationId: extraction.invocationId,
+      extractionDocumentId: extraction.sourceDocumentId,
+      extractionRawValues: extraction.rawValues,
+      extractionFieldSources: extraction.fieldSources,
+      extractionCurrent: false
+    });
+    expect(databaseTransaction).not.toHaveBeenCalled();
+  });
+
+  it('keeps extraction provenance null for a manual claim', async () => {
+    const { claimValues, repository, transaction } = creationContext(claimRow(1));
+
+    await repository.createClaim(
+      {
+        candidateId,
+        claimType: 'skill',
+        origin: 'manual',
+        status: 'accepted',
+        values: { name: 'TypeScript' }
+      },
+      transaction
+    );
+
+    expect(claimValues).toHaveBeenCalledWith({
+      candidateId,
+      claimType: 'skill',
+      origin: 'manual',
+      status: 'accepted',
+      extractionInvocationId: null,
+      extractionDocumentId: null,
+      extractionRawValues: null,
+      extractionFieldSources: null,
+      extractionCurrent: null
+    });
+  });
+});
+
+describe('creating claims in a batch', () => {
+  function batchContext() {
+    const claimRows: (typeof claims.$inferInsert)[] = [];
+    const skillRows: (typeof skillDetails.$inferInsert)[] = [];
+    const employmentRows: (typeof employmentDetails.$inferInsert)[] = [];
+
+    const insert = vi.fn((table: unknown) => ({
+      values: vi.fn(async (values: unknown) => {
+        const rows = Array.isArray(values) ? values : [values];
+        if (table === claims) {
+          claimRows.push(...(rows as (typeof claims.$inferInsert)[]));
+        } else if (table === skillDetails) {
+          skillRows.push(...(rows as (typeof skillDetails.$inferInsert)[]));
+        } else if (table === employmentDetails) {
+          employmentRows.push(
+            ...(rows as (typeof employmentDetails.$inferInsert)[])
+          );
+        }
+      })
+    }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where: () => ({
+        orderBy: () =>
+          Promise.resolve(
+            [...claimRows].reverse().map((storedClaim) => ({
+              claim: {
+                ...storedClaim,
+                version: 1,
+                createdAt: timestamp,
+                updatedAt: timestamp
+              },
+              skill:
+                skillRows.find(
+                  (row) => row.claimId === storedClaim.claimId
+                ) ?? null,
+              employment:
+                employmentRows.find(
+                  (row) => row.claimId === storedClaim.claimId
+                ) ?? null,
+              education: null,
+              certification: null,
+              language: null,
+              project: null
+            }))
+          )
+      })
+    };
+    const select = vi.fn(() => ({ from: () => readQuery }));
+    const transaction = { insert, select } as unknown as DatabaseExecutor;
+    const repository = createCandidatesRepository({} as AppDatabase);
+
+    return {
+      claimRows,
+      employmentRows,
+      insert,
+      repository,
+      select,
+      skillRows,
+      transaction
+    };
+  }
+
+  it('bulk-inserts base and grouped detail rows and preserves input order', async () => {
+    const context = batchContext();
+    const extraction = {
+      invocationId: '33333333-3333-4333-8333-333333333333',
+      sourceDocumentId: '44444444-4444-4444-8444-444444444444',
+      rawValues: {},
+      fieldSources: {},
+      current: false
+    };
+
+    const created = await context.repository.createClaims(
+      [
+        {
+          candidateId,
+          claimType: 'skill',
+          origin: 'extracted',
+          status: 'pending',
+          values: { name: 'TypeScript' },
+          extraction
+        },
+        {
+          candidateId,
+          claimType: 'employment',
+          origin: 'extracted',
+          status: 'pending',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2024',
+            endDate: '2026'
+          },
+          extraction
+        }
+      ],
+      context.transaction
+    );
+
+    expect(context.insert).toHaveBeenCalledTimes(3);
+    expect(context.claimRows).toHaveLength(2);
+    expect(context.skillRows).toEqual([
+      {
+        claimId: context.claimRows[0]!.claimId,
+        name: 'TypeScript'
+      }
+    ]);
+    expect(context.employmentRows).toEqual([
+      expect.objectContaining({
+        claimId: context.claimRows[1]!.claimId,
+        employer: 'Example Labs',
+        startDate: '2024-01-01',
+        startDatePrecision: 'year',
+        endDate: '2026-12-01',
+        endDatePrecision: 'year'
+      })
+    ]);
+    expect(created.map(({ claimType }) => claimType)).toEqual([
+      'skill',
+      'employment'
+    ]);
+  });
+
+  it('does not query the database for an empty batch', async () => {
+    const context = batchContext();
+
+    await expect(
+      context.repository.createClaims([], context.transaction)
+    ).resolves.toEqual([]);
+    expect(context.insert).not.toHaveBeenCalled();
+    expect(context.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('creating claim source occurrences', () => {
+  it('bulk-inserts physical evidence through the caller transaction', async () => {
+    const values = vi.fn().mockResolvedValue(undefined);
+    const insert = vi.fn((table: unknown) => {
+      expect(table).toBe(sourceOccurrences);
+      return { values };
+    });
+    const transaction = { insert } as unknown as DatabaseExecutor;
+    const repository = createCandidatesRepository({} as AppDatabase);
+    const inputs = [
+      {
+        claimId,
+        documentId: '44444444-4444-4444-8444-444444444444',
+        anchorKey: 'pdf:1:8',
+        sourceReferences: ['L8'],
+        fieldNames: ['name'],
+        anchor: {
+          kind: 'pdf_line' as const,
+          order: 8,
+          pageNumber: 1,
+          box: { x: 40, y: 80, width: 100, height: 12 },
+          text: 'TypeScript',
+          links: []
+        }
+      }
+    ];
+
+    await expect(
+      repository.createClaimSourceOccurrences(inputs, transaction)
+    ).resolves.toBe(1);
+    expect(values).toHaveBeenCalledWith(inputs);
+  });
+});
+
+describe('reading claim source occurrences', () => {
+  it('loads accepted occurrences only for the candidate and requested claims', async () => {
+    const otherClaimId = '33333333-3333-4333-8333-333333333333';
+    const occurrence = {
+      occurrenceId: '44444444-4444-4444-8444-444444444444',
+      claimId,
+      documentId: '55555555-5555-4555-8555-555555555555',
+      anchorKey: 'pdf:1:8',
+      sourceReferences: ['L8'],
+      fieldNames: ['name'],
+      anchor: {
+        kind: 'pdf_line' as const,
+        order: 8,
+        pageNumber: 1,
+        box: { x: 40, y: 80, width: 100, height: 12 },
+        text: 'TypeScript',
+        links: []
+      }
+    };
+    const orderBy = vi.fn().mockResolvedValue([{ occurrence }]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const readQuery = {
+      innerJoin: () => readQuery,
+      where
+    };
+    const select = vi.fn(() => ({ from: () => readQuery }));
+    const repository = createCandidatesRepository({
+      db: { select }
+    } as unknown as AppDatabase);
+
+    await expect(
+      repository.listClaimSourceOccurrences(candidateId, [claimId, otherClaimId])
+    ).resolves.toEqual([occurrence]);
+
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.sql).toContain('"claims"."candidate_id" = $1');
+    expect(query?.sql).toContain('"claims"."status" = $2');
+    expect(query?.sql).toContain('"claims"."claim_id" in ($3, $4)');
+    expect(query?.params).toEqual([
+      candidateId,
+      'accepted',
+      claimId,
+      otherClaimId
+    ]);
+    expect(orderBy).toHaveBeenCalledOnce();
+  });
+
+  it('skips the database when there are no accepted claim IDs', async () => {
+    const select = vi.fn();
+    const repository = createCandidatesRepository({
+      db: { select }
+    } as unknown as AppDatabase);
+
+    await expect(
+      repository.listClaimSourceOccurrences(candidateId, [])
+    ).resolves.toEqual([]);
+    expect(select).not.toHaveBeenCalled();
+  });
+});
+
+describe('replacing pending extracted claims', () => {
+  it('deletes only the candidate and source document pending set', async () => {
+    const documentId = '44444444-4444-4444-8444-444444444444';
+    const returning = vi.fn().mockResolvedValue([{ claimId }, { claimId: 'other' }]);
+    const where = vi.fn((_condition: SQL) => ({ returning }));
+    const transaction = {
+      delete: vi.fn(() => ({ where }))
+    } as unknown as DatabaseExecutor;
+    const repository = createCandidatesRepository({} as AppDatabase);
+
+    await expect(
+      repository.deletePendingExtractedClaims(
+        candidateId,
+        documentId,
+        transaction
+      )
+    ).resolves.toBe(2);
+
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.sql).toContain('"claims"."candidate_id" = $1');
+    expect(query?.sql).toContain('"claims"."origin" = $2');
+    expect(query?.sql).toContain('"claims"."status" = $3');
+    expect(query?.sql).toContain('"claims"."extraction_document_id" = $4');
+    expect(query?.params).toEqual([
+      candidateId,
+      'extracted',
+      'pending',
+      documentId
+    ]);
+  });
+
+  it('loads only reviewed extracted claims for the candidate and document', async () => {
+    const documentId = '44444444-4444-4444-8444-444444444444';
+    const orderBy = vi.fn().mockResolvedValue([]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where
+    };
+    const transaction = {
+      select: vi.fn(() => ({ from: () => readQuery }))
+    } as unknown as DatabaseExecutor;
+    const repository = createCandidatesRepository({} as AppDatabase);
+
+    await expect(
+      repository.listReviewedExtractedClaims(
+        candidateId,
+        documentId,
+        transaction
+      )
+    ).resolves.toEqual([]);
+
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.sql).toContain('"claims"."candidate_id" = $1');
+    expect(query?.sql).toContain('"claims"."origin" = $2');
+    expect(query?.sql).toContain(
+      '"claims"."status" in ($3, $4)'
+    );
+    expect(query?.sql).toContain(
+      '"claims"."extraction_document_id" = $5'
+    );
+    expect(query?.params).toEqual([
+      candidateId,
+      'extracted',
+      'accepted',
+      'rejected',
+      documentId
+    ]);
+  });
+});
+
+describe('reviewing an extracted claim', () => {
+  it('guards the status transition by owner, origin, state, and version', async () => {
+    const reviewedRow = {
+      ...claimRow(2),
+      claim: {
+        ...claimRow(2).claim,
+        origin: 'extracted' as const,
+        status: 'accepted' as const,
+        extractionInvocationId: '44444444-4444-4444-8444-444444444444',
+        extractionDocumentId: '55555555-5555-4555-8555-555555555555',
+        extractionRawValues: {},
+        extractionFieldSources: { name: ['L8'] },
+        extractionCurrent: false
+      }
+    };
+    const returning = vi.fn().mockResolvedValue([{ claimId }]);
+    const where = vi.fn((_condition: SQL) => ({ returning }));
+    const set = vi.fn((_values: Record<string, unknown>) => ({ where }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where: () => ({ orderBy: () => Promise.resolve([reviewedRow]) })
+    };
+    const database = {
+      db: {
+        update: vi.fn(() => ({ set })),
+        select: vi.fn(() => ({ from: () => readQuery }))
+      }
+    } as unknown as AppDatabase;
+
+    await expect(
+      createCandidatesRepository(database).reviewExtractedClaim(
+        candidateId,
+        claimId,
+        'accepted',
+        1
+      )
+    ).resolves.toMatchObject({
+      status: 'saved',
+      record: { status: 'accepted', version: 2 }
+    });
+
+    const update = set.mock.calls[0]?.[0];
+    expect(update?.status).toBe('accepted');
+    expect(toSql(update?.version as SQL)?.sql).toBe('"claims"."version" + 1');
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.params).toEqual([
+      candidateId,
+      claimId,
+      'extracted',
+      'pending',
+      1
+    ]);
   });
 });

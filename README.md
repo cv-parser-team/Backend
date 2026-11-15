@@ -32,8 +32,9 @@ does not load `.env` files itself.
 | `npm run dev` | Start the API in watch mode |
 | `npm run worker:dev` | Start the document-processing worker in watch mode |
 | `npm run worker` | Start the compiled document-processing worker |
-| `npm run parsing:inspect` | Select a PDF or DOCX and write a visual HTML parsing report |
+| `npm run parsing:inspect -- [file] [output] [--llm]` | Write a visual HTML parsing report; `--llm` embeds structured AI claims in the same report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
+| `npm run llm:inspect -- [output.html]` | Run one tracked candidate-extraction request and write a formatted HTML claims report (defaults to `llm-inspection.html`) |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |
@@ -50,6 +51,24 @@ does not load `.env` files itself.
 | `npm run db:migrate` | Apply generated migrations |
 | `npm run db:push` | Push schema changes during local development |
 | `npm run db:studio` | Open Drizzle Studio |
+
+Database integration tests are opt-in and require a separately provisioned
+database whose name contains `test`. They apply the project migrations before
+running and refuse any URL that does not identify a test-scoped database.
+Start PostgreSQL and create the test database once:
+
+```bash
+npm run db:up
+docker compose exec postgres createdb -U postgres luminacv_test
+```
+
+Then run the integration tests:
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres:postgrespassword@localhost:5432/luminacv_test \
+RUN_DATABASE_INTEGRATION_TESTS=true \
+npx vitest run src/modules/candidates/candidates.repository.integration.test.ts
+```
 
 ## API
 
@@ -73,13 +92,18 @@ and always act on the authenticated user's own profile:
 - `GET /api/candidates/me/profile` (structured JSON with accepted claims only)
 - `POST /api/candidates/me/claims` (add a manual claim)
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
+- `GET /api/candidates/me/claims/:claimId`
 - `PUT /api/candidates/me/claims/:claimId`
+- `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)
 - `DELETE /api/candidates/me/claims/:claimId`
 - `POST /api/candidates/me/documents?purpose=source` (one or more multipart `file` fields)
 - `GET /api/candidates/me/documents`
 - `GET /api/candidates/me/documents/:documentId`
 - `GET /api/candidates/me/documents/:documentId/content`
 - `DELETE /api/candidates/me/documents/:documentId`
+- `GET /api/candidates/me/extraction-review-items` (optional `documentId` and `status` filters; status defaults to `pending`)
+- `PATCH /api/candidates/me/extraction-review-items/:reviewItemId/dismiss`
+- `POST /api/candidates/me/extraction-review-items/:reviewItemId/resolve`
 
 There is intentionally no health endpoint.
 
@@ -94,10 +118,19 @@ PUT /api/candidates/me/claims/:claimId
 If-Match: "3"
 ```
 
-`PATCH /api/candidates/me` and `DELETE /api/candidates/me/claims/:claimId`
-accept `If-Match` the same way. If the record changed since, the request fails
-with `409 VERSION_CONFLICT`, and `error.details.current` holds the record as it
-is now. `If-Match` is optional for now; without it, edits are not checked.
+`PATCH /api/candidates/me`, claim review, and
+`DELETE /api/candidates/me/claims/:claimId` accept `If-Match` the same way. If
+the record changed since, the request fails with `409 VERSION_CONFLICT`, and
+`error.details.current` holds the record as it is now. `If-Match` is optional
+for now; without it, edits are not checked.
+
+Dismissal of an extraction review item also accepts `If-Match` and returns the
+new version in its `ETag` header. Dismissed items no longer appear in the
+pending review-item list.
+
+Resolution accepts corrected claim `values` and `If-Match`. It atomically
+creates an accepted extracted claim, marks the review item resolved, links the
+two records, and returns the review item's new version in `ETag`.
 
 Uploading a file whose earlier copy is still being deleted returns
 `409 DOCUMENT_BEING_DELETED` for that file; upload it again shortly. A request

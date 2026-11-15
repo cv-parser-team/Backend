@@ -102,10 +102,10 @@ erDiagram
         uuid occurrence_id PK
         uuid claim_id FK
         uuid document_id FK
-        integer page_number
-        jsonb position
-        text section
-        text text_span
+        text anchor_key
+        text_array source_references
+        text_array field_names
+        jsonb anchor
     }
     SkillDetails {
         uuid claim_id PK, FK

@@ -16,8 +16,11 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
    claims directly, such as finding candidates with a given skill.
 5. **Edits archive the previous values** in `claim_revisions`, so the original
    values are never lost.
-6. **Ready for document parsing.** The `extracted` origin exists, and exported
-   claims include an empty `sources` list for document references.
+6. **Extracted evidence is physical.** New extracted claims persist their
+   source document plus PDF lines and coordinates or DOCX blocks and rows.
+   Parser-inferred sections are not stored as facts. Accepted claims expose
+   their exact persisted physical anchors in the profile export; manual and
+   legacy claims without occurrences use an empty `sources` list.
 7. **Six claim types:** skills, employment, education, certifications,
    languages, and projects. Languages keep their proficiency as written, such
    as "Native" or "C1"; one scale is left to normalization. Project dates are
@@ -41,6 +44,19 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     row, so concurrent edits run one after the other and each revision holds
     the values it replaced. See
     [Duplicate and conflict resolution](../duplicates-and-conflicts.md).
+12. **Review decisions are terminal.** Only pending extracted claims can move
+    to `accepted` or `rejected`. The guarded transition checks candidate
+    ownership and the optional `If-Match` version in one update. Accepted
+    claims are normalized; rejected claims remain available for audit but are
+    excluded from export.
+13. **Duplicate merging is candidate-controlled.** The MVP design compares
+    claim pairs only, keeps extracted enrichment staged, gives candidate
+    values precedence, and preserves source provenance. See
+    [Merge duplicate claims and resolve related conflicts](../merge-duplicate-claims.md).
+
+`GET /api/candidates/me/claims/:claimId` reads one ownership-scoped claim and
+returns its version in `ETag`. A missing claim and another candidate's claim
+both return 404.
 
 ## Editing a claim
 
@@ -90,5 +106,23 @@ stateDiagram-v2
     end note
 ```
 
-Extraction and review belong to the document parsing feature; this module
-already stores and filters their statuses.
+The candidate sends one terminal decision with:
+
+```http
+PATCH /api/candidates/me/claims/:claimId/review
+If-Match: "1"
+Content-Type: application/json
+
+{ "status": "accepted" }
+```
+
+Manual or already-reviewed claims return `409 CLAIM_NOT_REVIEWABLE`. A stale
+`If-Match` returns `409 VERSION_CONFLICT`; another candidate's claim returns
+404. A successful review increments the version and returns the new `ETag`.
+
+Each exported claim has a `sources` array. A source contains `documentId`, the
+exact parser `references`, the claim `fields` supported by that occurrence, and
+a discriminated physical `anchor`: `pdf_line`, `docx_paragraph`, or
+`docx_table_row`. The array is empty when the claim has no surviving physical
+occurrence. Sources are loaded in one ownership-scoped query for the accepted
+claims, rather than one query per claim.

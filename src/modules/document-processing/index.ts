@@ -1,6 +1,19 @@
 import type { FastifyPluginAsync } from 'fastify';
 import fastifyPlugin from 'fastify-plugin';
+import { config } from '../../config/config.js';
 import { createUnitOfWork } from '../../infrastructure/database/unit-of-work.js';
+import {
+  createGeminiLlmClient,
+  createLlmRepository,
+  createLlmService
+} from '../../infrastructure/llm/index.js';
+import { createCandidateExtractionWriter } from '../candidates/index.js';
+import {
+  createCandidateExtractionService,
+  createExtractionReviewRepository,
+  createExtractionPersistenceCoordinator,
+  type CandidateExtractionService
+} from '../extraction/index.js';
 import { createDocumentProcessingRepository } from './document-processing.repository.js';
 import {
   createDocumentProcessingService,
@@ -24,6 +37,32 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
     broker: fastify.messageBroker,
     repository
   });
+  const unitOfWork = createUnitOfWork(fastify.database);
+  let candidateExtractionService: CandidateExtractionService | undefined;
+  const lazyCandidateExtractionService: CandidateExtractionService = {
+    extract(request) {
+      candidateExtractionService ??= createCandidateExtractionService({
+        llmService: createLlmService(
+          createGeminiLlmClient({
+            apiKey: config.llm.apiKey,
+            maximumInputCharacters: config.llm.maximumInputCharacters
+          }),
+          createLlmRepository(fastify.database)
+        ),
+        provider: config.llm.provider,
+        model: config.llm.model,
+        timeoutMs: config.llm.timeoutMs
+      });
+      return candidateExtractionService.extract(request);
+    }
+  };
+  const extractionPersistenceCoordinator =
+    createExtractionPersistenceCoordinator({
+      candidateWriter: createCandidateExtractionWriter(fastify.database),
+      reviewRepository: createExtractionReviewRepository(fastify.database),
+      parsingService: fastify.parsingService,
+      unitOfWork
+    });
 
   fastify.decorate('documentProcessingService', service);
   fastify.decorate(
@@ -31,8 +70,10 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
     createParseDocumentHandler({
       documentsService: fastify.processingDocumentsService,
       parsingService: fastify.parsingService,
+      candidateExtractionService: lazyCandidateExtractionService,
+      extractionPersistenceCoordinator,
       processingService: service,
-      unitOfWork: createUnitOfWork(fastify.database)
+      unitOfWork
     })
   );
 };
