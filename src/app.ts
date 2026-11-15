@@ -46,6 +46,25 @@ export async function createApp(
         title: 'LuminaCV API',
         description: 'API documentation for the LuminaCV backend',
         version: '1.0.0'
+      },
+      servers: [
+        { url: 'http://localhost:4000', description: 'Local development' }
+      ],
+      tags: [
+        { name: 'Auth', description: 'Registration and access-token lifecycle' },
+        { name: 'Users', description: 'User administration and lookup' },
+        { name: 'Candidates', description: 'Candidate profiles and claims' },
+        { name: 'Documents', description: 'Candidate document management' },
+        { name: 'Extraction', description: 'Document extraction review' }
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT'
+          }
+        }
       }
     }
   });

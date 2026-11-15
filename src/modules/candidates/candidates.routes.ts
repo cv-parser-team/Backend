@@ -28,6 +28,30 @@ export interface CandidatesRoutesOptions {
   guards: AuthGuards;
 }
 
+function documentedResponse(description: string) {
+  return {
+    description,
+    type: 'object',
+    additionalProperties: true
+  } as const;
+}
+
+const candidateSecurity = [{ bearerAuth: [] }];
+const candidateAccessResponses = {
+  401: documentedResponse('Authentication required or token is invalid'),
+  403: documentedResponse('Active candidate account required')
+};
+const ifMatchHeadersSchema = {
+  type: 'object',
+  properties: {
+    'if-match': {
+      type: 'string',
+      description: 'Optional record version used to prevent concurrent overwrites'
+    }
+  },
+  additionalProperties: true
+} as const;
+
 export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = async (
   fastify,
   { service, guards }
@@ -40,7 +64,21 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
 
   fastify.post<{ Body: CreateCandidateBody }>(
     '/me',
-    { schema: { body: createCandidateBodySchema }, preHandler: candidateOnly },
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Create my candidate profile',
+        security: candidateSecurity,
+        body: createCandidateBodySchema,
+        response: {
+          201: documentedResponse('Candidate profile created successfully'),
+          400: documentedResponse('Invalid profile details'),
+          ...candidateAccessResponses,
+          409: documentedResponse('Candidate profile already exists')
+        }
+      },
+      preHandler: candidateOnly
+    },
     async (request, reply) => {
       const data = await service.createProfile(request.auth.userId, request.body);
       const response: ApiResponse<CandidateProfile> = {
@@ -54,22 +92,54 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     }
   );
 
-  fastify.get('/me', { preHandler: candidateOnly }, async (request, reply) => {
-    const data = await service.getProfile(request.auth.userId);
-    const response: ApiResponse<CandidateProfile> = {
-      success: true,
-      data,
-      timestamp: new Date().toISOString()
-    };
+  fastify.get(
+    '/me',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Get my candidate profile',
+        security: candidateSecurity,
+        response: {
+          200: documentedResponse('Candidate profile'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request, reply) => {
+      const data = await service.getProfile(request.auth.userId);
+      const response: ApiResponse<CandidateProfile> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
 
-    return reply.header('etag', versionEtag(data.version)).send(response);
-  });
+      return reply.header('etag', versionEtag(data.version)).send(response);
+    }
+  );
 
   // Edits accept the version the client last read in `If-Match`; a profile or
   // claim that changed since is refused with 409 VERSION_CONFLICT.
   fastify.patch<{ Body: UpdateCandidateBody }>(
     '/me',
-    { schema: { body: updateCandidateBodySchema }, preHandler: candidateOnly },
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Update my candidate profile',
+        security: candidateSecurity,
+        headers: ifMatchHeadersSchema,
+        body: updateCandidateBodySchema,
+        response: {
+          200: documentedResponse('Candidate profile updated successfully'),
+          400: documentedResponse('Invalid profile details or If-Match header'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile not found'),
+          409: documentedResponse('Profile version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
     async (request, reply) => {
       const data = await service.updateProfile(
         request.auth.userId,
@@ -87,20 +157,51 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     }
   );
 
-  fastify.get('/me/profile', { preHandler: candidateOnly }, async (request) => {
-    const data = await service.exportProfile(request.auth.userId);
-    const response: ApiResponse<ExportedProfile> = {
-      success: true,
-      data,
-      timestamp: new Date().toISOString()
-    };
+  fastify.get(
+    '/me/profile',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Export my structured profile',
+        description: 'Returns profile information and accepted claims only.',
+        security: candidateSecurity,
+        response: {
+          200: documentedResponse('Structured candidate profile'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.exportProfile(request.auth.userId);
+      const response: ApiResponse<ExportedProfile> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
 
-    return response;
-  });
+      return response;
+    }
+  );
 
   fastify.post<{ Body: ClaimBody }>(
     '/me/claims',
-    { schema: { body: claimBodySchema }, preHandler: candidateOnly },
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Add a manual claim',
+        security: candidateSecurity,
+        body: claimBodySchema,
+        response: {
+          201: documentedResponse('Claim created successfully'),
+          400: documentedResponse('Invalid claim details'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
     async (request, reply) => {
       const data = await service.createClaim(request.auth.userId, request.body);
       const response: ApiResponse<ClaimRecord> = {
@@ -119,7 +220,21 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
 
   fastify.get<{ Querystring: ListClaimsQuery }>(
     '/me/claims',
-    { schema: { querystring: listClaimsQuerySchema }, preHandler: candidateOnly },
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'List my claims',
+        security: candidateSecurity,
+        querystring: listClaimsQuerySchema,
+        response: {
+          200: documentedResponse('Candidate claims'),
+          400: documentedResponse('Invalid claim filters'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
     async (request) => {
       const data = await service.listClaims(request.auth.userId, request.query);
       const response: ApiResponse<ClaimRecord[]> = {
@@ -135,7 +250,18 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
   fastify.get<{ Params: ClaimParams }>(
     '/me/claims/:claimId',
     {
-      schema: { params: claimParamsSchema },
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Get one of my claims',
+        security: candidateSecurity,
+        params: claimParamsSchema,
+        response: {
+          200: documentedResponse('Candidate claim'),
+          400: documentedResponse('Invalid claim ID'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Claim not found')
+        }
+      },
       preHandler: candidateOnly
     },
     async (request, reply) => {
@@ -156,7 +282,21 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
   fastify.put<{ Params: ClaimParams; Body: ClaimBody }>(
     '/me/claims/:claimId',
     {
-      schema: { params: claimParamsSchema, body: claimBodySchema },
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Update one of my claims',
+        security: candidateSecurity,
+        headers: ifMatchHeadersSchema,
+        params: claimParamsSchema,
+        body: claimBodySchema,
+        response: {
+          200: documentedResponse('Claim updated successfully'),
+          400: documentedResponse('Invalid claim details, ID, or If-Match header'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
       preHandler: candidateOnly
     },
     async (request, reply) => {
@@ -180,7 +320,21 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
   fastify.patch<{ Params: ClaimParams; Body: ReviewClaimBody }>(
     '/me/claims/:claimId/review',
     {
-      schema: { params: claimParamsSchema, body: reviewClaimBodySchema },
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Review an extracted claim',
+        security: candidateSecurity,
+        headers: ifMatchHeadersSchema,
+        params: claimParamsSchema,
+        body: reviewClaimBodySchema,
+        response: {
+          200: documentedResponse('Claim review saved successfully'),
+          400: documentedResponse('Invalid review, claim ID, or If-Match header'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Claim not found'),
+          409: documentedResponse('Claim is not reviewable or has a version conflict')
+        }
+      },
       preHandler: candidateOnly
     },
     async (request, reply) => {
@@ -203,7 +357,23 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
 
   fastify.delete<{ Params: ClaimParams }>(
     '/me/claims/:claimId',
-    { schema: { params: claimParamsSchema }, preHandler: candidateOnly },
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Delete one of my claims',
+        security: candidateSecurity,
+        headers: ifMatchHeadersSchema,
+        params: claimParamsSchema,
+        response: {
+          204: documentedResponse('Claim deleted successfully'),
+          400: documentedResponse('Invalid claim ID or If-Match header'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
     async (request, reply) => {
       await service.deleteClaim(
         request.auth.userId,

@@ -23,6 +23,30 @@ export interface ExtractionReviewRoutesOptions {
   guards: AuthGuards;
 }
 
+function documentedResponse(description: string) {
+  return {
+    description,
+    type: 'object',
+    additionalProperties: true
+  } as const;
+}
+
+const extractionSecurity = [{ bearerAuth: [] }];
+const extractionAccessResponses = {
+  401: documentedResponse('Authentication required or token is invalid'),
+  403: documentedResponse('Active candidate account required')
+};
+const ifMatchHeadersSchema = {
+  type: 'object',
+  properties: {
+    'if-match': {
+      type: 'string',
+      description: 'Optional record version used to prevent concurrent overwrites'
+    }
+  },
+  additionalProperties: true
+} as const;
+
 export const extractionReviewRoutes: FastifyPluginAsync<
   ExtractionReviewRoutesOptions
 > = async (fastify, { service, guards }) => {
@@ -36,8 +60,15 @@ export const extractionReviewRoutes: FastifyPluginAsync<
     '/',
     {
       schema: {
+        tags: ['Extraction'],
+        summary: 'List extraction review items',
+        security: extractionSecurity,
         querystring: listExtractionReviewItemsQuerySchema,
-        response: { 200: listExtractionReviewItemsResponseSchema }
+        response: {
+          200: listExtractionReviewItemsResponseSchema,
+          400: documentedResponse('Invalid review-item filters'),
+          ...extractionAccessResponses
+        }
       },
       preHandler: candidateOnly
     },
@@ -61,8 +92,18 @@ export const extractionReviewRoutes: FastifyPluginAsync<
     '/:reviewItemId/dismiss',
     {
       schema: {
+        tags: ['Extraction'],
+        summary: 'Dismiss an extraction review item',
+        security: extractionSecurity,
+        headers: ifMatchHeadersSchema,
         params: extractionReviewItemParamsSchema,
-        response: { 200: dismissExtractionReviewItemResponseSchema }
+        response: {
+          200: dismissExtractionReviewItemResponseSchema,
+          400: documentedResponse('Invalid review item ID or If-Match header'),
+          ...extractionAccessResponses,
+          404: documentedResponse('Extraction review item not found'),
+          409: documentedResponse('Review item is not pending or has a version conflict')
+        }
       },
       preHandler: candidateOnly
     },
@@ -90,9 +131,19 @@ export const extractionReviewRoutes: FastifyPluginAsync<
     '/:reviewItemId/resolve',
     {
       schema: {
+        tags: ['Extraction'],
+        summary: 'Resolve an extraction review item',
+        security: extractionSecurity,
+        headers: ifMatchHeadersSchema,
         params: extractionReviewItemParamsSchema,
         body: resolveExtractionReviewItemBodySchema,
-        response: { 201: resolveExtractionReviewItemResponseSchema }
+        response: {
+          201: resolveExtractionReviewItemResponseSchema,
+          400: documentedResponse('Invalid resolution, review item ID, or If-Match header'),
+          ...extractionAccessResponses,
+          404: documentedResponse('Extraction review item not found'),
+          409: documentedResponse('Review item is not pending or has a version conflict')
+        }
       },
       preHandler: candidateOnly
     },
