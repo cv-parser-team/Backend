@@ -10,6 +10,16 @@ import {
   type RunningDocumentProcessingRetryPublisher
 } from './document-processing.retry-publisher.js';
 import { startDocumentProcessingWorker } from './document-processing.worker.js';
+import type { NormalizationAi } from '../modules/normalization/index.js';
+import {
+  startNormalizationAiWorker,
+  type RunningNormalizationAiWorker
+} from './normalization-ai.worker.js';
+
+export interface NormalizationAiWorkerOptions {
+  intervalMilliseconds: number;
+  batchSize: number;
+}
 
 export interface DocumentProcessingWorkerApp {
   documentProcessingService: Pick<
@@ -21,6 +31,7 @@ export interface DocumentProcessingWorkerApp {
   log: Pick<FastifyBaseLogger, 'info' | 'warn'>;
   messageBroker: Pick<ManagedMessageBroker, 'consume'>;
   parseDocumentHandler: Pick<ParseDocumentHandler, 'handle'>;
+  normalizationAi?: Pick<NormalizationAi, 'enabled' | 'requests' | 'processor'>;
   ready(): PromiseLike<void>;
   close(): Promise<void>;
 }
@@ -49,9 +60,11 @@ export interface RunningDocumentProcessingWorker {
 }
 
 export async function bootstrapDocumentProcessingWorker(
-  app: DocumentProcessingWorkerApp
+  app: DocumentProcessingWorkerApp,
+  normalizationAiOptions?: NormalizationAiWorkerOptions
 ): Promise<RunningDocumentProcessingWorker> {
   let retryPublisher: RunningDocumentProcessingRetryPublisher | undefined;
+  let normalizationAiWorker: RunningNormalizationAiWorker | undefined;
 
   try {
     await app.ready();
@@ -67,10 +80,19 @@ export async function bootstrapDocumentProcessingWorker(
       handler: app.parseDocumentHandler,
       log: app.log
     });
+    if (app.normalizationAi?.enabled && normalizationAiOptions) {
+      normalizationAiWorker = startNormalizationAiWorker({
+        normalizationAi: app.normalizationAi,
+        log: app.log,
+        ...normalizationAiOptions
+      });
+      app.log.info('Normalization AI worker started');
+    }
   } catch (error) {
     const cleanupErrors: unknown[] = [];
 
     try {
+      await normalizationAiWorker?.close();
       await retryPublisher?.close();
     } catch (closeError) {
       cleanupErrors.push(closeError);
@@ -97,6 +119,7 @@ export async function bootstrapDocumentProcessingWorker(
   return {
     close() {
       closePromise ??= (async () => {
+        await normalizationAiWorker?.close();
         await retryPublisher?.close();
         await app.close();
       })();

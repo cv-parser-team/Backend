@@ -37,6 +37,43 @@ function createWorkerApp(): DocumentProcessingWorkerApp {
   };
 }
 
+describe('normalization AI worker bootstrap', () => {
+  const options = { intervalMilliseconds: 1_000, batchSize: 5 };
+
+  function appWithAi(enabled: boolean) {
+    const claimBatch = vi.fn(async () => []);
+    const app = {
+      ...createWorkerApp(),
+      normalizationAi: {
+        enabled,
+        requests: { claimBatch },
+        processor: { process: vi.fn() }
+      }
+    };
+    return { app, claimBatch };
+  }
+
+  it.each([
+    [true, 1],
+    [false, 0]
+  ])('runs the AI worker only when AI matching is enabled (%s)', async (enabled, claims) => {
+    vi.useFakeTimers();
+    try {
+      const { app, claimBatch } = appWithAi(enabled);
+      const worker = await bootstrapDocumentProcessingWorker(app, options);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(claimBatch).toHaveBeenCalledTimes(claims);
+
+      await worker.close();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(claimBatch).toHaveBeenCalledTimes(claims);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('document processing worker bootstrap', () => {
   it('starts consumption after readiness and closes only once', async () => {
     const operations: string[] = [];

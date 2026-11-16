@@ -1,9 +1,13 @@
 import { createApp } from '../app.js';
+import { config } from '../config/config.js';
 import { bootstrapDocumentProcessingWorker } from './document-processing.bootstrap.js';
 
 async function main(): Promise<void> {
   const app = await createApp();
-  const worker = await bootstrapDocumentProcessingWorker(app);
+  const worker = await bootstrapDocumentProcessingWorker(app, {
+    intervalMilliseconds: config.normalization.aiPollIntervalMs,
+    batchSize: config.normalization.aiBatchSize
+  });
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     app.log.info({ signal }, 'Stopping document processing worker');

@@ -527,12 +527,36 @@ value is not repeated.
 | `claim_id` | UUID | Required, claim FK, cascade delete, indexed with `created_at` | Normalized claim |
 | `term_id` | UUID | Nullable, canonical term FK, set null on delete | Chosen term; null when unmatched or ambiguous |
 | `original_value` | Text | Required | The claim value that was normalized |
-| `method` | `normalization_method` | Nullable | How the term was found; null when unmatched |
-| `confidence_score` | Numeric(3, 2) | Nullable | `1` for an exact match; null otherwise |
-| `actor_type` | `actor_type` | Required | Who decided; `system` for automatic matching |
-| `rule_version` | Text | Required | Matching rules used, such as `exact-v1` |
+| `method` | `normalization_method` | Nullable | How the term was found; null when exact and spelling matching found nothing |
+| `confidence_score` | Numeric(3, 2) | Nullable | `1` for an exact match, below `1` for a spelling or AI match; null when not matched |
+| `actor_type` | `actor_type` | Required | Who decided: `system` for exact and spelling matching, `ai` for AI matching |
+| `rule_version` | Text | Required | `fuzzy-v1` for exact and spelling matching; the AI prompt version, such as `normalization-match-v1`, for AI matching |
 | `status` | `normalization_status` | Required | `matched`, `unmatched`, or `ambiguous` |
 | `created_at` | Timestamp with time zone | Required, generated | Decision time |
+
+### `normalization_ai_requests`
+
+Values that exact and spelling matching could not link, waiting for the AI.
+The worker processes them in the background. A claim has at most one active
+request (`queued` or `processing`), enforced by the partial unique index
+`normalization_ai_requests_active_claim_unique`. Requests cascade on claim
+deletion. See [Normalization](../modules/normalization.md#ai-matching).
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `request_id` | UUID | Primary key, generated | Request identifier |
+| `claim_id` | UUID | Required, claim FK, cascade delete | Claim whose value is matched |
+| `category` | `canonical_category` | Required | Category of the value |
+| `original_value` | Text | Required | Value to match; the request applies only while the claim still has it |
+| `context` | JSONB | Required, defaults to `{}` | The claim's other fields, given to the AI |
+| `preferred_term_ids` | JSONB | Required, defaults to `[]` | Terms spelling matching found equally close, offered first |
+| `status` | `normalization_ai_request_status` | Required, defaults to `queued`, indexed with `available_at` | Request lifecycle |
+| `attempt_count` | Integer | Required, defaults to `0` | Increases with each claim; writes by an older claim are refused |
+| `failure_code` | Text | Nullable | Reason for the last retry or the failure, such as `rate_limited` |
+| `available_at` | Timestamp with time zone | Required, generated | Earliest time the request may run |
+| `locked_until` | Timestamp with time zone | Nullable | Processing lease expiration |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Last update |
 
 ### Normalization enumerations
 
@@ -544,9 +568,12 @@ value is not repeated.
 - `normalization_method`: `canonical`, `alias`, `fuzzy`, `ai`, `candidate`
 - `normalization_status`: `matched`, `unmatched`, `ambiguous`
 - `actor_type`: `system`, `ai`, `candidate`, `reviewer`
+- `normalization_ai_request_status`: `queued`, `processing`, `completed`,
+  `failed`, `superseded`
 
-Values that the first version does not use are defined for the later matching
-steps of the requirements.
+`candidate`-scoped aliases, `candidate` and `reviewer` origins, the `candidate`
+method, and the `candidate` and `reviewer` actors are defined for the later
+matching steps of the requirements.
 
 ## Documents
 

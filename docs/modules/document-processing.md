@@ -285,6 +285,11 @@ npm run worker:dev
 `LLM_API_KEY` must be configured for candidate extraction; a missing or invalid
 credential follows the normal `EXTRACTION_FAILED` retry and failure path.
 
+The same worker process also polls AI normalization requests when AI
+normalization is enabled and a key is set. It closes that poller first on
+shutdown, after the request in progress finishes. See
+[Normalization](normalization.md#ai-matching).
+
 For compiled output, run `npm run build`, then `npm start` and
 `npm run worker` in separate processes.
 
