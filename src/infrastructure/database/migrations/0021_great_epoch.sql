@@ -1,0 +1,1 @@
+ALTER TABLE "claims" ADD COLUMN "candidate_edited_at" timestamp with time zone;

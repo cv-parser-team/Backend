@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, sql, SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
@@ -7,6 +7,7 @@ import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-wor
 import {
   candidates,
   certificationDetails,
+  claimPairDecisions,
   type ClaimDatePrecision,
   ClaimExtractionMetadata,
   ClaimFieldValue,
@@ -24,6 +25,7 @@ import {
 } from './candidates.table.js';
 
 export type CandidateRecord = typeof candidates.$inferSelect;
+export type ClaimPairDecisionRecord = typeof claimPairDecisions.$inferSelect;
 export type ClaimSourceOccurrenceRecord = typeof sourceOccurrences.$inferSelect;
 export type CreateCandidateInput = Omit<
   typeof candidates.$inferInsert,
@@ -54,11 +56,56 @@ export interface CreateClaimSourceOccurrenceInput {
   anchor: ClaimSourceAnchor;
 }
 
+export interface TransferClaimSourceOccurrencesResult {
+  moved: number;
+  skipped: number;
+}
+
+export interface CoalescePendingClaimsInput {
+  candidateId: string;
+  survivor: { claimId: string; expectedVersion: number };
+  duplicate: { claimId: string; expectedVersion: number };
+  values: ClaimValues;
+  current?: boolean;
+}
+
+export type CoalescePendingClaimsResult =
+  | { status: 'saved'; survivor: ClaimRecord; duplicate: ClaimRecord }
+  | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
+  | { status: 'missing' };
+
+export interface MergeConfirmedClaimsInput {
+  candidateId: string;
+  survivor: { claimId: string; expectedVersion: number };
+  duplicate: { claimId: string; expectedVersion: number };
+  values: ClaimValues;
+  current?: boolean;
+}
+
+export type MergeConfirmedClaimsResult =
+  | { status: 'saved'; survivor: ClaimRecord; duplicate: ClaimRecord }
+  | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
+  | { status: 'missing' };
+
+export interface RecordClaimsDifferentInput {
+  candidateId: string;
+  left: { claimId: string; expectedVersion: number };
+  right: { claimId: string; expectedVersion: number };
+}
+
+export type RecordClaimsDifferentResult =
+  | { status: 'saved' }
+  | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
+  | { status: 'missing' };
+
 export interface ClaimRecord {
   claimId: string;
+  supersededByClaimId: string | null;
   claimType: ClaimRow['claimType'];
   origin: ClaimRow['origin'];
   status: ClaimRow['status'];
+  current: boolean;
+  candidateEdited: boolean;
   values: ClaimValues;
   extraction: ClaimExtractionMetadata | null;
   version: number;
@@ -140,6 +187,21 @@ export interface CandidatesRepository {
     inputs: CreateClaimSourceOccurrenceInput[],
     transaction: DatabaseExecutor
   ): Promise<number>;
+  transferClaimSourceOccurrences(
+    duplicateClaimId: string,
+    survivorClaimId: string,
+    transaction: DatabaseExecutor
+  ): Promise<TransferClaimSourceOccurrencesResult>;
+  coalescePendingClaims(
+    input: CoalescePendingClaimsInput
+  ): Promise<CoalescePendingClaimsResult>;
+  mergeConfirmedClaims(
+    input: MergeConfirmedClaimsInput
+  ): Promise<MergeConfirmedClaimsResult>;
+  recordClaimsDifferent(
+    input: RecordClaimsDifferentInput
+  ): Promise<RecordClaimsDifferentResult>;
+  listClaimPairDecisions(candidateId: string): Promise<ClaimPairDecisionRecord[]>;
   deletePendingExtractedClaims(
     candidateId: string,
     documentId: string,
@@ -188,6 +250,16 @@ function readRequiredText(values: ClaimValues, fieldName: string): string {
 function readList(values: ClaimValues, fieldName: string): string[] {
   const value = values[fieldName];
   return Array.isArray(value) ? value : [];
+}
+
+function haveSameClaimValues(left: ClaimValues, right: ClaimValues): boolean {
+  const leftEntries = Object.entries(left).sort(([leftKey], [rightKey]) =>
+    leftKey.localeCompare(rightKey)
+  );
+  const rightEntries = Object.entries(right).sort(([leftKey], [rightKey]) =>
+    leftKey.localeCompare(rightKey)
+  );
+  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
 }
 
 interface StoredClaimDate {
@@ -359,6 +431,7 @@ function toClaimInsert({ claimId, input }: ClaimWithId): typeof claims.$inferIns
     claimType: input.claimType,
     origin: input.origin,
     status: input.status,
+    current: input.origin === 'extracted' ? input.extraction.current : false,
     extractionInvocationId:
       input.origin === 'extracted' ? input.extraction.invocationId : null,
     extractionDocumentId:
@@ -561,9 +634,12 @@ async function selectClaims(
 
     return {
       claimId: claim.claimId,
+      supersededByClaimId: claim.supersededByClaimId,
       claimType: claim.claimType,
       origin: claim.origin,
       status: claim.status,
+      current: claim.current,
+      candidateEdited: claim.candidateEditedAt !== null,
       values,
       extraction:
         claim.origin === 'extracted' &&
@@ -597,6 +673,7 @@ async function insertClaim(
       claimType: input.claimType,
       origin: input.origin,
       status: input.status,
+      current: input.origin === 'extracted' ? input.extraction.current : false,
       extractionInvocationId:
         input.origin === 'extracted' ? input.extraction.invocationId : null,
       extractionDocumentId:
@@ -662,6 +739,59 @@ async function insertClaims(
     }
     return claim;
   });
+}
+
+async function transferClaimSourceOccurrences(
+  transaction: DatabaseExecutor,
+  duplicateClaimId: string,
+  survivorClaimId: string
+): Promise<TransferClaimSourceOccurrencesResult> {
+  if (duplicateClaimId === survivorClaimId) {
+    return { moved: 0, skipped: 0 };
+  }
+
+  const occurrences = await transaction
+    .select({
+      occurrenceId: sourceOccurrences.occurrenceId,
+      claimId: sourceOccurrences.claimId,
+      documentId: sourceOccurrences.documentId,
+      anchorKey: sourceOccurrences.anchorKey
+    })
+    .from(sourceOccurrences)
+    .where(
+      inArray(sourceOccurrences.claimId, [duplicateClaimId, survivorClaimId])
+    );
+  const physicalKey = (documentId: string, anchorKey: string) =>
+    `${documentId}\u0000${anchorKey}`;
+  const survivorKeys = new Set(
+    occurrences
+      .filter(({ claimId }) => claimId === survivorClaimId)
+      .map(({ documentId, anchorKey }) => physicalKey(documentId, anchorKey))
+  );
+  const duplicateOccurrences = occurrences.filter(
+    ({ claimId }) => claimId === duplicateClaimId
+  );
+  const duplicateOccurrenceIds = duplicateOccurrences
+    .filter(({ documentId, anchorKey }) =>
+      survivorKeys.has(physicalKey(documentId, anchorKey))
+    )
+    .map(({ occurrenceId }) => occurrenceId);
+
+  if (duplicateOccurrenceIds.length > 0) {
+    await transaction
+      .delete(sourceOccurrences)
+      .where(inArray(sourceOccurrences.occurrenceId, duplicateOccurrenceIds));
+  }
+  if (duplicateOccurrences.length === duplicateOccurrenceIds.length) {
+    return { moved: 0, skipped: duplicateOccurrenceIds.length };
+  }
+
+  const moved = await transaction
+    .update(sourceOccurrences)
+    .set({ claimId: survivorClaimId })
+    .where(eq(sourceOccurrences.claimId, duplicateClaimId))
+    .returning({ occurrenceId: sourceOccurrences.occurrenceId });
+  return { moved: moved.length, skipped: duplicateOccurrenceIds.length };
 }
 
 export function createCandidatesRepository(
@@ -756,6 +886,389 @@ export function createCandidatesRepository(
         await transaction.insert(sourceOccurrences).values(inputs);
         return inputs.length;
       });
+    },
+
+    async transferClaimSourceOccurrences(
+      duplicateClaimId,
+      survivorClaimId,
+      transaction
+    ) {
+      if (duplicateClaimId === survivorClaimId) {
+        return { moved: 0, skipped: 0 };
+      }
+
+      return withDbErrors('Claim source occurrences', () =>
+        transferClaimSourceOccurrences(
+          transaction,
+          duplicateClaimId,
+          survivorClaimId
+        )
+      );
+    },
+
+    async coalescePendingClaims(input) {
+      if (input.survivor.claimId === input.duplicate.claimId) {
+        return { status: 'not_eligible', current: [] };
+      }
+
+      return withTransientRetry(() =>
+        withDbErrors('Claims', () =>
+          database.db.transaction(
+            async (transaction): Promise<CoalescePendingClaimsResult> => {
+              const claimIds = [
+                input.survivor.claimId,
+                input.duplicate.claimId
+              ].sort();
+              const locked = await transaction
+                .select({ claimId: claims.claimId })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.candidateId, input.candidateId),
+                    inArray(claims.claimId, claimIds)
+                  )
+                )
+                .orderBy(asc(claims.claimId))
+                .for('update');
+              if (locked.length !== 2) {
+                return { status: 'missing' };
+              }
+
+              const current = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, input.candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const claimsById = new Map(
+                current.map((claim) => [claim.claimId, claim])
+              );
+              const survivor = claimsById.get(input.survivor.claimId);
+              const duplicate = claimsById.get(input.duplicate.claimId);
+              if (!survivor || !duplicate) {
+                return { status: 'missing' };
+              }
+              if (
+                survivor.version !== input.survivor.expectedVersion ||
+                duplicate.version !== input.duplicate.expectedVersion
+              ) {
+                return { status: 'conflict', current };
+              }
+              const eligible =
+                survivor.claimType === duplicate.claimType &&
+                survivor.origin === 'extracted' &&
+                duplicate.origin === 'extracted' &&
+                survivor.status === 'pending' &&
+                duplicate.status === 'pending' &&
+                !survivor.candidateEdited &&
+                !duplicate.candidateEdited &&
+                survivor.supersededByClaimId === null &&
+                duplicate.supersededByClaimId === null;
+              if (!eligible) {
+                return { status: 'not_eligible', current };
+              }
+
+              const mergedCurrent = input.current ?? survivor.current;
+              const valuesChanged = !haveSameClaimValues(
+                survivor.values,
+                input.values
+              );
+              if (valuesChanged || survivor.current !== mergedCurrent) {
+                await transaction.insert(claimRevisions).values({
+                  claimId: survivor.claimId,
+                  previousValues: survivor.values,
+                  previousCurrent: survivor.current
+                });
+              }
+              if (valuesChanged) {
+                await updateDetails(
+                  transaction,
+                  survivor.claimId,
+                  survivor.claimType,
+                  input.values
+                );
+              }
+
+              const updatedAt = new Date();
+              await transaction
+                .update(claims)
+                .set({
+                  current: mergedCurrent,
+                  updatedAt,
+                  version: sql`${claims.version} + 1`
+                })
+                .where(eq(claims.claimId, survivor.claimId));
+              await transferClaimSourceOccurrences(
+                transaction,
+                duplicate.claimId,
+                survivor.claimId
+              );
+              await transaction
+                .update(claims)
+                .set({
+                  supersededByClaimId: survivor.claimId,
+                  updatedAt,
+                  version: sql`${claims.version} + 1`
+                })
+                .where(eq(claims.claimId, duplicate.claimId));
+
+              const saved = await selectClaims(
+                transaction,
+                inArray(claims.claimId, claimIds)
+              );
+              const savedById = new Map(
+                saved.map((claim) => [claim.claimId, claim])
+              );
+              const savedSurvivor = savedById.get(survivor.claimId);
+              const savedDuplicate = savedById.get(duplicate.claimId);
+              if (!savedSurvivor || !savedDuplicate) {
+                throw new Error('Coalesced claims could not be read');
+              }
+              return {
+                status: 'saved',
+                survivor: savedSurvivor,
+                duplicate: savedDuplicate
+              };
+            }
+          )
+        )
+      );
+    },
+
+    async mergeConfirmedClaims(input) {
+      if (input.survivor.claimId === input.duplicate.claimId) {
+        return { status: 'not_eligible', current: [] };
+      }
+
+      return withTransientRetry(() =>
+        withDbErrors('Claims', () =>
+          database.db.transaction(
+            async (transaction): Promise<MergeConfirmedClaimsResult> => {
+              const claimIds = [
+                input.survivor.claimId,
+                input.duplicate.claimId
+              ].sort();
+              const locked = await transaction
+                .select({ claimId: claims.claimId })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.candidateId, input.candidateId),
+                    inArray(claims.claimId, claimIds)
+                  )
+                )
+                .orderBy(asc(claims.claimId))
+                .for('update');
+              if (locked.length !== 2) {
+                return { status: 'missing' };
+              }
+
+              const current = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, input.candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const claimsById = new Map(
+                current.map((claim) => [claim.claimId, claim])
+              );
+              const survivor = claimsById.get(input.survivor.claimId);
+              const duplicate = claimsById.get(input.duplicate.claimId);
+              if (!survivor || !duplicate) {
+                return { status: 'missing' };
+              }
+              if (
+                survivor.version !== input.survivor.expectedVersion ||
+                duplicate.version !== input.duplicate.expectedVersion
+              ) {
+                return { status: 'conflict', current };
+              }
+              const eligible =
+                survivor.claimType === duplicate.claimType &&
+                survivor.status !== 'rejected' &&
+                duplicate.status !== 'rejected' &&
+                survivor.supersededByClaimId === null &&
+                duplicate.supersededByClaimId === null;
+              if (!eligible) {
+                return { status: 'not_eligible', current };
+              }
+
+              const mergedCurrent = input.current ?? survivor.current;
+              const valuesChanged = !haveSameClaimValues(
+                survivor.values,
+                input.values
+              );
+              if (valuesChanged || survivor.current !== mergedCurrent) {
+                await transaction.insert(claimRevisions).values({
+                  claimId: survivor.claimId,
+                  previousValues: survivor.values,
+                  previousCurrent: survivor.current
+                });
+              }
+              if (valuesChanged) {
+                await updateDetails(
+                  transaction,
+                  survivor.claimId,
+                  survivor.claimType,
+                  input.values
+                );
+              }
+
+              const updatedAt = new Date();
+              await transaction
+                .update(claims)
+                .set({
+                  status: 'accepted',
+                  current: mergedCurrent,
+                  updatedAt,
+                  version: sql`${claims.version} + 1`
+                })
+                .where(eq(claims.claimId, survivor.claimId));
+              await transferClaimSourceOccurrences(
+                transaction,
+                duplicate.claimId,
+                survivor.claimId
+              );
+              await transaction
+                .update(claims)
+                .set({
+                  supersededByClaimId: survivor.claimId,
+                  updatedAt,
+                  version: sql`${claims.version} + 1`
+                })
+                .where(eq(claims.claimId, duplicate.claimId));
+
+              const saved = await selectClaims(
+                transaction,
+                inArray(claims.claimId, claimIds)
+              );
+              const savedById = new Map(
+                saved.map((claim) => [claim.claimId, claim])
+              );
+              const savedSurvivor = savedById.get(survivor.claimId);
+              const savedDuplicate = savedById.get(duplicate.claimId);
+              if (!savedSurvivor || !savedDuplicate) {
+                throw new Error('Merged claims could not be read');
+              }
+              return {
+                status: 'saved',
+                survivor: savedSurvivor,
+                duplicate: savedDuplicate
+              };
+            }
+          )
+        )
+      );
+    },
+
+    async recordClaimsDifferent(input) {
+      if (input.left.claimId === input.right.claimId) {
+        return { status: 'not_eligible', current: [] };
+      }
+
+      const [leftInput, rightInput] = [input.left, input.right].sort(
+        (left, right) => left.claimId.localeCompare(right.claimId)
+      );
+      if (!leftInput || !rightInput) {
+        throw new Error('Claim pair could not be ordered');
+      }
+
+      return withTransientRetry(() =>
+        withDbErrors('Claim pair decision', () =>
+          database.db.transaction(
+            async (transaction): Promise<RecordClaimsDifferentResult> => {
+              const claimIds = [leftInput.claimId, rightInput.claimId];
+              const locked = await transaction
+                .select({ claimId: claims.claimId })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.candidateId, input.candidateId),
+                    inArray(claims.claimId, claimIds)
+                  )
+                )
+                .orderBy(asc(claims.claimId))
+                .for('update');
+              if (locked.length !== 2) {
+                return { status: 'missing' };
+              }
+
+              const current = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, input.candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const claimsById = new Map(
+                current.map((claim) => [claim.claimId, claim])
+              );
+              const left = claimsById.get(leftInput.claimId);
+              const right = claimsById.get(rightInput.claimId);
+              if (!left || !right) {
+                return { status: 'missing' };
+              }
+              if (
+                left.version !== leftInput.expectedVersion ||
+                right.version !== rightInput.expectedVersion
+              ) {
+                return { status: 'conflict', current };
+              }
+              const eligible =
+                left.claimType === right.claimType &&
+                left.status !== 'rejected' &&
+                right.status !== 'rejected' &&
+                left.supersededByClaimId === null &&
+                right.supersededByClaimId === null;
+              if (!eligible) {
+                return { status: 'not_eligible', current };
+              }
+
+              const updatedAt = new Date();
+              await transaction
+                .insert(claimPairDecisions)
+                .values({
+                  candidateId: input.candidateId,
+                  leftClaimId: left.claimId,
+                  rightClaimId: right.claimId,
+                  leftVersion: left.version,
+                  rightVersion: right.version,
+                  decision: 'different',
+                  updatedAt
+                })
+                .onConflictDoUpdate({
+                  target: [
+                    claimPairDecisions.candidateId,
+                    claimPairDecisions.leftClaimId,
+                    claimPairDecisions.rightClaimId
+                  ],
+                  set: {
+                    leftVersion: left.version,
+                    rightVersion: right.version,
+                    decision: 'different',
+                    updatedAt
+                  }
+                });
+              return { status: 'saved' };
+            }
+          )
+        )
+      );
+    },
+
+    async listClaimPairDecisions(candidateId) {
+      return withDbErrors('Claim pair decisions', () =>
+        database.db
+          .select()
+          .from(claimPairDecisions)
+          .where(eq(claimPairDecisions.candidateId, candidateId))
+          .orderBy(
+            asc(claimPairDecisions.leftClaimId),
+            asc(claimPairDecisions.rightClaimId)
+          )
+      );
     },
 
     async deletePendingExtractedClaims(
@@ -861,6 +1374,7 @@ export function createCandidatesRepository(
           database.db,
           and(
             eq(claims.candidateId, candidateId),
+            isNull(claims.supersededByClaimId),
             filters.claimType ? eq(claims.claimType, filters.claimType) : undefined,
             filters.status ? eq(claims.status, filters.status) : undefined
           )
@@ -882,6 +1396,7 @@ export function createCandidatesRepository(
             and(
               eq(claims.candidateId, candidateId),
               eq(claims.status, 'accepted'),
+              isNull(claims.supersededByClaimId),
               inArray(claims.claimId, claimIds)
             )
           )
@@ -934,7 +1449,11 @@ export function createCandidatesRepository(
 
             await transaction
               .insert(claimRevisions)
-              .values({ claimId: current.claimId, previousValues: current.values });
+              .values({
+                claimId: current.claimId,
+                previousValues: current.values,
+                previousCurrent: current.current
+              });
             await updateDetails(
               transaction,
               current.claimId,
@@ -943,7 +1462,13 @@ export function createCandidatesRepository(
             );
             await transaction
               .update(claims)
-              .set({ updatedAt: new Date(), version: sql`${claims.version} + 1` })
+              .set({
+                updatedAt: new Date(),
+                version: sql`${claims.version} + 1`,
+                ...(current.origin === 'extracted'
+                  ? { candidateEditedAt: new Date() }
+                  : {})
+              })
               .where(ownedClaim);
 
             const [updated] = await selectClaims(transaction, ownedClaim);

@@ -150,6 +150,17 @@ erDiagram
         jsonb previous_values
         timestamptz created_at
     }
+    CLAIM_PAIR_DECISIONS {
+        uuid decision_id PK
+        uuid candidate_id FK
+        uuid left_claim_id FK
+        uuid right_claim_id FK
+        integer left_version
+        integer right_version
+        text decision
+        timestamptz created_at
+        timestamptz updated_at
+    }
     DOCUMENTS {
         uuid document_id PK
         uuid owner_user_id FK
@@ -236,6 +247,8 @@ erDiagram
     CLAIMS ||--o| LANGUAGE_DETAILS : "type language"
     CLAIMS ||--o| PROJECT_DETAILS : "type project"
     CLAIMS ||--o{ CLAIM_REVISIONS : archives
+    CANDIDATES ||--o{ CLAIM_PAIR_DECISIONS : decides
+    CLAIMS ||--o{ CLAIM_PAIR_DECISIONS : "compared in"
     CLAIMS ||--o{ NORMALIZATION_DECISIONS : "normalized in"
     CANONICAL_TERMS ||--o{ ALIASES : "written as"
     CANONICAL_TERMS ||--o{ NORMALIZATION_DECISIONS : "chosen in"
@@ -340,6 +353,30 @@ transient-failure retries.
 `extraction_document_id` is intentionally not a foreign key until document
 deletion semantics for reviewed claims are defined. New application writes
 always provide it; older extracted claims remain readable with a null value.
+
+## Claim pair decisions
+
+Owned by the `candidates` module and defined in
+`src/modules/candidates/candidates.table.ts`.
+
+`claim_pair_decisions` remembers when a candidate confirms that two active
+same-type claims describe different facts. Claim IDs are stored in canonical
+order with the exact versions reviewed. Discovery suppresses the decision only
+while both versions still match; a later claim edit can make the pair eligible
+for review again. Repeating a decision for the same pair updates its observed
+versions rather than creating another row.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `decision_id` | UUID | Primary key, generated | Stable decision identifier |
+| `candidate_id` | UUID | Required, candidate FK, cascade delete | Candidate who made the decision |
+| `left_claim_id` | UUID | Required, claim FK, cascade delete | Lexically lower claim ID |
+| `right_claim_id` | UUID | Required, claim FK, cascade delete | Lexically higher claim ID |
+| `left_version` | Integer | Required, positive | Left claim version reviewed by the candidate |
+| `right_version` | Integer | Required, positive | Right claim version reviewed by the candidate |
+| `decision` | Text | Required, currently `different` | Candidate's decision for the pair |
+| `created_at` | Timestamp with time zone | Required, generated | First decision time |
+| `updated_at` | Timestamp with time zone | Required, generated | Most recent decision time |
 
 ## Source occurrences
 

@@ -6,12 +6,22 @@ import { ClaimRecord } from './candidates.repository.js';
 import {
   ClaimBody,
   claimBodySchema,
+  ClaimCoalesceBody,
+  claimCoalesceBodySchema,
+  ConfirmClaimMergeBody,
+  confirmClaimMergeBodySchema,
+  ClaimMergeProposalQuery,
+  claimMergeProposalQuerySchema,
   ClaimParams,
   claimParamsSchema,
   CreateCandidateBody,
   createCandidateBodySchema,
   ListClaimsQuery,
   listClaimsQuerySchema,
+  RecordClaimsDifferentBody,
+  recordClaimsDifferentBodySchema,
+  ResolveClaimBatchBody,
+  resolveClaimBatchBodySchema,
   ReviewClaimBody,
   reviewClaimBodySchema,
   UpdateCandidateBody,
@@ -240,6 +250,216 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
       const response: ApiResponse<ClaimRecord[]> = {
         success: true,
         data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.get(
+    '/me/claims/merge-candidates',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'List suspected duplicate claim pairs',
+        description:
+          'Returns read-only merge proposals in stable order without changing, accepting, or exporting claims.',
+        security: candidateSecurity,
+        response: {
+          200: documentedResponse('Claim merge candidates'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.listClaimMergeCandidates(request.auth.userId);
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.get<{ Querystring: ClaimMergeProposalQuery }>(
+    '/me/claims/merge-proposal',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Compare two claims and build a merge proposal',
+        description: 'Read-only comparison; this endpoint never changes either claim.',
+        security: candidateSecurity,
+        querystring: claimMergeProposalQuerySchema,
+        response: {
+          200: documentedResponse('Claim merge proposal'),
+          400: documentedResponse('Invalid claim IDs'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.getClaimMergeProposal(
+        request.auth.userId,
+        request.query.leftClaimId,
+        request.query.rightClaimId
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.post<{ Body: ClaimCoalesceBody }>(
+    '/me/claims/coalesce',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Safely coalesce two pending extracted claims',
+        description:
+          'Coalesces only automatically safe pairs. The survivor remains pending and is not exported.',
+        security: candidateSecurity,
+        body: claimCoalesceBodySchema,
+        response: {
+          200: documentedResponse('Coalesce result'),
+          400: documentedResponse('Invalid claim IDs'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.coalescePendingClaims(
+        request.auth.userId,
+        request.body.leftClaimId,
+        request.body.rightClaimId
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.post<{ Body: RecordClaimsDifferentBody }>(
+    '/me/claims/different',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Mark two suspected duplicate claims as different',
+        description:
+          'Records the candidate decision for the reviewed claim versions so the unchanged pair is excluded from duplicate discovery.',
+        security: candidateSecurity,
+        body: recordClaimsDifferentBodySchema,
+        response: {
+          200: documentedResponse('Claim pair decision result'),
+          400: documentedResponse('Invalid claim IDs or versions'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.recordClaimsDifferent(
+        request.auth.userId,
+        request.body
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        message:
+          data.result === 'recorded'
+            ? 'Claim pair marked as different successfully'
+            : undefined,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.post<{ Body: ResolveClaimBatchBody }>(
+    '/me/claims/resolve-batch',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Resolve selected claims and duplicate pairs',
+        description:
+          'Runs up to five independent actions concurrently and returns ordered per-item outcomes. Atomicity remains per claim or pair.',
+        security: candidateSecurity,
+        body: resolveClaimBatchBodySchema,
+        response: {
+          200: documentedResponse('Ordered claim batch results'),
+          400: documentedResponse('Invalid or overlapping batch actions'),
+          ...candidateAccessResponses
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.resolveClaimBatch(
+        request.auth.userId,
+        request.body.actions
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.post<{ Body: ConfirmClaimMergeBody }>(
+    '/me/claims/merge',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Confirm and apply a claim merge',
+        description:
+          'Applies the candidate-confirmed values atomically. The survivor becomes accepted and is included in profile export.',
+        security: candidateSecurity,
+        body: confirmClaimMergeBodySchema,
+        response: {
+          200: documentedResponse('Confirmed claim merge result'),
+          400: documentedResponse('Invalid claim merge resolution'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.mergeConfirmedClaims(
+        request.auth.userId,
+        request.body
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        message:
+          data.result === 'merged'
+            ? 'Claims merged and survivor accepted successfully'
+            : undefined,
         timestamp: new Date().toISOString()
       };
 

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   check,
   date,
@@ -136,6 +137,17 @@ export const claims = pgTable(
     claimType: claimType('claim_type').notNull(),
     origin: claimOrigin('origin').notNull(),
     status: claimStatus('status').default('pending').notNull(),
+    current: boolean('current').default(false).notNull(),
+    // Candidate authority is separate from origin so edited extraction keeps
+    // its original evidence while outranking untouched extraction.
+    candidateEditedAt: timestamp('candidate_edited_at', {
+      withTimezone: true,
+      mode: 'date'
+    }),
+    supersededByClaimId: uuid('superseded_by_claim_id').references(
+      (): AnyPgColumn => claims.claimId,
+      { onDelete: 'restrict' }
+    ),
     // Original AI evidence stays separate from the reviewed claim values.
     extractionInvocationId: uuid('extraction_invocation_id'),
     extractionDocumentId: uuid('extraction_document_id'),
@@ -162,6 +174,11 @@ export const claims = pgTable(
   },
   (table) => [
     index('claims_candidate_id_idx').on(table.candidateId),
+    index('claims_superseded_by_claim_id_idx').on(table.supersededByClaimId),
+    check(
+      'claims_not_self_superseded',
+      sql`${table.supersededByClaimId} is null or ${table.supersededByClaimId} <> ${table.claimId}`
+    ),
     check(
       'claims_extraction_metadata_matches_origin',
       sql`(
@@ -178,6 +195,59 @@ export const claims = pgTable(
         and ${table.extractionFieldSources} is not null
         and ${table.extractionCurrent} is not null
       )`
+    )
+  ]
+);
+
+export const claimPairDecisions = pgTable(
+  'claim_pair_decisions',
+  {
+    decisionId: uuid('decision_id').primaryKey().defaultRandom(),
+    candidateId: uuid('candidate_id')
+      .notNull()
+      .references(() => candidates.candidateId, { onDelete: 'cascade' }),
+    leftClaimId: uuid('left_claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    rightClaimId: uuid('right_claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    leftVersion: integer('left_version').notNull(),
+    rightVersion: integer('right_version').notNull(),
+    decision: text('decision').$type<'different'>().default('different').notNull(),
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex('claim_pair_decisions_candidate_pair_unique').on(
+      table.candidateId,
+      table.leftClaimId,
+      table.rightClaimId
+    ),
+    index('claim_pair_decisions_left_claim_id_idx').on(table.leftClaimId),
+    index('claim_pair_decisions_right_claim_id_idx').on(table.rightClaimId),
+    check(
+      'claim_pair_decisions_claims_ordered',
+      sql`${table.leftClaimId} < ${table.rightClaimId}`
+    ),
+    check(
+      'claim_pair_decisions_versions_positive',
+      sql`${table.leftVersion} > 0 and ${table.rightVersion} > 0`
+    ),
+    check(
+      'claim_pair_decisions_decision_valid',
+      sql`${table.decision} = 'different'`
     )
   ]
 );
@@ -200,8 +270,9 @@ export const sourceOccurrences = pgTable(
     anchor: jsonb('anchor').$type<ClaimSourceAnchor>().notNull()
   },
   (table) => [
-    uniqueIndex('source_occurrences_claim_anchor_unique').on(
+    uniqueIndex('source_occurrences_claim_document_anchor_unique').on(
       table.claimId,
+      table.documentId,
       table.anchorKey
     ),
     index('source_occurrences_document_id_idx').on(table.documentId),
@@ -370,6 +441,9 @@ export const claimRevisions = pgTable(
       .notNull()
       .references(() => claims.claimId, { onDelete: 'cascade' }),
     previousValues: jsonb('previous_values').$type<ClaimSnapshot>().notNull(),
+    // Null only for legacy revisions created before current/Present state was
+    // archived independently from extraction evidence.
+    previousCurrent: boolean('previous_current'),
     createdAt: timestamp('created_at', {
       withTimezone: true,
       mode: 'date'

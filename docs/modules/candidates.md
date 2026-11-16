@@ -58,6 +58,40 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
 returns its version in `ETag`. A missing claim and another candidate's claim
 both return 404.
 
+`GET /api/candidates/me/claims/merge-candidates` compares each active
+same-type claim pair once and returns equivalent or suspected-duplicate merge
+proposals in stable order. Discovery is read-only and does not accept,
+coalesce, retire, or export claims.
+
+`GET /api/candidates/me/claims/merge-proposal?leftClaimId=...&rightClaimId=...`
+compares two active ownership-scoped claims and returns a read-only merge
+proposal. It does not approve, retire, or otherwise change either claim.
+
+`POST /api/candidates/me/claims/coalesce` atomically combines only safe,
+equivalent pending extracted claims. The survivor remains `pending`, so this
+operation does not publish extracted information to the profile.
+
+`POST /api/candidates/me/claims/different` records that the candidate reviewed
+two suspected duplicates and considers them different facts. The request
+includes both reviewed versions. The unchanged pair is omitted from
+`merge-candidates`; editing either claim changes its version and makes the pair
+eligible for discovery again. A concurrent change returns
+`409 VERSION_CONFLICT` and records no decision.
+
+`POST /api/candidates/me/claims/merge` applies the candidate's final values to
+a reviewed pair using both reviewed versions. It archives changed survivor
+values, transfers source occurrences, retires the duplicate, and makes the
+survivor `accepted`. The resolved survivor therefore appears in profile export
+without a second approval action. A concurrent change returns
+`409 VERSION_CONFLICT` and writes nothing.
+
+`POST /api/candidates/me/claims/resolve-batch` accepts 1–100 independent
+`accept_claim` or `merge_claims` actions. It rejects overlapping claim IDs
+before execution, runs at most five actions concurrently, and preserves input
+order in the response. Each item reports `accepted`, `conflict`,
+`not_eligible`, or `failed`; one unsuccessful item does not roll back another
+item's transaction.
+
 ## Editing a claim
 
 ```mermaid

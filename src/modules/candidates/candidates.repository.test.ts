@@ -9,6 +9,7 @@ import {
   createCandidatesRepository
 } from './candidates.repository.js';
 import {
+  claimPairDecisions,
   claimRevisions,
   claims,
   employmentDetails,
@@ -29,9 +30,12 @@ function toSql(condition: SQL | undefined) {
 
 const claim: ClaimRecord = {
   claimId,
+  supersededByClaimId: null,
   claimType: 'skill',
   origin: 'manual',
   status: 'accepted',
+  current: false,
+  candidateEdited: false,
   values: { name: 'TypeScript' },
   extraction: null,
   version: 1,
@@ -44,10 +48,13 @@ function claimRow(version: number, name = 'TypeScript') {
   return {
     claim: {
       claimId,
+      supersededByClaimId: null,
       candidateId,
       claimType: 'skill',
       origin: 'manual',
       status: 'accepted',
+      current: false,
+      candidateEditedAt: null,
       extractionInvocationId: null,
       extractionDocumentId: null,
       extractionRawValues: null,
@@ -145,10 +152,38 @@ describe('editing a claim', () => {
     });
     expect(tx.inserted).toHaveBeenCalledWith({
       claimId,
-      previousValues: { name: 'TypeScript' }
+      previousValues: { name: 'TypeScript' },
+      previousCurrent: false
     });
     const versionUpdate = tx.claimUpdates[0]?.version as SQL | undefined;
     expect(toSql(versionUpdate)?.sql).toBe('"claims"."version" + 1');
+    expect(tx.claimUpdates[0]).not.toHaveProperty('candidateEditedAt');
+  });
+
+  it('marks an extracted claim as candidate-edited without changing its origin', async () => {
+    const beforeRow = claimRow(1);
+    const before = {
+      ...beforeRow,
+      claim: { ...beforeRow.claim, origin: 'extracted' as const }
+    };
+    const afterRow = claimRow(2, 'Node.js');
+    const after = {
+      ...afterRow,
+      claim: {
+        ...afterRow.claim,
+        origin: 'extracted' as const,
+        candidateEditedAt: timestamp
+      }
+    };
+    const tx = createClaimTransaction([{ claimId }], [[before], [after]]);
+    const repository = createCandidatesRepository(databaseWith(tx.transaction));
+
+    await expect(repository.updateClaimValues(edit(1))).resolves.toMatchObject({
+      status: 'saved',
+      record: { origin: 'extracted', candidateEdited: true }
+    });
+
+    expect(tx.claimUpdates[0]?.candidateEditedAt).toBeInstanceOf(Date);
   });
 
   it('refuses an edit based on an older version and writes nothing', async () => {
@@ -375,7 +410,7 @@ describe('creating a claim with extraction provenance', () => {
       sourceDocumentId: '44444444-4444-4444-8444-444444444444',
       rawValues: { name: 'TypeScript' },
       fieldSources: { name: ['L12'] },
-      current: false
+      current: true
     };
     const extractedRow = {
       ...claimRow(1),
@@ -383,6 +418,7 @@ describe('creating a claim with extraction provenance', () => {
         ...claimRow(1).claim,
         origin: 'extracted' as const,
         status: 'pending' as const,
+        current: extraction.current,
         extractionInvocationId: extraction.invocationId,
         extractionDocumentId: extraction.sourceDocumentId,
         extractionRawValues: extraction.rawValues,
@@ -407,6 +443,7 @@ describe('creating a claim with extraction provenance', () => {
       )
     ).resolves.toMatchObject({
       origin: 'extracted',
+      current: true,
       extraction
     });
     expect(claimValues).toHaveBeenCalledWith({
@@ -414,11 +451,12 @@ describe('creating a claim with extraction provenance', () => {
       claimType: 'skill',
       origin: 'extracted',
       status: 'pending',
+      current: true,
       extractionInvocationId: extraction.invocationId,
       extractionDocumentId: extraction.sourceDocumentId,
       extractionRawValues: extraction.rawValues,
       extractionFieldSources: extraction.fieldSources,
-      extractionCurrent: false
+      extractionCurrent: true
     });
     expect(databaseTransaction).not.toHaveBeenCalled();
   });
@@ -442,6 +480,7 @@ describe('creating a claim with extraction provenance', () => {
       claimType: 'skill',
       origin: 'manual',
       status: 'accepted',
+      current: false,
       extractionInvocationId: null,
       extractionDocumentId: null,
       extractionRawValues: null,
@@ -620,6 +659,335 @@ describe('creating claim source occurrences', () => {
   });
 });
 
+describe('transferring claim source occurrences', () => {
+  it('skips matching physical evidence and moves distinct documents', async () => {
+    const survivorClaimId = '33333333-3333-4333-8333-333333333333';
+    const firstDocumentId = '44444444-4444-4444-8444-444444444444';
+    const secondDocumentId = '55555555-5555-4555-8555-555555555555';
+    const duplicateOccurrenceId = '66666666-6666-4666-8666-666666666666';
+    const distinctOccurrenceId = '77777777-7777-4777-8777-777777777777';
+    const selectWhere = vi.fn().mockResolvedValue([
+      {
+        occurrenceId: '88888888-8888-4888-8888-888888888888',
+        claimId: survivorClaimId,
+        documentId: firstDocumentId,
+        anchorKey: 'pdf:1:8'
+      },
+      {
+        occurrenceId: duplicateOccurrenceId,
+        claimId,
+        documentId: firstDocumentId,
+        anchorKey: 'pdf:1:8'
+      },
+      {
+        occurrenceId: distinctOccurrenceId,
+        claimId,
+        documentId: secondDocumentId,
+        anchorKey: 'pdf:1:8'
+      }
+    ]);
+    const deleteWhere = vi.fn().mockResolvedValue(undefined);
+    const updateReturning = vi
+      .fn()
+      .mockResolvedValue([{ occurrenceId: distinctOccurrenceId }]);
+    const updateWhere = vi.fn<(condition: SQL) => unknown>(() => ({
+      returning: updateReturning
+    }));
+    const updateSet = vi.fn(() => ({ where: updateWhere }));
+    const transaction = {
+      select: vi.fn(() => ({
+        from: () => ({ where: selectWhere })
+      })),
+      delete: vi.fn(() => ({ where: deleteWhere })),
+      update: vi.fn(() => ({ set: updateSet }))
+    } as unknown as DatabaseExecutor;
+    const repository = createCandidatesRepository({} as AppDatabase);
+
+    await expect(
+      repository.transferClaimSourceOccurrences(
+        claimId,
+        survivorClaimId,
+        transaction
+      )
+    ).resolves.toEqual({ moved: 1, skipped: 1 });
+
+    expect(toSql(deleteWhere.mock.calls[0]?.[0])?.params).toEqual([
+      duplicateOccurrenceId
+    ]);
+    expect(updateSet).toHaveBeenCalledWith({ claimId: survivorClaimId });
+    expect(toSql(updateWhere.mock.calls[0]?.[0])?.params).toEqual([claimId]);
+  });
+});
+
+describe('atomic claim merging', () => {
+  const duplicateClaimId = '33333333-3333-4333-8333-333333333333';
+
+  function pendingRow(
+    rowClaimId: string,
+    version: number,
+    name: string,
+    supersededByClaimId: string | null = null
+  ) {
+    const row = claimRow(version, name);
+    return {
+      ...row,
+      claim: {
+        ...row.claim,
+        claimId: rowClaimId,
+        supersededByClaimId,
+        origin: 'extracted' as const,
+        status: 'pending' as const,
+        extractionInvocationId: '44444444-4444-4444-8444-444444444444',
+        extractionDocumentId: '55555555-5555-4555-8555-555555555555',
+        extractionRawValues: { name },
+        extractionFieldSources: { name: ['L8'] },
+        extractionCurrent: false
+      },
+      skill: { claimId: rowClaimId, name }
+    };
+  }
+
+  function coalesceContext(reads: unknown[][]) {
+    const lock = vi.fn().mockResolvedValue([
+      { claimId },
+      { claimId: duplicateClaimId }
+    ]);
+    const lockOrderBy = vi.fn(() => ({ for: lock }));
+    const lockWhere = vi.fn(() => ({ orderBy: lockOrderBy }));
+    const read = vi.fn().mockImplementation(() =>
+      Promise.resolve(reads.shift() ?? [])
+    );
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where: () => ({ orderBy: read })
+    };
+    const occurrenceWhere = vi.fn().mockResolvedValue([]);
+    const select = vi.fn((fields: Record<string, unknown>) => ({
+      from: () =>
+        'claim' in fields
+          ? readQuery
+          : 'occurrenceId' in fields
+            ? { where: occurrenceWhere }
+            : { where: lockWhere }
+    }));
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const inserted = vi.fn(() => ({ onConflictDoUpdate }));
+    const insert = vi.fn(() => ({ values: inserted }));
+    const claimUpdates: Record<string, unknown>[] = [];
+    const detailUpdates: Record<string, unknown>[] = [];
+    const update = vi.fn((table: unknown) => ({
+      set: (values: Record<string, unknown>) => {
+        (table === claims ? claimUpdates : detailUpdates).push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }
+    }));
+    const transaction = {
+      select,
+      insert,
+      update,
+      delete: vi.fn()
+    };
+    const database = {
+      db: {
+        transaction: (work: (value: unknown) => Promise<unknown>) =>
+          work(transaction)
+      }
+    } as unknown as AppDatabase;
+    return {
+      claimUpdates,
+      detailUpdates,
+      inserted,
+      lock,
+      lockOrderBy,
+      onConflictDoUpdate,
+      repository: createCandidatesRepository(database),
+      update
+    };
+  }
+
+  it('updates the pending survivor and retires the duplicate atomically', async () => {
+    const before = [
+      pendingRow(claimId, 2, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const after = [
+      pendingRow(claimId, 3, 'TypeScript and Node.js'),
+      pendingRow(duplicateClaimId, 5, 'typescript', claimId)
+    ];
+    const context = coalesceContext([before, after]);
+
+    await expect(
+      context.repository.coalescePendingClaims({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
+        values: { name: 'TypeScript and Node.js' },
+        current: false
+      })
+    ).resolves.toMatchObject({
+      status: 'saved',
+      survivor: { claimId, status: 'pending', version: 3 },
+      duplicate: { supersededByClaimId: claimId, version: 5 }
+    });
+
+    expect(context.lock).toHaveBeenCalledWith('update');
+    expect(context.lockOrderBy).toHaveBeenCalledOnce();
+    expect(context.inserted).toHaveBeenCalledWith({
+      claimId,
+      previousValues: { name: 'TypeScript' },
+      previousCurrent: false
+    });
+    expect(context.detailUpdates).toContainEqual({
+      name: 'TypeScript and Node.js'
+    });
+    expect(context.claimUpdates).toEqual([
+      expect.objectContaining({ current: false }),
+      expect.objectContaining({ supersededByClaimId: claimId })
+    ]);
+  });
+
+  it('refuses stale versions before writing', async () => {
+    const before = [
+      pendingRow(claimId, 3, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.coalescePendingClaims({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
+        values: { name: 'TypeScript' }
+      })
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(context.inserted).not.toHaveBeenCalled();
+    expect(context.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts the confirmed survivor and retires its duplicate atomically', async () => {
+    const before = [
+      pendingRow(claimId, 2, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const savedSurvivor = pendingRow(claimId, 3, 'TypeScript and Node.js');
+    const acceptedSurvivor = {
+      ...savedSurvivor,
+      claim: { ...savedSurvivor.claim, status: 'accepted' as const }
+    };
+    const after = [
+      acceptedSurvivor,
+      pendingRow(duplicateClaimId, 5, 'typescript', claimId)
+    ];
+    const context = coalesceContext([before, after]);
+
+    await expect(
+      context.repository.mergeConfirmedClaims({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
+        values: { name: 'TypeScript and Node.js' }
+      })
+    ).resolves.toMatchObject({
+      status: 'saved',
+      survivor: { claimId, status: 'accepted', version: 3 },
+      duplicate: { supersededByClaimId: claimId, version: 5 }
+    });
+
+    expect(context.lock).toHaveBeenCalledWith('update');
+    expect(context.inserted).toHaveBeenCalledWith({
+      claimId,
+      previousValues: { name: 'TypeScript' },
+      previousCurrent: false
+    });
+    expect(context.detailUpdates).toContainEqual({
+      name: 'TypeScript and Node.js'
+    });
+    expect(context.claimUpdates).toEqual([
+      expect.objectContaining({ status: 'accepted', current: false }),
+      expect.objectContaining({ supersededByClaimId: claimId })
+    ]);
+  });
+
+  it('refuses stale confirmed merges before writing', async () => {
+    const before = [
+      pendingRow(claimId, 3, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.mergeConfirmedClaims({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
+        values: { name: 'TypeScript' }
+      })
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(context.inserted).not.toHaveBeenCalled();
+    expect(context.update).not.toHaveBeenCalled();
+  });
+
+  it('records a different decision using canonical claim order', async () => {
+    const before = [
+      pendingRow(claimId, 2, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.recordClaimsDifferent({
+        candidateId,
+        left: { claimId: duplicateClaimId, expectedVersion: 4 },
+        right: { claimId, expectedVersion: 2 }
+      })
+    ).resolves.toEqual({ status: 'saved' });
+
+    expect(context.lock).toHaveBeenCalledWith('update');
+    expect(context.inserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId,
+        leftClaimId: claimId,
+        rightClaimId: duplicateClaimId,
+        leftVersion: 2,
+        rightVersion: 4,
+        decision: 'different'
+      })
+    );
+    expect(context.onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: [
+          claimPairDecisions.candidateId,
+          claimPairDecisions.leftClaimId,
+          claimPairDecisions.rightClaimId
+        ],
+        set: expect.objectContaining({
+          leftVersion: 2,
+          rightVersion: 4,
+          decision: 'different'
+        })
+      })
+    );
+  });
+
+  it('refuses stale different decisions before writing', async () => {
+    const before = [
+      pendingRow(claimId, 3, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.recordClaimsDifferent({
+        candidateId,
+        left: { claimId, expectedVersion: 2 },
+        right: { claimId: duplicateClaimId, expectedVersion: 4 }
+      })
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(context.inserted).not.toHaveBeenCalled();
+  });
+});
+
 describe('reading claim source occurrences', () => {
   it('loads accepted occurrences only for the candidate and requested claims', async () => {
     const otherClaimId = '33333333-3333-4333-8333-333333333333';
@@ -657,6 +1025,7 @@ describe('reading claim source occurrences', () => {
     const query = toSql(where.mock.calls[0]?.[0]);
     expect(query?.sql).toContain('"claims"."candidate_id" = $1');
     expect(query?.sql).toContain('"claims"."status" = $2');
+    expect(query?.sql).toContain('"claims"."superseded_by_claim_id" is null');
     expect(query?.sql).toContain('"claims"."claim_id" in ($3, $4)');
     expect(query?.params).toEqual([
       candidateId,
@@ -677,6 +1046,55 @@ describe('reading claim source occurrences', () => {
       repository.listClaimSourceOccurrences(candidateId, [])
     ).resolves.toEqual([]);
     expect(select).not.toHaveBeenCalled();
+  });
+});
+
+describe('reading claim pair decisions', () => {
+  it('lists decisions for one candidate in canonical pair order', async () => {
+    const decision = {
+      decisionId: '44444444-4444-4444-8444-444444444444',
+      candidateId,
+      leftClaimId: claimId,
+      rightClaimId: '33333333-3333-4333-8333-333333333333',
+      leftVersion: 2,
+      rightVersion: 4,
+      decision: 'different' as const,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const orderBy = vi.fn().mockResolvedValue([decision]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const repository = createCandidatesRepository({
+      db: { select }
+    } as unknown as AppDatabase);
+
+    await expect(
+      repository.listClaimPairDecisions(candidateId)
+    ).resolves.toEqual([decision]);
+
+    expect(toSql(where.mock.calls[0]?.[0])?.params).toEqual([candidateId]);
+    expect(orderBy).toHaveBeenCalledOnce();
+  });
+});
+
+describe('listing active claims', () => {
+  it('excludes claims that were superseded by a merge', async () => {
+    const orderBy = vi.fn().mockResolvedValue([]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where
+    };
+    const repository = createCandidatesRepository({
+      db: { select: () => ({ from: () => readQuery }) }
+    } as unknown as AppDatabase);
+
+    await expect(repository.listClaims(candidateId)).resolves.toEqual([]);
+
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.sql).toContain('"claims"."candidate_id" = $1');
+    expect(query?.sql).toContain('"claims"."superseded_by_claim_id" is null');
   });
 });
 
