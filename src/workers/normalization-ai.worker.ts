@@ -16,7 +16,9 @@ export interface RunningNormalizationAiWorker {
   close(): Promise<void>;
 }
 
-// Polls for AI normalization requests and processes them one at a time. A
+// Polls for AI normalization requests and processes up to `batchSize` per
+// cycle, claiming each one only when its turn comes: its lease then starts with
+// its processing, so a request never expires while waiting behind others. A
 // cycle starts only after the previous one finished, so cycles never overlap.
 export function startNormalizationAiWorker({
   normalizationAi,
@@ -30,22 +32,21 @@ export function startNormalizationAiWorker({
   let closePromise: Promise<void> | undefined;
 
   const runCycle = async (): Promise<void> => {
-    let requests;
-    try {
-      requests = await normalizationAi.requests.claimBatch(
-        batchSize,
-        AI_REQUEST_LEASE_MILLISECONDS
-      );
-    } catch (error) {
-      log.warn({ err: error }, 'Failed to claim normalization AI requests');
-      return;
-    }
-
-    for (const request of requests) {
-      if (stopped) {
-        // Unprocessed requests are claimed again once their lease expires.
+    for (let processed = 0; processed < batchSize && !stopped; processed += 1) {
+      let request;
+      try {
+        [request] = await normalizationAi.requests.claimBatch(
+          1,
+          AI_REQUEST_LEASE_MILLISECONDS
+        );
+      } catch (error) {
+        log.warn({ err: error }, 'Failed to claim normalization AI requests');
         return;
       }
+      if (!request) {
+        return;
+      }
+
       const context = { requestId: request.requestId, claimId: request.claimId };
       try {
         const outcome = await normalizationAi.processor.process(request);

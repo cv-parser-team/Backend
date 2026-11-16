@@ -82,12 +82,17 @@ export function createAiRequestProcessor({
     });
   }
 
+  // Only provider failures enter the retry policy. Any other error, such as a
+  // database or programming error, is thrown with its real cause; the request
+  // is then claimed again after its lease, until the attempt limit fails it.
   async function handleFailure(
     request: AiRequestRecord,
     error: unknown
   ): Promise<AiRequestOutcome> {
-    const category: LlmErrorCategory =
-      error instanceof LlmError ? error.category : 'provider_unavailable';
+    if (!(error instanceof LlmError)) {
+      throw error;
+    }
+    const category: LlmErrorCategory = error.category;
     if (RETRYABLE_CATEGORIES.has(category) && request.attemptCount < MAX_AI_ATTEMPTS) {
       const retried = await requests.retry(
         request,
@@ -101,6 +106,12 @@ export function createAiRequestProcessor({
 
   return {
     async process(request) {
+      // Every claim adds an attempt, including claims after an unexpected
+      // error or a crashed worker, which never reach the retry policy.
+      if (request.attemptCount > MAX_AI_ATTEMPTS) {
+        return (await requests.fail(request, 'max_attempts_exceeded')) ? 'failed' : 'stale';
+      }
+
       let result: AiMatchingResult;
       try {
         result = await findMatch(request);

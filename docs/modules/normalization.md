@@ -160,10 +160,19 @@ its active request and queues a new one.
 | --- | --- |
 | Rate limited, timeout, or provider unavailable | Retried after 30 seconds times the attempt number, up to 3 attempts, then `failed` |
 | Authentication, configuration, or invalid request | `failed` at once |
+| Any other error, such as a database or programming error | Thrown and logged with its real cause; the request is claimed again after its lease |
 | The worker stops during a request | Claimed again after its 2-minute lease expires |
+| Claimed more than 3 times | `failed` with `max_attempts_exceeded` before the AI is asked |
 
-Writes check the request's attempt number, so a worker whose lease expired
-cannot overwrite the work of the worker that took over.
+Only the provider failures above enter the retry policy, so an unexpected
+error is never recorded as a provider outage. Every claim adds an attempt, so
+requests that keep failing unexpectedly, or keep crashing the worker, still end.
+
+The worker claims one request at a time, up to
+`NORMALIZATION_AI_BATCH_SIZE` per cycle, so each 2-minute lease starts when its
+request is processed and never expires while waiting behind others. Writes
+check the request's attempt number, so a worker whose lease expired cannot
+overwrite the work of the worker that took over.
 
 **Running it.** The document-processing worker (`npm run worker`) also
 processes AI requests. AI matching is on when `NORMALIZATION_AI_ENABLED` is not

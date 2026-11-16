@@ -229,6 +229,29 @@ describe('AI request processing', () => {
     }
   );
 
+  it('throws errors that are not provider failures with their real cause', async () => {
+    const databaseError = new Error('connection terminated');
+    const { processor, requests } = setup(vi.fn().mockRejectedValue(databaseError));
+
+    await expect(processor.process(aiRequest())).rejects.toBe(databaseError);
+
+    expect(requests.retry).not.toHaveBeenCalled();
+    expect(requests.fail).not.toHaveBeenCalled();
+  });
+
+  it('fails a request claimed more often than the attempt limit without asking the AI', async () => {
+    const { processor, requests, matcher, dictionary } = setup();
+
+    await expect(processor.process(aiRequest({ attemptCount: 4 }))).resolves.toBe('failed');
+
+    expect(requests.fail).toHaveBeenCalledWith(
+      aiRequest({ attemptCount: 4 }),
+      'max_attempts_exceeded'
+    );
+    expect(dictionary.findAiProposedTerm).not.toHaveBeenCalled();
+    expect(matcher.match).not.toHaveBeenCalled();
+  });
+
   it('fails output that breaks the contract', async () => {
     const { processor, requests, decisions } = setup(
       vi.fn().mockResolvedValue({ status: 'invalid', reason: 'Choice 9 is not in the list' })
