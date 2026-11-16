@@ -155,6 +155,20 @@
       "when": 1794812733438,
       "tag": "0021_great_epoch",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794813979560,
+      "tag": "0022_first_prowler",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794814405087,
+      "tag": "0023_optimal_ravenous",
+      "breakpoints": true
     }
   ]
 }

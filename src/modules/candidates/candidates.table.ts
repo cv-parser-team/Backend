@@ -217,8 +217,9 @@ export const sourceOccurrences = pgTable(
     anchor: jsonb('anchor').$type<ClaimSourceAnchor>().notNull()
   },
   (table) => [
-    uniqueIndex('source_occurrences_claim_anchor_unique').on(
+    uniqueIndex('source_occurrences_claim_document_anchor_unique').on(
       table.claimId,
+      table.documentId,
       table.anchorKey
     ),
     index('source_occurrences_document_id_idx').on(table.documentId),
@@ -387,6 +388,9 @@ export const claimRevisions = pgTable(
       .notNull()
       .references(() => claims.claimId, { onDelete: 'cascade' }),
     previousValues: jsonb('previous_values').$type<ClaimSnapshot>().notNull(),
+    // Null only for legacy revisions created before current/Present state was
+    // archived independently from extraction evidence.
+    previousCurrent: boolean('previous_current'),
     createdAt: timestamp('created_at', {
       withTimezone: true,
       mode: 'date'

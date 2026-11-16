@@ -1,0 +1,2 @@
+DROP INDEX "source_occurrences_claim_anchor_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "source_occurrences_claim_document_anchor_unique" ON "source_occurrences" USING btree ("claim_id","document_id","anchor_key");
