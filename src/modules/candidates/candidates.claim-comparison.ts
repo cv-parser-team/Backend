@@ -169,6 +169,41 @@ export type AutomaticCoalescePlanResult =
       current?: boolean;
     };
 
+export interface ConfirmedClaimMergeInput {
+  leftVersion: number;
+  rightVersion: number;
+  survivorClaimId: string;
+  values: ClaimValues;
+  current?: boolean;
+}
+
+export type ConfirmedClaimMergePlanResult =
+  | {
+      result: 'no_merge';
+      reason: NoMergeProposalReason | 'same_claim';
+    }
+  | {
+      result: 'version_conflict';
+      left: { claimId: string; version: number };
+      right: { claimId: string; version: number };
+    }
+  | {
+      result: 'invalid_resolution';
+      reason:
+        | 'invalid_survivor'
+        | 'missing_field_choice'
+        | 'inconsistent_current';
+      fields?: string[];
+    }
+  | {
+      result: 'ready';
+      survivor: { claimId: string; expectedVersion: number };
+      duplicate: { claimId: string; expectedVersion: number };
+      values: ClaimValues;
+      current?: boolean;
+      status: 'accepted';
+    };
+
 type ClaimDateFieldName =
   | 'startDate'
   | 'endDate'
@@ -748,6 +783,82 @@ export function buildAutomaticCoalescePlan(
     ...(typeof proposal.proposedCurrent === 'boolean'
       ? { current: proposal.proposedCurrent }
       : {})
+  };
+}
+
+export function buildConfirmedClaimMergePlan(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim,
+  input: ConfirmedClaimMergeInput
+): ConfirmedClaimMergePlanResult {
+  if (left.claimId === right.claimId) {
+    return { result: 'no_merge', reason: 'same_claim' };
+  }
+
+  const proposal = buildClaimMergeProposal(left, right);
+  if (proposal.result === 'no_proposal') {
+    return { result: 'no_merge', reason: proposal.reason };
+  }
+  if (
+    input.leftVersion !== proposal.left.version ||
+    input.rightVersion !== proposal.right.version
+  ) {
+    return {
+      result: 'version_conflict',
+      left: proposal.left,
+      right: proposal.right
+    };
+  }
+  if (
+    input.survivorClaimId !== left.claimId &&
+    input.survivorClaimId !== right.claimId
+  ) {
+    return { result: 'invalid_resolution', reason: 'invalid_survivor' };
+  }
+
+  const hasEndDate = typeof input.values.endDate === 'string';
+  if (input.current === true && hasEndDate) {
+    return { result: 'invalid_resolution', reason: 'inconsistent_current' };
+  }
+
+  const missingFields = proposal.unresolvedFields.filter((field) => {
+    if (field === 'endDate') {
+      return (
+        input.current === undefined ||
+        (input.current === true ? hasEndDate : !hasEndDate)
+      );
+    }
+    return input.values[field] === undefined;
+  });
+  if (missingFields.length > 0) {
+    return {
+      result: 'invalid_resolution',
+      reason: 'missing_field_choice',
+      fields: missingFields
+    };
+  }
+
+  const survivorIsLeft = input.survivorClaimId === left.claimId;
+  const survivor = survivorIsLeft ? left : right;
+  const duplicate = survivorIsLeft ? right : left;
+  const current =
+    input.current ??
+    (typeof proposal.proposedCurrent === 'boolean'
+      ? proposal.proposedCurrent
+      : undefined);
+  return {
+    result: 'ready',
+    survivor: {
+      claimId: survivor.claimId,
+      expectedVersion: survivor.version
+    },
+    duplicate: {
+      claimId: duplicate.claimId,
+      expectedVersion: duplicate.version
+    },
+    values: input.values,
+    ...(current !== undefined ? { current } : {}),
+    status: 'accepted'
   };
 }
 

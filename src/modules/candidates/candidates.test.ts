@@ -119,6 +119,7 @@ function createRepositoryDouble(
       skipped: 0
     }),
     coalescePendingClaims: vi.fn().mockResolvedValue({ status: 'missing' }),
+    mergeConfirmedClaims: vi.fn().mockResolvedValue({ status: 'missing' }),
     deletePendingExtractedClaims: vi.fn().mockResolvedValue(0),
     listReviewedExtractedClaims: vi.fn().mockResolvedValue([]),
     reviewExtractedClaim: vi

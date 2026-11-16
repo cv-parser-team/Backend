@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAutomaticCoalescePlan,
   buildClaimMergeProposal,
+  buildConfirmedClaimMergePlan,
   compareClaimIdentity,
   compareClaimDateFieldValues,
   compareClaimDates,
@@ -1257,5 +1258,165 @@ describe('automatic claim coalesce plan', () => {
     expect(
       buildAutomaticCoalescePlan(mergeCandidate(), mergeCandidate())
     ).toEqual({ result: 'no_merge', reason: 'same_claim' });
+  });
+});
+
+describe('confirmed claim merge plan', () => {
+  it('builds an accepted version-guarded plan from candidate choices', () => {
+    const left = mergeCandidate({
+      version: 3,
+      claimType: 'language',
+      values: { name: 'English', proficiency: 'professional' }
+    });
+    const right = mergeCandidate({
+      claimId: '22222222-2222-4222-8222-222222222222',
+      version: 5,
+      claimType: 'language',
+      values: { name: 'English', proficiency: 'native' }
+    });
+
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        leftVersion: 3,
+        rightVersion: 5,
+        survivorClaimId: right.claimId,
+        values: { name: 'English', proficiency: 'native' }
+      })
+    ).toEqual({
+      result: 'ready',
+      survivor: { claimId: right.claimId, expectedVersion: 5 },
+      duplicate: { claimId: left.claimId, expectedVersion: 3 },
+      values: { name: 'English', proficiency: 'native' },
+      status: 'accepted'
+    });
+  });
+
+  it('requires a choice for every unresolved field', () => {
+    expect(
+      buildConfirmedClaimMergePlan(
+        mergeCandidate({
+          claimType: 'language',
+          values: { name: 'English', proficiency: 'professional' }
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'language',
+          values: { name: 'English', proficiency: 'native' }
+        }),
+        {
+          leftVersion: 1,
+          rightVersion: 1,
+          survivorClaimId: '11111111-1111-4111-8111-111111111111',
+          values: { name: 'English' }
+        }
+      )
+    ).toEqual({
+      result: 'invalid_resolution',
+      reason: 'missing_field_choice',
+      fields: ['proficiency']
+    });
+  });
+
+  it('requires an explicit Present or end-date choice', () => {
+    const left = mergeCandidate({
+      claimType: 'employment',
+      current: true,
+      currentAsOf: '2024-06',
+      values: {
+        employer: 'Example Labs',
+        jobTitle: 'Engineer',
+        startDate: '2020'
+      }
+    });
+    const right = mergeCandidate({
+      claimId: '22222222-2222-4222-8222-222222222222',
+      claimType: 'employment',
+      values: {
+        employer: 'Example Labs',
+        jobTitle: 'Engineer',
+        startDate: '2020-03',
+        endDate: '2025'
+      }
+    });
+    const values = {
+      employer: 'Example Labs',
+      jobTitle: 'Engineer',
+      startDate: '2020-03'
+    };
+
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        leftVersion: 1,
+        rightVersion: 1,
+        survivorClaimId: left.claimId,
+        values
+      })
+    ).toEqual({
+      result: 'invalid_resolution',
+      reason: 'missing_field_choice',
+      fields: ['endDate']
+    });
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        leftVersion: 1,
+        rightVersion: 1,
+        survivorClaimId: left.claimId,
+        values,
+        current: true
+      })
+    ).toMatchObject({ result: 'ready', current: true, status: 'accepted' });
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        leftVersion: 1,
+        rightVersion: 1,
+        survivorClaimId: right.claimId,
+        values: { ...values, endDate: '2025' },
+        current: false
+      })
+    ).toMatchObject({ result: 'ready', current: false, status: 'accepted' });
+  });
+
+  it('rejects stale versions, unknown survivors, and Present with an end date', () => {
+    const left = mergeCandidate({ version: 2 });
+    const right = mergeCandidate({
+      claimId: '22222222-2222-4222-8222-222222222222',
+      version: 4
+    });
+    const baseInput = {
+      leftVersion: 2,
+      rightVersion: 4,
+      survivorClaimId: left.claimId,
+      values: { name: 'TypeScript' }
+    };
+
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        ...baseInput,
+        leftVersion: 1
+      })
+    ).toEqual({
+      result: 'version_conflict',
+      left: { claimId: left.claimId, version: 2 },
+      right: { claimId: right.claimId, version: 4 }
+    });
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        ...baseInput,
+        survivorClaimId: '33333333-3333-4333-8333-333333333333'
+      })
+    ).toEqual({
+      result: 'invalid_resolution',
+      reason: 'invalid_survivor'
+    });
+    expect(
+      buildConfirmedClaimMergePlan(left, right, {
+        ...baseInput,
+        values: { name: 'TypeScript', endDate: '2025' },
+        current: true
+      })
+    ).toEqual({
+      result: 'invalid_resolution',
+      reason: 'inconsistent_current'
+    });
   });
 });

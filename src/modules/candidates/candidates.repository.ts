@@ -72,6 +72,19 @@ export type CoalescePendingClaimsResult =
   | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
   | { status: 'missing' };
 
+export interface MergeConfirmedClaimsInput {
+  candidateId: string;
+  survivor: { claimId: string; expectedVersion: number };
+  duplicate: { claimId: string; expectedVersion: number };
+  values: ClaimValues;
+  current?: boolean;
+}
+
+export type MergeConfirmedClaimsResult =
+  | { status: 'saved'; survivor: ClaimRecord; duplicate: ClaimRecord }
+  | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
+  | { status: 'missing' };
+
 export interface ClaimRecord {
   claimId: string;
   supersededByClaimId: string | null;
@@ -169,6 +182,9 @@ export interface CandidatesRepository {
   coalescePendingClaims(
     input: CoalescePendingClaimsInput
   ): Promise<CoalescePendingClaimsResult>;
+  mergeConfirmedClaims(
+    input: MergeConfirmedClaimsInput
+  ): Promise<MergeConfirmedClaimsResult>;
   deletePendingExtractedClaims(
     candidateId: string,
     documentId: string,
@@ -991,6 +1007,133 @@ export function createCandidatesRepository(
               const savedDuplicate = savedById.get(duplicate.claimId);
               if (!savedSurvivor || !savedDuplicate) {
                 throw new Error('Coalesced claims could not be read');
+              }
+              return {
+                status: 'saved',
+                survivor: savedSurvivor,
+                duplicate: savedDuplicate
+              };
+            }
+          )
+        )
+      );
+    },
+
+    async mergeConfirmedClaims(input) {
+      if (input.survivor.claimId === input.duplicate.claimId) {
+        return { status: 'not_eligible', current: [] };
+      }
+
+      return withTransientRetry(() =>
+        withDbErrors('Claims', () =>
+          database.db.transaction(
+            async (transaction): Promise<MergeConfirmedClaimsResult> => {
+              const claimIds = [
+                input.survivor.claimId,
+                input.duplicate.claimId
+              ].sort();
+              const locked = await transaction
+                .select({ claimId: claims.claimId })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.candidateId, input.candidateId),
+                    inArray(claims.claimId, claimIds)
+                  )
+                )
+                .orderBy(asc(claims.claimId))
+                .for('update');
+              if (locked.length !== 2) {
+                return { status: 'missing' };
+              }
+
+              const current = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, input.candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const claimsById = new Map(
+                current.map((claim) => [claim.claimId, claim])
+              );
+              const survivor = claimsById.get(input.survivor.claimId);
+              const duplicate = claimsById.get(input.duplicate.claimId);
+              if (!survivor || !duplicate) {
+                return { status: 'missing' };
+              }
+              if (
+                survivor.version !== input.survivor.expectedVersion ||
+                duplicate.version !== input.duplicate.expectedVersion
+              ) {
+                return { status: 'conflict', current };
+              }
+              const eligible =
+                survivor.claimType === duplicate.claimType &&
+                survivor.status !== 'rejected' &&
+                duplicate.status !== 'rejected' &&
+                survivor.supersededByClaimId === null &&
+                duplicate.supersededByClaimId === null;
+              if (!eligible) {
+                return { status: 'not_eligible', current };
+              }
+
+              const mergedCurrent = input.current ?? survivor.current;
+              const valuesChanged = !haveSameClaimValues(
+                survivor.values,
+                input.values
+              );
+              if (valuesChanged || survivor.current !== mergedCurrent) {
+                await transaction.insert(claimRevisions).values({
+                  claimId: survivor.claimId,
+                  previousValues: survivor.values,
+                  previousCurrent: survivor.current
+                });
+              }
+              if (valuesChanged) {
+                await updateDetails(
+                  transaction,
+                  survivor.claimId,
+                  survivor.claimType,
+                  input.values
+                );
+              }
+
+              const updatedAt = new Date();
+              await transaction
+                .update(claims)
+                .set({
+                  status: 'accepted',
+                  current: mergedCurrent,
+                  updatedAt,
+                  version: sql`${claims.version} + 1`
+                })
+                .where(eq(claims.claimId, survivor.claimId));
+              await transferClaimSourceOccurrences(
+                transaction,
+                duplicate.claimId,
+                survivor.claimId
+              );
+              await transaction
+                .update(claims)
+                .set({
+                  supersededByClaimId: survivor.claimId,
+                  updatedAt,
+                  version: sql`${claims.version} + 1`
+                })
+                .where(eq(claims.claimId, duplicate.claimId));
+
+              const saved = await selectClaims(
+                transaction,
+                inArray(claims.claimId, claimIds)
+              );
+              const savedById = new Map(
+                saved.map((claim) => [claim.claimId, claim])
+              );
+              const savedSurvivor = savedById.get(survivor.claimId);
+              const savedDuplicate = savedById.get(duplicate.claimId);
+              if (!savedSurvivor || !savedDuplicate) {
+                throw new Error('Merged claims could not be read');
               }
               return {
                 status: 'saved',

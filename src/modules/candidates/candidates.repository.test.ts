@@ -718,7 +718,7 @@ describe('transferring claim source occurrences', () => {
   });
 });
 
-describe('coalescing pending extracted claims', () => {
+describe('atomic claim merging', () => {
   const duplicateClaimId = '33333333-3333-4333-8333-333333333333';
 
   function pendingRow(
@@ -852,6 +852,69 @@ describe('coalescing pending extracted claims', () => {
 
     await expect(
       context.repository.coalescePendingClaims({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
+        values: { name: 'TypeScript' }
+      })
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(context.inserted).not.toHaveBeenCalled();
+    expect(context.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts the confirmed survivor and retires its duplicate atomically', async () => {
+    const before = [
+      pendingRow(claimId, 2, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const savedSurvivor = pendingRow(claimId, 3, 'TypeScript and Node.js');
+    const acceptedSurvivor = {
+      ...savedSurvivor,
+      claim: { ...savedSurvivor.claim, status: 'accepted' as const }
+    };
+    const after = [
+      acceptedSurvivor,
+      pendingRow(duplicateClaimId, 5, 'typescript', claimId)
+    ];
+    const context = coalesceContext([before, after]);
+
+    await expect(
+      context.repository.mergeConfirmedClaims({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
+        values: { name: 'TypeScript and Node.js' }
+      })
+    ).resolves.toMatchObject({
+      status: 'saved',
+      survivor: { claimId, status: 'accepted', version: 3 },
+      duplicate: { supersededByClaimId: claimId, version: 5 }
+    });
+
+    expect(context.lock).toHaveBeenCalledWith('update');
+    expect(context.inserted).toHaveBeenCalledWith({
+      claimId,
+      previousValues: { name: 'TypeScript' },
+      previousCurrent: false
+    });
+    expect(context.detailUpdates).toContainEqual({
+      name: 'TypeScript and Node.js'
+    });
+    expect(context.claimUpdates).toEqual([
+      expect.objectContaining({ status: 'accepted', current: false }),
+      expect.objectContaining({ supersededByClaimId: claimId })
+    ]);
+  });
+
+  it('refuses stale confirmed merges before writing', async () => {
+    const before = [
+      pendingRow(claimId, 3, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.mergeConfirmedClaims({
         candidateId,
         survivor: { claimId, expectedVersion: 2 },
         duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
