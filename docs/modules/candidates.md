@@ -62,6 +62,10 @@ both return 404.
 compares two active ownership-scoped claims and returns a read-only merge
 proposal. It does not approve, retire, or otherwise change either claim.
 
+`POST /api/candidates/me/claims/coalesce` atomically combines only safe,
+equivalent pending extracted claims. The survivor remains `pending`, so this
+operation does not publish extracted information to the profile.
+
 ## Editing a claim
 
 ```mermaid

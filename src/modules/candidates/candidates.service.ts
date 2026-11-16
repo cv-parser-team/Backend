@@ -10,6 +10,8 @@ import {
 } from './candidates.errors.js';
 import { prepareClaimValues } from './candidates.claim-values.js';
 import {
+  type AutomaticCoalescePlanResult,
+  buildAutomaticCoalescePlan,
   buildClaimMergeProposal,
   type ClaimMergeProposalResult,
   toMergeCandidateClaim
@@ -74,6 +76,11 @@ export interface ExportedProfile {
   projects: ExportedClaim[];
 }
 
+export type AutomaticClaimCoalesceResult =
+  | Extract<AutomaticCoalescePlanResult, { result: 'no_merge' }>
+  | Extract<AutomaticCoalescePlanResult, { result: 'candidate_review_required' }>
+  | { result: 'coalesced'; survivor: ClaimRecord; duplicate: ClaimRecord };
+
 export interface CandidatesService {
   createProfile(userId: string, input: CreateCandidateBody): Promise<CandidateProfile>;
   getProfile(userId: string): Promise<CandidateProfile>;
@@ -92,6 +99,11 @@ export interface CandidatesService {
     leftClaimId: string,
     rightClaimId: string
   ): Promise<ClaimMergeProposalResult>;
+  coalescePendingClaims(
+    userId: string,
+    leftClaimId: string,
+    rightClaimId: string
+  ): Promise<AutomaticClaimCoalesceResult>;
   updateClaim(
     userId: string,
     claimId: string,
@@ -346,6 +358,52 @@ export function createCandidatesService({
         return { result: 'no_proposal', reason: 'rejected_claim' };
       }
       return buildClaimMergeProposal(leftCandidate, rightCandidate);
+    },
+
+    async coalescePendingClaims(userId, leftClaimId, rightClaimId) {
+      const candidate = await requireCandidate(userId);
+      if (leftClaimId === rightClaimId) {
+        return { result: 'no_merge', reason: 'same_claim' };
+      }
+
+      const [left, right] = await Promise.all([
+        requireClaim(candidate.candidateId, leftClaimId),
+        requireClaim(candidate.candidateId, rightClaimId)
+      ]);
+      if (left.supersededByClaimId !== null || right.supersededByClaimId !== null) {
+        return { result: 'no_merge', reason: 'superseded_claim' };
+      }
+      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
+      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      if (!leftCandidate || !rightCandidate) {
+        return { result: 'no_merge', reason: 'rejected_claim' };
+      }
+
+      const plan = buildAutomaticCoalescePlan(leftCandidate, rightCandidate);
+      if (plan.result !== 'ready') {
+        return plan;
+      }
+      const result = await repository.coalescePendingClaims({
+        candidateId: candidate.candidateId,
+        survivor: plan.survivor,
+        duplicate: plan.duplicate,
+        values: plan.values,
+        ...(plan.current !== undefined ? { current: plan.current } : {})
+      });
+      switch (result.status) {
+        case 'saved':
+          return {
+            result: 'coalesced',
+            survivor: result.survivor,
+            duplicate: result.duplicate
+          };
+        case 'conflict':
+          throw new VersionConflictError('Claims', result.current);
+        case 'not_eligible':
+          return { result: 'candidate_review_required' };
+        case 'missing':
+          throw new RecordNotFoundError('Claim pair');
+      }
     },
 
     async updateClaim(userId, claimId, input, expectedVersion) {

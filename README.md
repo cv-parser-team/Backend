@@ -137,6 +137,7 @@ and always act on the authenticated user's own profile:
 - `POST /api/candidates/me/claims` (add a manual claim)
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
 - `GET /api/candidates/me/claims/merge-proposal` (`leftClaimId` and `rightClaimId`; read-only)
+- `POST /api/candidates/me/claims/coalesce` (safe pending duplicates remain staged)
 - `GET /api/candidates/me/claims/:claimId`
 - `PUT /api/candidates/me/claims/:claimId`
 - `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)

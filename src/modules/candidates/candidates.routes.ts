@@ -6,6 +6,8 @@ import { ClaimRecord } from './candidates.repository.js';
 import {
   ClaimBody,
   claimBodySchema,
+  ClaimCoalesceBody,
+  claimCoalesceBodySchema,
   ClaimMergeProposalQuery,
   claimMergeProposalQuerySchema,
   ClaimParams,
@@ -272,6 +274,42 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
         request.auth.userId,
         request.query.leftClaimId,
         request.query.rightClaimId
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.post<{ Body: ClaimCoalesceBody }>(
+    '/me/claims/coalesce',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Safely coalesce two pending extracted claims',
+        description:
+          'Coalesces only automatically safe pairs. The survivor remains pending and is not exported.',
+        security: candidateSecurity,
+        body: claimCoalesceBodySchema,
+        response: {
+          200: documentedResponse('Coalesce result'),
+          400: documentedResponse('Invalid claim IDs'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.coalescePendingClaims(
+        request.auth.userId,
+        request.body.leftClaimId,
+        request.body.rightClaimId
       );
       const response: ApiResponse<typeof data> = {
         success: true,

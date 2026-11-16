@@ -247,6 +247,9 @@ export type ClaimMergeProposalQuery = FromSchema<
   typeof claimMergeProposalQuerySchema
 >;
 
+export const claimCoalesceBodySchema = claimMergeProposalQuerySchema;
+export type ClaimCoalesceBody = ClaimMergeProposalQuery;
+
 export const reviewClaimBodySchema = {
   type: 'object',
   properties: {

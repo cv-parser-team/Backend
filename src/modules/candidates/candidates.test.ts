@@ -212,7 +212,9 @@ describe('candidates tables', () => {
     expect(getTableConfig(sourceOccurrences).foreignKeys).toHaveLength(2);
     expect(
       getTableConfig(sourceOccurrences).indexes.some(
-        (index) => index.config.name === 'source_occurrences_claim_anchor_unique'
+        (index) =>
+          index.config.name ===
+          'source_occurrences_claim_document_anchor_unique'
       )
     ).toBe(true);
   });
@@ -980,6 +982,92 @@ describe('claim merge proposal service', () => {
   });
 });
 
+describe('automatic claim coalesce service', () => {
+  const otherClaimId = '44444444-4444-4444-8444-444444444444';
+
+  function safePair(repository: CandidatesRepository) {
+    const left = {
+      ...extractedClaim('pending', 2),
+      values: { name: 'TypeScript' }
+    };
+    const right = {
+      ...extractedClaim('pending', 4),
+      claimId: otherClaimId,
+      values: { name: ' typescript ' }
+    };
+    vi.mocked(repository.findClaim)
+      .mockResolvedValueOnce(left)
+      .mockResolvedValueOnce(right);
+    return { left, right };
+  }
+
+  it('executes only a freshly built safe automatic plan', async () => {
+    const repository = createRepositoryDouble();
+    const { left, right } = safePair(repository);
+    vi.mocked(repository.coalescePendingClaims).mockResolvedValue({
+      status: 'saved',
+      survivor: { ...left, version: 3 },
+      duplicate: { ...right, version: 5, supersededByClaimId: claimId }
+    });
+
+    await expect(
+      createService(repository).coalescePendingClaims(
+        userId,
+        claimId,
+        otherClaimId
+      )
+    ).resolves.toMatchObject({
+      result: 'coalesced',
+      survivor: { claimId, version: 3 },
+      duplicate: { claimId: otherClaimId, supersededByClaimId: claimId }
+    });
+    expect(repository.coalescePendingClaims).toHaveBeenCalledWith({
+      candidateId,
+      survivor: { claimId, expectedVersion: 2 },
+      duplicate: { claimId: otherClaimId, expectedVersion: 4 },
+      values: { name: 'TypeScript' }
+    });
+  });
+
+  it('keeps unsafe pairs in candidate review without writing', async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.findClaim)
+      .mockResolvedValueOnce(extractedClaim('accepted', 2))
+      .mockResolvedValueOnce(
+        claimRecord({
+          ...extractedClaim('pending', 4),
+          claimId: otherClaimId
+        })
+      );
+
+    await expect(
+      createService(repository).coalescePendingClaims(
+        userId,
+        claimId,
+        otherClaimId
+      )
+    ).resolves.toEqual({ result: 'candidate_review_required' });
+    expect(repository.coalescePendingClaims).not.toHaveBeenCalled();
+  });
+
+  it('translates a stale transaction result into a version conflict', async () => {
+    const repository = createRepositoryDouble();
+    const { left, right } = safePair(repository);
+    vi.mocked(repository.coalescePendingClaims).mockResolvedValue({
+      status: 'conflict',
+      current: [{ ...left, version: 3 }, right]
+    });
+
+    await expect(
+      createService(repository).coalescePendingClaims(
+        userId,
+        claimId,
+        otherClaimId
+      )
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
+});
+
 function createAuthRepositoryDouble(role: UserRole): AuthRepository {
   const state = { userId, role, accountStatus: 'active' as const, tokenVersion: 0 };
 
@@ -1023,6 +1111,7 @@ function createServiceDouble(): CandidatesService {
     listClaims: vi.fn().mockResolvedValue([claimRecord()]),
     getClaim: vi.fn().mockResolvedValue(claimRecord()),
     getClaimMergeProposal: vi.fn(),
+    coalescePendingClaims: vi.fn(),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
     reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
@@ -1379,6 +1468,57 @@ describe('candidates routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(service.getClaimMergeProposal).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a safe pair without accepting the pending survivor', async () => {
+    const service = createServiceDouble();
+    const rightClaimId = '44444444-4444-4444-8444-444444444444';
+    vi.mocked(service.coalescePendingClaims).mockResolvedValue({
+      result: 'coalesced',
+      survivor: extractedClaim('pending', 2),
+      duplicate: {
+        ...extractedClaim('pending', 2),
+        claimId: rightClaimId,
+        supersededByClaimId: claimId
+      }
+    });
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims/coalesce',
+      headers: authorization,
+      payload: { leftClaimId: claimId, rightClaimId }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: {
+        result: 'coalesced',
+        survivor: { status: 'pending' }
+      }
+    });
+    expect(service.coalescePendingClaims).toHaveBeenCalledWith(
+      userId,
+      claimId,
+      rightClaimId
+    );
+  });
+
+  it('validates coalesce claim IDs', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims/coalesce',
+      headers: authorization,
+      payload: { leftClaimId: claimId, rightClaimId: 'invalid' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.coalescePendingClaims).not.toHaveBeenCalled();
   });
 
   it('returns one owned claim with its entity tag', async () => {
