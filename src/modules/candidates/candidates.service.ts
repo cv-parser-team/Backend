@@ -8,12 +8,17 @@ import {
   ClaimTypeMismatchError,
   VersionConflictError
 } from './candidates.errors.js';
-import { prepareClaimValues } from './candidates.claim-values.js';
+import {
+  prepareClaimValues,
+  prepareUnknownClaimValues
+} from './candidates.claim-values.js';
 import {
   type AutomaticCoalescePlanResult,
   buildAutomaticCoalescePlan,
   buildClaimMergeProposal,
+  buildConfirmedClaimMergePlan,
   type ClaimMergeProposalResult,
+  type ConfirmedClaimMergePlanResult,
   toMergeCandidateClaim
 } from './candidates.claim-comparison.js';
 import {
@@ -81,6 +86,24 @@ export type AutomaticClaimCoalesceResult =
   | Extract<AutomaticCoalescePlanResult, { result: 'candidate_review_required' }>
   | { result: 'coalesced'; survivor: ClaimRecord; duplicate: ClaimRecord };
 
+export interface ConfirmClaimMergeInput {
+  leftClaimId: string;
+  rightClaimId: string;
+  leftVersion: number;
+  rightVersion: number;
+  survivorClaimId: string;
+  values: unknown;
+  current?: boolean;
+}
+
+export type ConfirmClaimMergeResult =
+  | Extract<
+      ConfirmedClaimMergePlanResult,
+      { result: 'no_merge' | 'invalid_resolution' }
+    >
+  | { result: 'not_eligible' }
+  | { result: 'merged'; survivor: ClaimRecord; duplicate: ClaimRecord };
+
 export interface CandidatesService {
   createProfile(userId: string, input: CreateCandidateBody): Promise<CandidateProfile>;
   getProfile(userId: string): Promise<CandidateProfile>;
@@ -104,6 +127,10 @@ export interface CandidatesService {
     leftClaimId: string,
     rightClaimId: string
   ): Promise<AutomaticClaimCoalesceResult>;
+  mergeConfirmedClaims(
+    userId: string,
+    input: ConfirmClaimMergeInput
+  ): Promise<ConfirmClaimMergeResult>;
   updateClaim(
     userId: string,
     claimId: string,
@@ -401,6 +428,70 @@ export function createCandidatesService({
           throw new VersionConflictError('Claims', result.current);
         case 'not_eligible':
           return { result: 'candidate_review_required' };
+        case 'missing':
+          throw new RecordNotFoundError('Claim pair');
+      }
+    },
+
+    async mergeConfirmedClaims(userId, input) {
+      const candidate = await requireCandidate(userId);
+      if (input.leftClaimId === input.rightClaimId) {
+        return { result: 'no_merge', reason: 'same_claim' };
+      }
+
+      const [left, right] = await Promise.all([
+        requireClaim(candidate.candidateId, input.leftClaimId),
+        requireClaim(candidate.candidateId, input.rightClaimId)
+      ]);
+      if (left.supersededByClaimId !== null || right.supersededByClaimId !== null) {
+        return { result: 'no_merge', reason: 'superseded_claim' };
+      }
+      if (left.status === 'rejected' || right.status === 'rejected') {
+        return { result: 'no_merge', reason: 'rejected_claim' };
+      }
+      if (left.claimType !== right.claimType) {
+        return { result: 'no_merge', reason: 'different_type' };
+      }
+
+      const values = prepareUnknownClaimValues(left.claimType, input.values);
+      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
+      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      if (!leftCandidate || !rightCandidate) {
+        return { result: 'no_merge', reason: 'rejected_claim' };
+      }
+      const plan = buildConfirmedClaimMergePlan(leftCandidate, rightCandidate, {
+        leftVersion: input.leftVersion,
+        rightVersion: input.rightVersion,
+        survivorClaimId: input.survivorClaimId,
+        values,
+        ...(input.current !== undefined ? { current: input.current } : {})
+      });
+      if (plan.result === 'version_conflict') {
+        throw new VersionConflictError('Claims', [left, right]);
+      }
+      if (plan.result !== 'ready') {
+        return plan;
+      }
+
+      const result = await repository.mergeConfirmedClaims({
+        candidateId: candidate.candidateId,
+        survivor: plan.survivor,
+        duplicate: plan.duplicate,
+        values: plan.values,
+        ...(plan.current !== undefined ? { current: plan.current } : {})
+      });
+      switch (result.status) {
+        case 'saved':
+          await normalize(result.survivor);
+          return {
+            result: 'merged',
+            survivor: result.survivor,
+            duplicate: result.duplicate
+          };
+        case 'conflict':
+          throw new VersionConflictError('Claims', result.current);
+        case 'not_eligible':
+          return { result: 'not_eligible' };
         case 'missing':
           throw new RecordNotFoundError('Claim pair');
       }

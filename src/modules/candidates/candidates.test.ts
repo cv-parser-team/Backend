@@ -1069,6 +1069,128 @@ describe('automatic claim coalesce service', () => {
   });
 });
 
+describe('confirmed claim merge service', () => {
+  const otherClaimId = '44444444-4444-4444-8444-444444444444';
+
+  function languagePair(repository: CandidatesRepository) {
+    const left = extractedClaim('pending', 2);
+    left.claimType = 'language';
+    left.values = { name: 'English', proficiency: 'Professional' };
+    const right = {
+      ...extractedClaim('accepted', 4),
+      claimId: otherClaimId,
+      claimType: 'language' as const,
+      values: { name: 'English', proficiency: 'Native' }
+    };
+    vi.mocked(repository.findClaim)
+      .mockResolvedValueOnce(left)
+      .mockResolvedValueOnce(right);
+    return { left, right };
+  }
+
+  it('validates choices and executes a ready confirmed merge', async () => {
+    const repository = createRepositoryDouble();
+    const { left, right } = languagePair(repository);
+    vi.mocked(repository.mergeConfirmedClaims).mockResolvedValue({
+      status: 'saved',
+      survivor: { ...right, version: 5 },
+      duplicate: { ...left, version: 3, supersededByClaimId: otherClaimId }
+    });
+
+    await expect(
+      createService(repository).mergeConfirmedClaims(userId, {
+        leftClaimId: claimId,
+        rightClaimId: otherClaimId,
+        leftVersion: 2,
+        rightVersion: 4,
+        survivorClaimId: otherClaimId,
+        values: { name: ' English ', proficiency: 'Native' }
+      })
+    ).resolves.toMatchObject({
+      result: 'merged',
+      survivor: { claimId: otherClaimId, version: 5 },
+      duplicate: { claimId, supersededByClaimId: otherClaimId }
+    });
+    expect(repository.mergeConfirmedClaims).toHaveBeenCalledWith({
+      candidateId,
+      survivor: { claimId: otherClaimId, expectedVersion: 4 },
+      duplicate: { claimId, expectedVersion: 2 },
+      values: { name: 'English', proficiency: 'Native' }
+    });
+  });
+
+  it('refuses unresolved choices without writing', async () => {
+    const repository = createRepositoryDouble();
+    languagePair(repository);
+
+    await expect(
+      createService(repository).mergeConfirmedClaims(userId, {
+        leftClaimId: claimId,
+        rightClaimId: otherClaimId,
+        leftVersion: 2,
+        rightVersion: 4,
+        survivorClaimId: claimId,
+        values: { name: 'English' }
+      })
+    ).resolves.toEqual({
+      result: 'invalid_resolution',
+      reason: 'missing_field_choice',
+      fields: ['proficiency']
+    });
+    expect(repository.mergeConfirmedClaims).not.toHaveBeenCalled();
+  });
+
+  it('translates reviewed and transactional version conflicts', async () => {
+    const reviewedRepository = createRepositoryDouble();
+    languagePair(reviewedRepository);
+    await expect(
+      createService(reviewedRepository).mergeConfirmedClaims(userId, {
+        leftClaimId: claimId,
+        rightClaimId: otherClaimId,
+        leftVersion: 1,
+        rightVersion: 4,
+        survivorClaimId: claimId,
+        values: { name: 'English', proficiency: 'Native' }
+      })
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    expect(reviewedRepository.mergeConfirmedClaims).not.toHaveBeenCalled();
+
+    const transactionRepository = createRepositoryDouble();
+    const { left, right } = languagePair(transactionRepository);
+    vi.mocked(transactionRepository.mergeConfirmedClaims).mockResolvedValue({
+      status: 'conflict',
+      current: [{ ...left, version: 3 }, right]
+    });
+    await expect(
+      createService(transactionRepository).mergeConfirmedClaims(userId, {
+        leftClaimId: claimId,
+        rightClaimId: otherClaimId,
+        leftVersion: 2,
+        rightVersion: 4,
+        survivorClaimId: claimId,
+        values: { name: 'English', proficiency: 'Native' }
+      })
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
+
+  it('validates final claim values before persistence', async () => {
+    const repository = createRepositoryDouble();
+    languagePair(repository);
+
+    await expect(
+      createService(repository).mergeConfirmedClaims(userId, {
+        leftClaimId: claimId,
+        rightClaimId: otherClaimId,
+        leftVersion: 2,
+        rightVersion: 4,
+        survivorClaimId: claimId,
+        values: { proficiency: 'Native' }
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_CLAIM_VALUES' });
+    expect(repository.mergeConfirmedClaims).not.toHaveBeenCalled();
+  });
+});
+
 function createAuthRepositoryDouble(role: UserRole): AuthRepository {
   const state = { userId, role, accountStatus: 'active' as const, tokenVersion: 0 };
 
@@ -1113,6 +1235,7 @@ function createServiceDouble(): CandidatesService {
     getClaim: vi.fn().mockResolvedValue(claimRecord()),
     getClaimMergeProposal: vi.fn(),
     coalescePendingClaims: vi.fn(),
+    mergeConfirmedClaims: vi.fn(),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
     reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
