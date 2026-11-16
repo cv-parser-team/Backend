@@ -25,16 +25,61 @@ The API listens on `http://localhost:4000` by default. Environment variables
 must be exported by your shell or development environment; the application
 does not load `.env` files itself.
 
+AI features use Gemini and need `LLM_API_KEY`, created in
+[Google AI Studio](https://aistudio.google.com/docs/api-key). Keep the key in
+your local `.env` only. Without it, CV extraction cannot run, and claim values
+that exact and spelling matching cannot normalize are left for the candidate.
+`NORMALIZATION_AI_ENABLED=false` turns AI normalization off even with a key;
+`NORMALIZATION_AI_POLL_INTERVAL_MS` and `NORMALIZATION_AI_BATCH_SIZE` set how
+often and how many requests the worker processes. See
+[Normalization](docs/modules/normalization.md#ai-matching).
+
+## Demo data
+
+To try the application without creating accounts and claims by hand, fill
+your local database with demo data:
+
+```bash
+npm run infra:up
+npm run db:push
+npm run demo:seed
+```
+
+Every demo account uses the password `Demo-Password-2026!`.
+
+| Account | Role | What it shows |
+| --- | --- | --- |
+| `sara@demo.luminacv.test` | Candidate | A full profile with an accepted claim of every type, a rejected extracted skill, and an extracted job waiting for review; the export contains the accepted claims only |
+| `omar@demo.luminacv.test` | Candidate | Normalization: `JavaScript` (exact), `Postgres` (alias), `Pyhton` (spelling correction), `Server-side Engineer` and `Bachelors in Computer Science` (AI), `Prodject Manager` (ambiguous, then AI), and `Underwater Basket Weaving` (no term) |
+| `lina@demo.luminacv.test` | Candidate | A processed CV with three extracted claims and two review items waiting for review |
+| `reviewer@demo.luminacv.test` | Reviewer | |
+| `admin@demo.luminacv.test` | Admin | |
+
+- Demo accounts use the reserved `demo.luminacv.test` domain. `demo:seed`
+  first removes the previous demo data, so running it again gives the same
+  data without duplicates. `demo:reset` removes it, with everything the demo
+  users own and their files. Neither touches any other data.
+- Both commands refuse to run when `NODE_ENV` is `production`.
+- `demo:seed` loads the normalization dictionary if needed. Omar's AI values
+  are matched by the worker (`npm run worker:dev`) when `LLM_API_KEY` is set;
+  without it they stay unmatched.
+- The demo data lives in `src/tools/demo/demo-data.ts`. Tests check that every
+  claim passes the API's value rules and that Omar's values reach every
+  normalization step.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the API in watch mode |
-| `npm run worker:dev` | Start the document-processing worker in watch mode |
-| `npm run worker` | Start the compiled document-processing worker |
-| `npm run parsing:inspect` | Select a PDF or DOCX and write a visual HTML parsing report |
+| `npm run worker:dev` | Start the worker in watch mode: document processing and AI normalization requests |
+| `npm run worker` | Start the compiled worker: document processing and AI normalization requests |
+| `npm run parsing:inspect -- [file] [output] [--llm]` | Write a visual HTML parsing report; `--llm` embeds structured AI claims in the same report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
+| `npm run llm:inspect -- [output.html]` | Run one tracked candidate-extraction request and write a formatted HTML claims report (defaults to `llm-inspection.html`) |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
+| `npm run demo:seed` | Replace all demo data with a fresh copy (see [Demo data](#demo-data)) |
+| `npm run demo:reset` | Remove all demo data |
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |
 | `npm run test:watch` | Run tests in watch mode |
@@ -50,6 +95,24 @@ does not load `.env` files itself.
 | `npm run db:migrate` | Apply generated migrations |
 | `npm run db:push` | Push schema changes during local development |
 | `npm run db:studio` | Open Drizzle Studio |
+
+Database integration tests are opt-in and require a separately provisioned
+database whose name contains `test`. They apply the project migrations before
+running and refuse any URL that does not identify a test-scoped database.
+Start PostgreSQL and create the test database once:
+
+```bash
+npm run db:up
+docker compose exec postgres createdb -U postgres luminacv_test
+```
+
+Then run the integration tests:
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres:postgrespassword@localhost:5432/luminacv_test \
+RUN_DATABASE_INTEGRATION_TESTS=true \
+npx vitest run src/modules/candidates/candidates.repository.integration.test.ts
+```
 
 ## API
 
@@ -73,13 +136,18 @@ and always act on the authenticated user's own profile:
 - `GET /api/candidates/me/profile` (structured JSON with accepted claims only)
 - `POST /api/candidates/me/claims` (add a manual claim)
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
+- `GET /api/candidates/me/claims/:claimId`
 - `PUT /api/candidates/me/claims/:claimId`
+- `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)
 - `DELETE /api/candidates/me/claims/:claimId`
 - `POST /api/candidates/me/documents?purpose=source` (one or more multipart `file` fields)
 - `GET /api/candidates/me/documents`
 - `GET /api/candidates/me/documents/:documentId`
 - `GET /api/candidates/me/documents/:documentId/content`
 - `DELETE /api/candidates/me/documents/:documentId`
+- `GET /api/candidates/me/extraction-review-items` (optional `documentId` and `status` filters; status defaults to `pending`)
+- `PATCH /api/candidates/me/extraction-review-items/:reviewItemId/dismiss`
+- `POST /api/candidates/me/extraction-review-items/:reviewItemId/resolve`
 
 There is intentionally no health endpoint.
 
@@ -94,10 +162,19 @@ PUT /api/candidates/me/claims/:claimId
 If-Match: "3"
 ```
 
-`PATCH /api/candidates/me` and `DELETE /api/candidates/me/claims/:claimId`
-accept `If-Match` the same way. If the record changed since, the request fails
-with `409 VERSION_CONFLICT`, and `error.details.current` holds the record as it
-is now. `If-Match` is optional for now; without it, edits are not checked.
+`PATCH /api/candidates/me`, claim review, and
+`DELETE /api/candidates/me/claims/:claimId` accept `If-Match` the same way. If
+the record changed since, the request fails with `409 VERSION_CONFLICT`, and
+`error.details.current` holds the record as it is now. `If-Match` is optional
+for now; without it, edits are not checked.
+
+Dismissal of an extraction review item also accepts `If-Match` and returns the
+new version in its `ETag` header. Dismissed items no longer appear in the
+pending review-item list.
+
+Resolution accepts corrected claim `values` and `If-Match`. It atomically
+creates an accepted extracted claim, marks the review item resolved, links the
+two records, and returns the review item's new version in `ETag`.
 
 Uploading a file whose earlier copy is still being deleted returns
 `409 DOCUMENT_BEING_DELETED` for that file; upload it again shortly. A request

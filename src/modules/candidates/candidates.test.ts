@@ -13,6 +13,7 @@ import { JwtService, UserRole } from '../auth/jwt-service.js';
 import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
+  ClaimNotReviewableError,
   ClaimTypeMismatchError,
   InvalidClaimDatesError,
   VersionConflictError
@@ -41,6 +42,7 @@ import {
   employmentDetails,
   languageDetails,
   projectDetails,
+  sourceOccurrences,
   skillDetails
 } from './candidates.table.js';
 
@@ -71,11 +73,30 @@ function claimRecord(overrides: Partial<ClaimRecord> = {}): ClaimRecord {
     origin: 'manual',
     status: 'accepted',
     values: { name: 'Python' },
+    extraction: null,
     version: 1,
     createdAt: timestamp,
     updatedAt: timestamp,
     ...overrides
   };
+}
+
+function extractedClaim(
+  status: ClaimRecord['status'] = 'pending',
+  version = 1
+): ClaimRecord {
+  return claimRecord({
+    origin: 'extracted',
+    status,
+    extraction: {
+      invocationId: '44444444-4444-4444-8444-444444444444',
+      sourceDocumentId: '55555555-5555-4555-8555-555555555555',
+      rawValues: {},
+      fieldSources: { name: ['L8'] },
+      current: false
+    },
+    version
+  });
 }
 
 function createRepositoryDouble(
@@ -88,7 +109,15 @@ function createRepositoryDouble(
       .fn()
       .mockResolvedValue({ status: 'saved', record: candidateRecord }),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
+    createClaims: vi.fn().mockResolvedValue([]),
+    createClaimSourceOccurrences: vi.fn().mockResolvedValue(0),
+    deletePendingExtractedClaims: vi.fn().mockResolvedValue(0),
+    listReviewedExtractedClaims: vi.fn().mockResolvedValue([]),
+    reviewExtractedClaim: vi
+      .fn()
+      .mockResolvedValue({ status: 'saved', record: extractedClaim('accepted', 2) }),
     listClaims: vi.fn().mockResolvedValue([]),
+    listClaimSourceOccurrences: vi.fn().mockResolvedValue([]),
     findClaim: vi.fn().mockResolvedValue(claimRecord()),
     updateClaimValues: vi
       .fn()
@@ -150,10 +179,34 @@ describe('candidates tables', () => {
     }
   });
 
+  it('keeps complete extraction evidence only on extracted claims', () => {
+    const config = getTableConfig(claims);
+    const evidenceColumns = [
+      claims.extractionInvocationId,
+      claims.extractionDocumentId,
+      claims.extractionRawValues,
+      claims.extractionFieldSources,
+      claims.extractionCurrent
+    ];
+
+    expect(evidenceColumns.every((column) => !column.notNull)).toBe(true);
+    expect(
+      config.checks.some(
+        (constraint) => constraint.name === 'claims_extraction_metadata_matches_origin'
+      )
+    ).toBe(true);
+  });
+
   it('links profiles to users and claims to their owners', () => {
     expect(getTableConfig(candidates).foreignKeys).toHaveLength(1);
     expect(getTableConfig(claims).foreignKeys).toHaveLength(1);
     expect(getTableConfig(claimRevisions).foreignKeys).toHaveLength(1);
+    expect(getTableConfig(sourceOccurrences).foreignKeys).toHaveLength(2);
+    expect(
+      getTableConfig(sourceOccurrences).indexes.some(
+        (index) => index.config.name === 'source_occurrences_claim_anchor_unique'
+      )
+    ).toBe(true);
   });
 
   it('stores one details row per claim in the table of its type', () => {
@@ -174,10 +227,10 @@ describe('candidates tables', () => {
   });
 
   it('enforces date order in the database', () => {
-    expect(getTableConfig(employmentDetails).checks).toHaveLength(1);
-    expect(getTableConfig(educationDetails).checks).toHaveLength(1);
-    expect(getTableConfig(certificationDetails).checks).toHaveLength(1);
-    expect(getTableConfig(projectDetails).checks).toHaveLength(1);
+    expect(getTableConfig(employmentDetails).checks).toHaveLength(2);
+    expect(getTableConfig(educationDetails).checks).toHaveLength(2);
+    expect(getTableConfig(certificationDetails).checks).toHaveLength(2);
+    expect(getTableConfig(projectDetails).checks).toHaveLength(3);
   });
 
   it('indexes employment and project skills for search', () => {
@@ -261,6 +314,16 @@ describe('candidates service', () => {
     await expect(
       service.createClaim(userId, { type: 'skill', values: { name: 'Python' } })
     ).rejects.toBeInstanceOf(RecordNotFoundError);
+  });
+
+  it('reads a claim through the candidate ownership scope', async () => {
+    const repository = createRepositoryDouble();
+    const service = createService(repository);
+
+    await expect(service.getClaim(userId, claimId)).resolves.toEqual(
+      claimRecord()
+    );
+    expect(repository.findClaim).toHaveBeenCalledWith(candidateId, claimId);
   });
 
   it('clears optional profile fields set to null', async () => {
@@ -422,6 +485,27 @@ describe('candidates service', () => {
     expect(repository.createClaim).not.toHaveBeenCalled();
   });
 
+  it('accepts year-only dates and compares their full possible range', async () => {
+    const repository = createRepositoryDouble();
+    const service = createService(repository);
+
+    await service.createClaim(userId, {
+      type: 'employment',
+      values: {
+        employer: 'Example Corp',
+        jobTitle: 'Developer',
+        startDate: '2021-06',
+        endDate: '2021'
+      }
+    });
+
+    expect(repository.createClaim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        values: expect.objectContaining({ startDate: '2021-06', endDate: '2021' })
+      })
+    );
+  });
+
   it('sends the complete new values when a claim changes', async () => {
     const repository = createRepositoryDouble();
     vi.mocked(repository.findClaim).mockResolvedValue(
@@ -525,6 +609,56 @@ describe('candidates service', () => {
     expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId, undefined);
   });
 
+  it.each(['accepted', 'rejected'] as const)(
+    'reviews a pending extracted claim as %s',
+    async (status) => {
+      const repository = createRepositoryDouble();
+      const reviewed = extractedClaim(status, 2);
+      vi.mocked(repository.reviewExtractedClaim).mockResolvedValue({
+        status: 'saved',
+        record: reviewed
+      });
+      const normalizer = createNormalizerDouble();
+      const service = createService(repository, normalizer);
+
+      await expect(
+        service.reviewClaim(userId, claimId, { status }, 1)
+      ).resolves.toBe(reviewed);
+      expect(repository.reviewExtractedClaim).toHaveBeenCalledWith(
+        candidateId,
+        claimId,
+        status,
+        1
+      );
+      if (status === 'accepted') {
+        expect(normalizer.normalizeClaim).toHaveBeenCalledWith(reviewed);
+      } else {
+        expect(normalizer.normalizeClaim).not.toHaveBeenCalled();
+      }
+    }
+  );
+
+  it('refuses a claim that is not pending and extracted', async () => {
+    const repository = createRepositoryDouble();
+    const current = claimRecord();
+    vi.mocked(repository.reviewExtractedClaim).mockResolvedValue({
+      status: 'not_reviewable',
+      current
+    });
+    const service = createService(repository);
+
+    const error = await service
+      .reviewClaim(userId, claimId, { status: 'accepted' })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ClaimNotReviewableError);
+    expect(error).toMatchObject({
+      statusCode: 409,
+      code: 'CLAIM_NOT_REVIEWABLE',
+      details: { current }
+    });
+  });
+
   describe('versions', () => {
     it('refuses a claim edit based on an older version, even with equal values', async () => {
       const repository = createRepositoryDouble();
@@ -610,6 +744,19 @@ describe('candidates service', () => {
       expect(repository.deleteClaim).toHaveBeenCalledWith(candidateId, claimId, 1);
     });
 
+    it('refuses to review a claim that changed', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.reviewExtractedClaim).mockResolvedValue({
+        status: 'conflict',
+        current: extractedClaim('pending', 2)
+      });
+      const service = createService(repository);
+
+      await expect(
+        service.reviewClaim(userId, claimId, { status: 'accepted' }, 1)
+      ).rejects.toBeInstanceOf(VersionConflictError);
+    });
+
     it('returns the profile version', async () => {
       const service = createService(createRepositoryDouble());
 
@@ -637,6 +784,38 @@ describe('candidates service', () => {
         values: { name: 'Shop API' }
       })
     ]);
+    vi.mocked(repository.listClaimSourceOccurrences).mockResolvedValue([
+      {
+        occurrenceId: '77777777-7777-4777-8777-777777777777',
+        claimId,
+        documentId: '88888888-8888-4888-8888-888888888888',
+        anchorKey: 'pdf:1:8',
+        sourceReferences: ['L8'],
+        fieldNames: ['name'],
+        anchor: {
+          kind: 'pdf_line',
+          order: 8,
+          pageNumber: 1,
+          box: { x: 40, y: 80, width: 100, height: 12 },
+          text: 'Python',
+          links: []
+        }
+      },
+      {
+        occurrenceId: '99999999-9999-4999-8999-999999999999',
+        claimId: '44444444-4444-4444-8444-444444444444',
+        documentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        anchorKey: 'docx:block:4',
+        sourceReferences: ['B4'],
+        fieldNames: ['title', 'issuer'],
+        anchor: {
+          kind: 'docx_paragraph',
+          blockIndex: 4,
+          text: 'AWS — Amazon',
+          links: []
+        }
+      }
+    ]);
     const service = createService(repository);
 
     const result = await service.exportProfile(userId);
@@ -654,9 +833,55 @@ describe('candidates service', () => {
       location: 'Amman',
       profileLinks: []
     });
-    expect(result.skills).toEqual([{ claimId, name: 'Python', sources: [] }]);
+    expect(repository.listClaimSourceOccurrences).toHaveBeenCalledWith(candidateId, [
+      claimId,
+      '44444444-4444-4444-8444-444444444444',
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666'
+    ]);
+    expect(result.skills).toEqual([
+      {
+        claimId,
+        name: 'Python',
+        sources: [
+          {
+            documentId: '88888888-8888-4888-8888-888888888888',
+            references: ['L8'],
+            fields: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 8,
+              pageNumber: 1,
+              box: { x: 40, y: 80, width: 100, height: 12 },
+              text: 'Python',
+              links: []
+            }
+          }
+        ]
+      }
+    ]);
     expect(Object.keys(result.skills[0] ?? {})[0]).toBe('claimId');
-    expect(result.certifications).toHaveLength(1);
+    expect(result.certifications).toEqual([
+      {
+        claimId: '44444444-4444-4444-8444-444444444444',
+        title: 'AWS',
+        issuer: 'Amazon',
+        issueDate: '2023-01',
+        sources: [
+          {
+            documentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            references: ['B4'],
+            fields: ['title', 'issuer'],
+            anchor: {
+              kind: 'docx_paragraph',
+              blockIndex: 4,
+              text: 'AWS — Amazon',
+              links: []
+            }
+          }
+        ]
+      }
+    ]);
     expect(result.languages).toEqual([
       {
         claimId: '55555555-5555-4555-8555-555555555555',
@@ -714,7 +939,9 @@ function createServiceDouble(): CandidatesService {
     updateProfile: vi.fn().mockResolvedValue(profile),
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     listClaims: vi.fn().mockResolvedValue([claimRecord()]),
+    getClaim: vi.fn().mockResolvedValue(claimRecord()),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
+    reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
     exportProfile: vi.fn()
   };
@@ -820,6 +1047,30 @@ describe('candidates routes', () => {
     expect(service.createClaim).toHaveBeenCalledWith(userId, payload);
   });
 
+  it('accepts year-only claim dates without adding a month', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+    const payload = {
+      type: 'education',
+      values: {
+        institution: 'University of Jordan',
+        degree: 'BSc',
+        startDate: '2018',
+        endDate: '2022'
+      }
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims',
+      headers: authorization,
+      payload
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(service.createClaim).toHaveBeenCalledWith(userId, payload);
+  });
+
   it('applies the values schema that matches the claim type', async () => {
     const service = createServiceDouble();
     app = await createCandidatesApp(service);
@@ -834,7 +1085,7 @@ describe('candidates routes', () => {
       { type: 'language', values: { name: 'English', proficiency: '' } },
       { type: 'project', values: { description: 'A shop API' } },
       { type: 'project', values: { name: 'Shop API', url: 'not a link' } },
-      { type: 'project', values: { name: 'Shop API', startDate: '2024' } },
+      { type: 'project', values: { name: 'Shop API', startDate: '2024-00' } },
       { type: 'award', values: { name: 'Best Graduate' } }
     ];
 
@@ -943,6 +1194,43 @@ describe('candidates routes', () => {
     expect(service.deleteClaim).toHaveBeenCalledWith(userId, claimId, undefined);
   });
 
+  it('reviews a claim with optimistic versioning', async () => {
+    const service = createServiceDouble();
+    vi.mocked(service.reviewClaim).mockResolvedValue(extractedClaim('accepted', 2));
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/candidates/me/claims/${claimId}/review`,
+      headers: { ...authorization, 'if-match': '"1"' },
+      payload: { status: 'accepted' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe('"2"');
+    expect(service.reviewClaim).toHaveBeenCalledWith(
+      userId,
+      claimId,
+      { status: 'accepted' },
+      1
+    );
+  });
+
+  it('accepts only terminal review decisions', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/candidates/me/claims/${claimId}/review`,
+      headers: authorization,
+      payload: { status: 'pending' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.reviewClaim).not.toHaveBeenCalled();
+  });
+
   it('filters listed claims by type and status', async () => {
     const service = createServiceDouble();
     app = await createCandidatesApp(service);
@@ -967,6 +1255,25 @@ describe('candidates routes', () => {
 
     expect(languages.statusCode).toBe(200);
     expect(service.listClaims).toHaveBeenCalledWith(userId, { type: 'language' });
+  });
+
+  it('returns one owned claim with its entity tag', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/candidates/me/claims/${claimId}`,
+      headers: authorization
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.etag).toBe('"1"');
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { claimId, version: 1 }
+    });
+    expect(service.getClaim).toHaveBeenCalledWith(userId, claimId);
   });
 
   describe('versions', () => {

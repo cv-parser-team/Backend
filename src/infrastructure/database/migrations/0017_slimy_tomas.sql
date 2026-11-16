@@ -1,0 +1,3 @@
+ALTER TABLE "extraction_review_items" ADD COLUMN "resolved_claim_id" uuid;--> statement-breakpoint
+ALTER TABLE "extraction_review_items" ADD CONSTRAINT "extraction_review_items_resolved_claim_id_claims_claim_id_fk" FOREIGN KEY ("resolved_claim_id") REFERENCES "public"."claims"("claim_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "extraction_review_items_resolved_claim_unique" ON "extraction_review_items" USING btree ("resolved_claim_id");

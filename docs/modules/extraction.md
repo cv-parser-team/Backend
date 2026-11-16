@@ -1,16 +1,99 @@
-# AI-output mapping plan (V1)
+# Candidate extraction (V1)
 
 ## Goal
 
 The AI reads the compact text that parsing builds from a CV and returns what it
 found as JSON. This module checks that JSON and turns every valid item into a
 pending extracted claim draft, keeping the original values, the lines they
-came from, and how confident the AI was about each value. Invalid or
-incomplete values are kept as unmapped instead of being rejected or completed
-with invented values.
+came from, and how confident the AI was about each value. Recognized claims
+that are incomplete or invalid are retained as structured review items instead
+of being discarded or completed with invented values.
 
-V1 does not call an AI, save drafts, normalize values, or resolve conflicts.
-It is tested with hand-written AI outputs.
+V1 sends compact parsing input through the tracked LLM service and maps the
+provider's structured output. Its persistence coordinator can atomically save
+pending claim drafts, review items, and the document's unmapped data. It does not yet persist
+profile drafts, normalize extracted values through the
+[normalization module](normalization.md), or resolve conflicts. The
+document-processing worker invokes extraction after a successful or partial
+parse.
+
+The candidate extraction workflow is the callable boundary for an already
+parsed document. It runs provider extraction first, then passes the mapped
+result to the persistence coordinator. Provider work therefore happens outside
+the database transaction; only the final claim and `unmapped_data` writes are
+atomic. The module composition factory assembles that workflow from the
+database-backed candidate writer, parsing service, and `UnitOfWork`.
+Standalone persistence owns that transaction. A larger workflow can instead
+pass its existing database executor, allowing parsed content, claims, review
+items, unmapped data, and processing state to share one transaction without
+nesting another.
+
+Re-extraction replaces pending `extraction_review_items` for that document.
+Resolved and dismissed review items remain as history. Unsupported sections,
+unknown claim types, and structurally broken items continue to use
+`document_extractions.unmapped_data`.
+
+Candidates can read their pending review items with
+`GET /api/candidates/me/extraction-review-items`. The optional `documentId`
+query parameter limits the result to one owned document. The optional `status`
+parameter accepts `pending`, `resolved`, or `dismissed` and defaults to
+`pending`. Without `documentId`, the service resolves all documents through
+the documents module's ownership boundary and queries review items by those
+IDs. Resolved results include `resolvedClaimId`. The listing endpoint is
+read-only.
+
+A candidate can dismiss an item that should not become a claim with
+`PATCH /api/candidates/me/extraction-review-items/:reviewItemId/dismiss`.
+Dismissal verifies ownership through the source document, changes only a
+`pending` item, increments its version, and accepts the last-read version in
+`If-Match`. It does not delete the extracted evidence.
+
+A candidate can correct and resolve an item with
+`POST /api/candidates/me/extraction-review-items/:reviewItemId/resolve`. The
+body contains only `values`; the item supplies the immutable claim type and
+extraction provenance. The candidate claim rules validate the corrected
+values. One transaction creates an accepted extracted claim, preserves the
+original raw values and source references, links it through `resolvedClaimId`,
+and marks the item `resolved`. A stale version or concurrent terminal action
+rolls the claim creation back.
+
+Re-extracting a document replaces only that candidate's pending extracted
+claims from the same source document. Manual claims, reviewed claims, legacy
+claims without document provenance, and claims from other documents are never
+deleted. Replacement and insertion share one transaction, so failed insertion
+restores the previous pending set. A newly extracted draft is not inserted when
+the same document already has an accepted or rejected extracted claim with the
+same type and formatting-equivalent values. The comparison normalizes Unicode,
+letter casing, surrounding or repeated whitespace, field order, and string-array
+order or duplicates. Punctuation and every persisted field remain significant,
+so changed and new drafts stay pending. Alias and broader semantic matching are
+deferred and never use parser-inferred headings.
+
+Formatting-equivalent drafts within one provider result are coalesced before
+insertion. The first draft supplies the persisted values and original wording;
+field references and physical occurrences are merged without duplication, and
+an explicit current marker is retained when any equivalent draft has it. This
+prevents duplicate pending claims without inventing semantic equivalence.
+An `anchorKey` identifies exactly one physical occurrence across the entire
+provider result. If any drafts reuse a key for different anchor content,
+persistence fails before pending claims are deleted instead of silently keeping
+either location.
+
+Candidates review a pending claim through
+`PATCH /api/candidates/me/claims/:claimId/review`. Acceptance or rejection is a
+terminal, version-guarded decision; confidence remains advisory and never
+chooses the decision automatically.
+
+The extraction service owns the versioned prompt and output contract. Provider,
+model, timeout, and the LLM service are injected so the module does not create
+infrastructure or read global configuration.
+
+Provider generation uses a shallow schema for the stable envelope and item
+containers. The detailed field contract and type-specific requirements stay in
+the versioned prompt because the configured Gemini model rejects the complete
+nested schema as too complex. Local mapping remains authoritative: it validates
+each item independently, so one malformed provider item does not discard valid
+items returned with it.
 
 ## Input: the AI output contract
 
@@ -95,39 +178,59 @@ It is tested with hand-written AI outputs.
 
   A value without confidence or sources is invalid.
 - `raw` keeps the text as the CV wrote it, such as `Oct 2023`.
+- Dates use `YYYY` when the source states only a year and `YYYY-MM` when it
+  states a month. A range is split into separate start and end values without
+  inventing a month.
 - `unmapped` holds information the AI found that has no place in the profile,
   such as courses or awards.
 
 ## Mapping rules
 
-An invalid **optional** field is set aside on its own and the claim keeps its
-other fields. An invalid or missing **required** field rejects the whole
-claim, because a claim cannot exist without it.
+An invalid **optional** field creates a review item and the claim keeps its
+valid fields. An invalid or missing **required** field prevents canonical claim
+creation but preserves the complete recognized claim as a review item.
 
 | Situation | Result |
 | --- | --- |
 | Valid item | A pending extracted claim draft |
 | Value with low confidence | Kept, with its confidence, so the candidate can review it |
-| Required field missing | Whole claim unmapped, reason `missing_<field>`, such as `missing_start_date` |
-| Required field invalid, such as a start date of `2021` or an empty name | Whole claim unmapped, reason `invalid_date` or `invalid_value` |
-| Optional date not `YYYY-MM`, such as an end date of `2023` | Only that field unmapped, reason `invalid_date`; no month is invented |
+| Required field missing | No canonical claim; structured review item with `missing_<field>`, such as `missing_start_date` |
+| Required field invalid, such as a start date of `2021-13` or an empty name | No canonical claim; structured review item with `invalid_date` or `invalid_value` |
+| Required field cites a reference absent from the supplied AI input | No canonical claim; structured review item with `invalid_source` |
+| Optional date not `YYYY` or `YYYY-MM`, such as an end date of `2023-13` | Valid remainder becomes a claim and the original claim becomes a review item with `invalid_date` |
 | End date written as `Present` | `current: true`; the end date stays empty |
-| End date before start date | Only the end date unmapped, reason `invalid_date_order` |
-| Optional field too long, empty, or not part of the type | Only that field unmapped, reason `invalid_value` |
-| Optional field with `raw` text but no value | Only that field unmapped, reason `missing_value` |
-| Unknown type or broken item | Whole item unmapped, reason `invalid_item` |
+| End date before start date | Valid remainder becomes a claim and a review item records `invalid_date_order` |
+| Optional field too long, empty, or not part of the type | Valid remainder becomes a claim and a review item records `invalid_value` |
+| Optional field with `raw` text but no value | Valid remainder becomes a claim and a review item records `missing_value` |
+| Optional claim field cites an absent reference | Valid remainder becomes a claim and a review item records `invalid_source` |
+| Invalid profile field cites an absent reference | Field remains unmapped with `invalid_source` |
+| Structurally invalid item with a supported type and fields object | Structured review item with `invalid_item` |
+| Unknown type or unrecognizable item | Whole item unmapped, reason `invalid_item` |
 | Invalid profile field, such as a bad email | Only that field unmapped, reason `invalid_value` |
 | Profile link without its link text | Only that link unmapped, reason `missing_label` |
 | Profile that does not follow the contract | Whole profile unmapped, reason `invalid_item`, keeping its text |
 | Item in the AI's own `unmapped` list | Kept as unmapped, reason `unsupported_section` |
+| Item in the AI's own `unmapped` list cites an absent reference | Kept as unmapped, reason `invalid_source` |
 | Wrong `version` or no `claims` list | The whole output is rejected with `INVALID_AI_OUTPUT` |
 
 - Each item is checked on its own, so one invalid item never rejects the others.
 - Claim values are checked with the same rules as manual claims, so every
   draft can become a real claim.
 - Nothing missing is filled in.
-- An unmapped field is labelled with its claim type and field, such as
-  `employment.endDate`.
+- Source references must exactly match tokens present in the compact AI input;
+  page/region headers and table column labels are not evidence references.
+- A matching token establishes citation integrity only. Parser-inferred
+  headings, section ownership, and region roles can be wrong and are not
+  authoritative provenance. Reference resolution uses original PDF lines and
+  coordinates or original DOCX blocks and table rows; semantic support remains
+  subject to review.
+- Before persistence, claim citations can be mapped into physical occurrence
+  drafts. A draft combines repeated citations to the same stored line or DOCX
+  row, retains every supporting claim field and reference token, and carries
+  only physical evidence. Any missing or ambiguous anchor fails the mapping
+  instead of silently losing provenance.
+- A review issue identifies its `field`, machine-readable `code`, and whether
+  the field is required.
 
 ## Output
 
@@ -174,6 +277,7 @@ claim, because a claim cannot exist without it.
       }
     }
   ],
+  "reviewItems": [],
   "unmapped": [
     {
       "label": "Courses",
@@ -186,10 +290,16 @@ claim, because a claim cannot exist without it.
 ```
 
 The language claim from the input is also a draft, with a confidence of 0.6
-taken from its proficiency. A field set aside on its own looks like this:
+taken from its proficiency. A recognized incomplete claim looks like this:
 
 ```json
-{ "label": "education.endDate", "text": "2023", "sources": ["L22"], "reason": "invalid_date" }
+{
+  "claimType": "education",
+  "fields": { "endDate": { "value": "2023-13", "confidence": 0.8, "sources": ["L22"] } },
+  "issues": [{ "field": "endDate", "code": "invalid_date", "required": false }],
+  "sources": ["L22"],
+  "fingerprint": "..."
+}
 ```
 
 - `claims` are drafts with `origin: extracted` and `status: pending`. Each has
@@ -197,10 +307,11 @@ taken from its proficiency. A field set aside on its own looks like this:
   `sources`, and the sources of each field.
 - `rawValues` keep the text as the CV wrote it for fields that had a `raw`
   text, such as `Oct 2023` or `Present`, so original values are never lost.
-- An unmapped item keeps the CV's own wording: a field's `raw` text when given,
-  otherwise its value.
-- `unmapped` items have the shape of `document_extractions.unmapped_data`, so
-  they can be stored there later.
+- A review item retains the original structured fields, issue details, combined
+  sources, and a deterministic fingerprint.
+- `unmapped` items have the shape of `document_extractions.unmapped_data` and
+  replace that field as the latest successful extraction snapshot. An empty
+  result clears unmapped items from an older extraction.
 
 ## Decisions
 
@@ -214,21 +325,48 @@ taken from its proficiency. A field set aside on its own looks like this:
    which looks safe. The overall value is only a summary for finding claims to
    review; the confidence of each field is kept. Fields that were set aside are
    left out.
-3. **Confidence stays in the AI output and the drafts; it is not stored in the
-   database yet.** V1 saves nothing, and confidence only matters until the
-   candidate reviews a claim. When drafts are saved, confidence is stored with
-   the original extracted values, as the task lists them together.
+3. **Confidence stays transient.** It is model-generated review guidance, not
+   a candidate fact. Extracted claims persist their invocation, original
+   wording, sources, source document, and explicit current status; confidence
+   can be added when a review or evaluation feature has a concrete use for it.
 
-## Version 2
+## Revisit later
 
-Listed under "Revisit later" on the task:
-
-- Save drafts as candidate claims and unmapped items in `unmapped_data`.
-- Resolve line references into `source_occurrences` with page and position.
-- Store confidence and original extracted values.
-- Check that every line reference exists in the document's AI input.
-- Avoid duplicate claims when an extraction runs again, and decide whether a
-  new parse clears old unmapped data.
-- Connect an AI provider and send it this contract.
+- Detect near or semantic duplicates against accepted or rejected claims.
 - Normalize aliases and detect conflicts.
-- Accept year-only dates and grades.
+- Accept grades as structured education data.
+
+## Manual inspection
+
+With PostgreSQL migrated and `LLM_API_KEY` configured, run:
+
+```bash
+npm run llm:inspect
+```
+
+The command sends a deterministic referenced CV sample through the configured
+provider, writes an HTML report containing the mapped result and the in-memory
+provider output, and records the provider invocation in `llm_invocations`.
+The provider output is escaped into that local report only; it is not stored
+in the application database or logs by the extraction workflow.
+Extracted claims and `unmapped_data` are not written by this command yet; that
+requires wiring the persistence coordinator into a workflow with a document
+and candidate owner.
+
+To inspect occurrences written by the document-processing worker, replace the
+UUID and run this read-only query in PostgreSQL:
+
+```sql
+select
+  c.claim_id,
+  c.claim_type,
+  c.status,
+  so.anchor_key,
+  so.source_references,
+  so.field_names,
+  so.anchor
+from source_occurrences so
+join claims c on c.claim_id = so.claim_id
+where so.document_id = '00000000-0000-0000-0000-000000000000'::uuid
+order by c.created_at, so.anchor_key;
+```

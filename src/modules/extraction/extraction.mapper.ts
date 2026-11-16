@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   certificationValuesSchema,
   createCandidateBodySchema,
@@ -10,6 +11,7 @@ import {
 import { InvalidAiOutputError } from './extraction.errors.js';
 import {
   AI_OUTPUT_VERSION,
+  CLAIM_TYPES,
   ClaimType,
   ExtractedClaim,
   ExtractedField,
@@ -74,10 +76,27 @@ export interface UnmappedItem {
   reason: string;
 }
 
+export interface ExtractionReviewIssue {
+  field: string | null;
+  code: string;
+  required: boolean;
+}
+
+// A recognized claim that needs a person to complete or correct it before it
+// can safely enter the canonical claims tables.
+export interface ExtractionReviewItemDraft {
+  claimType: ClaimType;
+  fields: Record<string, unknown>;
+  issues: ExtractionReviewIssue[];
+  sources: string[];
+  fingerprint: string;
+}
+
 export interface MappingResult {
   version: number;
   profile: ProfileDraft;
   claims: ClaimDraft[];
+  reviewItems: ExtractionReviewItemDraft[];
   unmapped: UnmappedItem[];
 }
 
@@ -135,9 +154,17 @@ const PROFILE_VALIDATORS = {
   profileLink: validatorFor(profileProperties.profileLinks.items)
 };
 
-// Year and month only, as manual claims require. A year alone is not enough,
+// Dates keep the precision supplied by the source. A year is valid on its own,
 // and no month is invented.
-const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const CLAIM_DATE = /^\d{4}(-(0[1-9]|1[0-2]))?$/;
+
+function dateLowerBound(value: string): string {
+  return value.length === 4 ? `${value}-01` : value;
+}
+
+function dateUpperBound(value: string): string {
+  return value.length === 4 ? `${value}-12` : value;
+}
 
 function toSnakeCase(fieldName: string): string {
   return fieldName.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
@@ -145,6 +172,26 @@ function toSnakeCase(fieldName: string): string {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+// References are copied as complete tokens from compact AI input. Keeping
+// ranges opaque avoids accepting a range or block row that was never supplied
+// to the provider.
+const AI_INPUT_REFERENCE = /^(?:## )?(L\d+(?:-\d+)?(?:,\d+(?:-\d+)?)?|B\d+(?:\.\d+)?)\s/;
+
+export function collectAiInputReferences(input: string): ReadonlySet<string> {
+  const references = new Set<string>();
+  for (const line of input.split('\n')) {
+    const reference = AI_INPUT_REFERENCE.exec(line)?.[1];
+    if (reference) {
+      references.add(reference);
+    }
+  }
+  return references;
+}
+
+function sourcesExist(sources: string[], availableSources?: ReadonlySet<string>): boolean {
+  return availableSources === undefined || sources.every((source) => availableSources.has(source));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -192,52 +239,65 @@ function describeField(field: ExtractedField): string {
   return field.raw ?? strings(field.value).join(', ');
 }
 
-function unmappedClaim(claim: ExtractedClaim, reason: string): UnmappedItem {
-  const fields = Object.values(claim.fields);
-  return {
-    label: claim.type,
-    text: fields.map(describeField).filter(Boolean).join('; '),
-    sources: unique(fields.flatMap((field) => field.sources)),
-    reason
-  };
-}
-
 function trimmed(value: string | string[]): string | string[] {
   return typeof value === 'string' ? value.trim() : value.map((item) => item.trim());
 }
 
 interface ClaimMapping {
   draft: ClaimDraft | null;
-  unmapped: UnmappedItem[];
+  reviewItems: ExtractionReviewItemDraft[];
 }
 
-function unmappedField(
-  claim: ExtractedClaim,
-  fieldName: string,
-  field: ExtractedField,
-  reason: string
-): UnmappedItem {
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function reviewItem(
+  claimType: ClaimType,
+  fields: Record<string, unknown>,
+  issues: ExtractionReviewIssue[]
+): ExtractionReviewItemDraft {
+  const sources = unique(
+    fieldsOf({ fields }).flatMap((field) => strings(field.sources))
+  );
   return {
-    label: `${claim.type}.${fieldName}`,
-    text: describeField(field),
-    sources: field.sources,
-    reason
+    claimType,
+    fields,
+    issues,
+    sources,
+    fingerprint: createHash('sha256')
+      .update(canonicalJson({ claimType, fields }))
+      .digest('hex')
   };
 }
 
 // An invalid optional field is set aside on its own and the claim keeps its
 // other fields. An invalid or missing required field rejects the whole claim,
 // because a claim cannot exist without it.
-function mapClaim(claim: ExtractedClaim): ClaimMapping {
+function mapClaim(claim: ExtractedClaim, availableSources?: ReadonlySet<string>): ClaimMapping {
   const rules = CLAIM_RULES[claim.type];
   const kept = new Map<string, ExtractedField>();
   const values: DraftValues = {};
-  const setAside: UnmappedItem[] = [];
+  const issues: ExtractionReviewIssue[] = [];
   let current = false;
 
-  const rejectClaim = (reason: string): ClaimMapping => ({
+  const rejectClaim = (field: string | null, code: string): ClaimMapping => ({
     draft: null,
-    unmapped: [unmappedClaim(claim, reason)]
+    reviewItems: [
+      reviewItem(claim.type, claim.fields, [
+        ...issues,
+        { field, code, required: field !== null && rules.required.includes(field) }
+      ])
+    ]
   });
   // Returns false when the field is required, so the whole claim is rejected.
   const setFieldAside = (fieldName: string, reason: string): boolean => {
@@ -245,13 +305,19 @@ function mapClaim(claim: ExtractedClaim): ClaimMapping {
     if (rules.required.includes(fieldName) || !field) {
       return false;
     }
-    setAside.push(unmappedField(claim, fieldName, field, reason));
+    issues.push({ field: fieldName, code: reason, required: false });
     kept.delete(fieldName);
     delete values[fieldName];
     return true;
   };
 
   for (const [fieldName, field] of Object.entries(claim.fields)) {
+    if (!sourcesExist(field.sources, availableSources)) {
+      if (!setFieldAside(fieldName, 'invalid_source')) {
+        return rejectClaim(fieldName, 'invalid_source');
+      }
+      continue;
+    }
     if (rules.dates?.[1] === fieldName && field.current) {
       current = true;
       kept.set(fieldName, field);
@@ -263,10 +329,10 @@ function mapClaim(claim: ExtractedClaim): ClaimMapping {
       }
       continue;
     }
-    const isMonth = typeof field.value === 'string' && MONTH.test(field.value);
-    if (rules.dates?.includes(fieldName) && !isMonth) {
+    const isDate = typeof field.value === 'string' && CLAIM_DATE.test(field.value);
+    if (rules.dates?.includes(fieldName) && !isDate) {
       if (!setFieldAside(fieldName, 'invalid_date')) {
-        return rejectClaim('invalid_date');
+        return rejectClaim(fieldName, 'invalid_date');
       }
       continue;
     }
@@ -276,24 +342,31 @@ function mapClaim(claim: ExtractedClaim): ClaimMapping {
 
   const missing = rules.required.find((fieldName) => values[fieldName] === undefined);
   if (missing) {
-    return rejectClaim(`missing_${toSnakeCase(missing)}`);
+    return rejectClaim(missing, `missing_${toSnakeCase(missing)}`);
   }
 
-  // YYYY-MM strings sort chronologically. The end date is always optional.
+  // A year-only end spans through December, while a year-only start begins in
+  // January. Reject only a range that cannot be chronologically valid.
   const [start, end] = rules.dates ?? [];
   const startDate = start ? values[start] : undefined;
   const endDate = end ? values[end] : undefined;
-  if (end && typeof startDate === 'string' && typeof endDate === 'string' && endDate < startDate) {
+  if (
+    end &&
+    typeof startDate === 'string' &&
+    typeof endDate === 'string' &&
+    dateUpperBound(endDate) < dateLowerBound(startDate)
+  ) {
     setFieldAside(end, 'invalid_date_order');
   }
 
   const check = rules.validateValues(values);
   if (!check.valid) {
     if (!check.fields.every((fieldName) => setFieldAside(fieldName, 'invalid_value'))) {
-      return rejectClaim('invalid_value');
+      const requiredField = check.fields.find((fieldName) => rules.required.includes(fieldName));
+      return rejectClaim(requiredField ?? null, 'invalid_value');
     }
     if (!rules.validateValues(values).valid) {
-      return rejectClaim('invalid_value');
+      return rejectClaim(null, 'invalid_value');
     }
   }
 
@@ -323,16 +396,32 @@ function mapClaim(claim: ExtractedClaim): ClaimMapping {
         keptFields.map(([fieldName, field]) => [fieldName, field.sources])
       )
     },
-    unmapped: setAside
+    reviewItems: issues.length > 0 ? [reviewItem(claim.type, claim.fields, issues)] : []
   };
 }
 
-function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): ProfileDraft {
+function mapProfile(
+  profile: ExtractedProfile,
+  unmapped: UnmappedItem[],
+  availableSources?: ReadonlySet<string>
+): ProfileDraft {
   const draft: ProfileDraft = { values: {}, rawValues: {}, confidence: {}, sources: {} };
 
   for (const fieldName of PROFILE_TEXT_FIELDS) {
     const field = profile[fieldName];
-    if (!field || field.value === undefined) {
+    if (!field) {
+      continue;
+    }
+    if (!sourcesExist(field.sources, availableSources)) {
+      unmapped.push({
+        label: `profile.${fieldName}`,
+        text: describeField(field),
+        sources: field.sources,
+        reason: 'invalid_source'
+      });
+      continue;
+    }
+    if (field.value === undefined) {
       continue;
     }
     const value = typeof field.value === 'string' ? field.value.trim() : field.value;
@@ -354,6 +443,15 @@ function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): Profil
   }
 
   for (const link of profile.links ?? []) {
+    if (!sourcesExist(link.sources, availableSources)) {
+      unmapped.push({
+        label: 'profile.links',
+        text: describeField(link),
+        sources: link.sources,
+        reason: 'invalid_source'
+      });
+      continue;
+    }
     const label = link.raw?.trim();
     const url = typeof link.value === 'string' ? link.value.trim() : '';
     if (!label || !PROFILE_VALIDATORS.profileLink({ label, url }).valid) {
@@ -379,7 +477,10 @@ function mapProfile(profile: ExtractedProfile, unmapped: UnmappedItem[]): Profil
 // Turns an AI output into pending claim drafts, a profile draft, and unmapped
 // items. Each item is checked on its own, so an invalid item never rejects the
 // others; only an unreadable output as a whole is rejected.
-export function mapAiOutput(output: unknown): MappingResult {
+export function mapAiOutput(
+  output: unknown,
+  availableSources?: ReadonlySet<string>
+): MappingResult {
   const envelope = validateEnvelope(output);
   if (!envelope.valid || !isRecord(output)) {
     throw new InvalidAiOutputError(
@@ -390,37 +491,56 @@ export function mapAiOutput(output: unknown): MappingResult {
 
   const unmapped: UnmappedItem[] = [];
   const claims: ClaimDraft[] = [];
+  const reviewItems: ExtractionReviewItemDraft[] = [];
 
   let profile: ProfileDraft = { values: {}, rawValues: {}, confidence: {}, sources: {} };
   if (output.profile !== undefined) {
     if (validateProfile(output.profile).valid) {
-      profile = mapProfile(output.profile as ExtractedProfile, unmapped);
+      profile = mapProfile(output.profile as ExtractedProfile, unmapped, availableSources);
     } else {
       unmapped.push(describeInvalid('profile', output.profile, 'invalid_item'));
     }
   }
 
   for (const item of output.claims as unknown[]) {
-    if (!validateClaim(item).valid) {
+    const validation = validateClaim(item);
+    if (!validation.valid) {
       const label = isRecord(item) && typeof item.type === 'string' ? item.type : 'unknown';
-      unmapped.push(describeInvalid(label, item, 'invalid_item'));
+      const recognizedType = CLAIM_TYPES.find((claimType) => claimType === label);
+      if (recognizedType && isRecord(item) && isRecord(item.fields)) {
+        reviewItems.push(
+          reviewItem(recognizedType, item.fields, [
+            { field: null, code: 'invalid_item', required: false }
+          ])
+        );
+      } else {
+        unmapped.push(describeInvalid(label, item, 'invalid_item'));
+      }
       continue;
     }
-    const { draft, unmapped: setAside } = mapClaim(item as ExtractedClaim);
+    const { draft, reviewItems: claimReviewItems } = mapClaim(
+      item as ExtractedClaim,
+      availableSources
+    );
     if (draft) {
       claims.push(draft);
     }
-    unmapped.push(...setAside);
+    reviewItems.push(...claimReviewItems);
   }
 
   for (const item of (output.unmapped ?? []) as unknown[]) {
     if (validateUnmapped(item).valid) {
       const { label, text, sources } = item as ExtractedUnmapped;
-      unmapped.push({ label, text, sources, reason: 'unsupported_section' });
+      unmapped.push({
+        label,
+        text,
+        sources,
+        reason: sourcesExist(sources, availableSources) ? 'unsupported_section' : 'invalid_source'
+      });
     } else {
       unmapped.push(describeInvalid('unmapped', item, 'invalid_item'));
     }
   }
 
-  return { version: AI_OUTPUT_VERSION, profile, claims, unmapped };
+  return { version: AI_OUTPUT_VERSION, profile, claims, reviewItems, unmapped };
 }

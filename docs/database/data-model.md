@@ -51,6 +51,11 @@ erDiagram
         claim_type claim_type
         claim_origin origin
         claim_status status
+        uuid extraction_invocation_id "nullable"
+        uuid extraction_document_id "nullable"
+        jsonb extraction_raw_values "nullable"
+        jsonb extraction_field_sources "nullable"
+        boolean extraction_current "nullable"
         integer version
         timestamptz created_at
         timestamptz updated_at
@@ -64,7 +69,9 @@ erDiagram
         text employer
         text job_title
         date start_date
+        claim_date_precision start_date_precision
         date end_date "nullable"
+        claim_date_precision end_date_precision "nullable"
         text location "nullable"
         text description "nullable"
         text[] skills
@@ -75,14 +82,18 @@ erDiagram
         text degree
         text field_of_study "nullable"
         date start_date
+        claim_date_precision start_date_precision
         date end_date "nullable"
+        claim_date_precision end_date_precision "nullable"
     }
     CERTIFICATION_DETAILS {
         uuid claim_id PK, FK
         text title
         text issuer
         date issue_date
+        claim_date_precision issue_date_precision
         date expiry_date "nullable"
+        claim_date_precision expiry_date_precision "nullable"
         text credential_id "nullable"
     }
     LANGUAGE_DETAILS {
@@ -97,7 +108,9 @@ erDiagram
         text role "nullable"
         text url "nullable"
         date start_date "nullable"
+        claim_date_precision start_date_precision "nullable"
         date end_date "nullable"
+        claim_date_precision end_date_precision "nullable"
         text[] skills
     }
     CANONICAL_TERMS {
@@ -164,6 +177,21 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    EXTRACTION_REVIEW_ITEMS {
+        uuid review_item_id PK
+        uuid document_id FK
+        uuid extraction_invocation_id
+        text claim_type
+        jsonb fields
+        jsonb issues
+        text[] sources
+        text fingerprint
+        extraction_review_status status
+        uuid resolved_claim_id "nullable, FK, UK"
+        integer version
+        timestamptz created_at
+        timestamptz updated_at
+    }
     DOCUMENT_PROCESSING_JOBS {
         uuid job_id PK
         uuid document_id FK
@@ -175,11 +203,30 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    LLM_INVOCATIONS {
+        uuid invocation_id PK
+        uuid operation_id
+        text task
+        text provider
+        text model
+        text prompt_version
+        integer contract_version
+        llm_invocation_status status
+        text provider_request_id "nullable"
+        integer input_tokens "nullable"
+        integer output_tokens "nullable"
+        text error_category "nullable"
+        text error_code "nullable"
+        timestamptz started_at
+        timestamptz completed_at "nullable"
+    }
 
     USERS ||--|| AUTH_TOKEN_VERSIONS : owns
     USERS ||--o| CANDIDATES : "has profile"
     USERS ||--o{ DOCUMENTS : owns
     DOCUMENTS ||--o| DOCUMENT_EXTRACTIONS : "extracted into"
+    DOCUMENTS ||--o{ EXTRACTION_REVIEW_ITEMS : "has review items"
+    CLAIMS |o--o| EXTRACTION_REVIEW_ITEMS : "resolves from"
     DOCUMENTS ||--o{ DOCUMENT_PROCESSING_JOBS : schedules
     CANDIDATES ||--o{ CLAIMS : has
     CLAIMS ||--o| SKILL_DETAILS : "type skill"
@@ -268,6 +315,12 @@ by the candidate are stored as `manual` and `accepted`. Only accepted claims
 appear in the exported profile; pending and rejected claims are excluded.
 Claims cascade on profile deletion.
 
+Creating a claim and its type-specific details is atomic. The candidates
+repository can join a caller-owned transaction, allowing extraction to save
+multiple claims, their physical source occurrences, and document
+`unmapped_data` as one unit; manual creation uses its own transaction with
+transient-failure retries.
+
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |
 | `claim_id` | UUID | Primary key, generated | Stable claim identifier |
@@ -275,9 +328,40 @@ Claims cascade on profile deletion.
 | `claim_type` | `claim_type` | Required | Kind of profile information |
 | `origin` | `claim_origin` | Required | Whether the candidate entered or extraction produced the claim |
 | `status` | `claim_status` | Required, defaults to `pending` | Review state; only `accepted` is exported |
+| `extraction_invocation_id` | UUID | Required for extracted claims; null for manual claims | LLM invocation that produced the draft |
+| `extraction_document_id` | UUID | Required on new extracted claims; nullable for legacy rows; null for manual claims | Source document that produced the draft |
+| `extraction_raw_values` | JSONB | Required for extracted claims; null for manual claims | Original wording for normalized fields |
+| `extraction_field_sources` | JSONB | Required for extracted claims; null for manual claims | AI-input references supporting each field |
+| `extraction_current` | Boolean | Required for extracted claims; null for manual claims | Whether the source explicitly described the claim as current |
 | `version` | Integer | Required, defaults to `1` | Increases on every value change; an edit or delete sent with an older version in `If-Match` is refused |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last value change |
+
+`extraction_document_id` is intentionally not a foreign key until document
+deletion semantics for reviewed claims are defined. New application writes
+always provide it; older extracted claims remain readable with a null value.
+
+## Source occurrences
+
+Owned by the `candidates` module and defined in
+`src/modules/candidates/candidates.table.ts`.
+
+`source_occurrences` links a newly extracted claim to the exact stored PDF line,
+DOCX paragraph, or DOCX table row cited by the LLM. It stores physical evidence
+only: inferred headings, section ownership, region roles, and semantic-support
+decisions are deliberately excluded. Replacing a pending claim deletes its
+occurrences through the claim foreign key. Deleting the source document removes
+its occurrences without deleting a reviewed claim.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `occurrence_id` | UUID | Primary key, generated | Stable occurrence identifier |
+| `claim_id` | UUID | Required, claim FK, cascade delete | Extracted claim supported by this evidence |
+| `document_id` | UUID | Required, document FK, cascade delete, indexed | Physical source document |
+| `anchor_key` | Text | Required, nonblank, unique per claim | Deterministic physical identity such as a PDF page/line or DOCX block/row |
+| `source_references` | Text array | Required, nonempty | Exact compact-input tokens that resolved to this anchor |
+| `field_names` | Text array | Required, nonempty | Claim fields supported by the citation |
+| `anchor` | JSONB | Required | Original physical anchor: PDF page, line order, coordinates, text and links; DOCX paragraph text and links; or DOCX table cells |
 
 ## Claim details
 
@@ -289,9 +373,14 @@ claim foreign key, and rows cascade on claim deletion. Real columns, rather
 than generic JSON values, let profile search query and index claim data
 directly, such as finding candidates with a given skill.
 
-The API exchanges dates as `YYYY-MM`. The database stores them as `date` values
-on the first day of the month, so durations can be calculated and records can
-be sorted by date. Optional fields are omitted from API values when empty.
+The API exchanges dates as `YYYY` or `YYYY-MM`, preserving the precision stated
+by the candidate or CV. The database stores a `date` plus a precision column.
+Month values use the first day of that month. A year-only start or issue date
+uses January 1, while a year-only end or expiry date uses December 1; the
+precision column makes this storage boundary reversible and prevents those
+sentinel months from being exposed as source facts. Dates remain sortable and
+range constraints remain enforceable. Optional fields are omitted from API
+values when empty.
 
 ### `skill_details`
 
@@ -307,8 +396,10 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
 | `employer` | Text | Required | Employer name |
 | `job_title` | Text | Required | Job title |
-| `start_date` | Date | Required | First month of employment |
-| `end_date` | Date | Nullable, not before `start_date` | Last month; null for a current role |
+| `start_date` | Date | Required | Stored lower date bound for employment |
+| `start_date_precision` | `claim_date_precision` | Required | Whether the source supplied a year or month |
+| `end_date` | Date | Nullable, not before `start_date` | Stored upper date bound; null when absent |
+| `end_date_precision` | `claim_date_precision` | Null exactly when `end_date` is null | Whether the source supplied a year or month |
 | `location` | Text | Nullable | Work location, such as "Remote" |
 | `description` | Text | Nullable | Role description |
 | `skills` | Text array | Required, defaults to empty, GIN indexed | Skills used in the role |
@@ -321,8 +412,10 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `institution` | Text | Required | Educational institution |
 | `degree` | Text | Required | Degree, such as "BSc" |
 | `field_of_study` | Text | Nullable | Field of study |
-| `start_date` | Date | Required | First month of study |
-| `end_date` | Date | Nullable, not before `start_date` | Last month; null while studying |
+| `start_date` | Date | Required | Stored lower date bound for study |
+| `start_date_precision` | `claim_date_precision` | Required | Whether the source supplied a year or month |
+| `end_date` | Date | Nullable, not before `start_date` | Stored upper date bound; null when absent |
+| `end_date_precision` | `claim_date_precision` | Null exactly when `end_date` is null | Whether the source supplied a year or month |
 
 ### `certification_details`
 
@@ -331,8 +424,10 @@ be sorted by date. Optional fields are omitted from API values when empty.
 | `claim_id` | UUID | Primary key, claim FK, cascade delete | Owning claim |
 | `title` | Text | Required | Certificate title |
 | `issuer` | Text | Required | Issuing organization |
-| `issue_date` | Date | Required | Issue month |
-| `expiry_date` | Date | Nullable, not before `issue_date` | Expiry month |
+| `issue_date` | Date | Required | Stored lower date bound for issue date |
+| `issue_date_precision` | `claim_date_precision` | Required | Whether the source supplied a year or month |
+| `expiry_date` | Date | Nullable, not before `issue_date` | Stored upper date bound for expiry date |
+| `expiry_date_precision` | `claim_date_precision` | Null exactly when `expiry_date` is null | Whether the source supplied a year or month |
 | `credential_id` | Text | Nullable | Issuer credential identifier |
 
 ### `language_details`
@@ -354,8 +449,10 @@ Many CVs list projects without dates, so both dates are optional.
 | `description` | Text | Nullable | What the project does |
 | `role` | Text | Nullable | The candidate's role, such as "Backend developer" |
 | `url` | Text | Nullable, valid URL | Project or repository link |
-| `start_date` | Date | Nullable | First month of the project |
-| `end_date` | Date | Nullable, not before `start_date` when both are set | Last month |
+| `start_date` | Date | Nullable | Stored lower date bound for the project |
+| `start_date_precision` | `claim_date_precision` | Null exactly when `start_date` is null | Whether the source supplied a year or month |
+| `end_date` | Date | Nullable, not before `start_date` when both are set | Stored upper date bound |
+| `end_date_precision` | `claim_date_precision` | Null exactly when `end_date` is null | Whether the source supplied a year or month |
 | `skills` | Text array | Required, defaults to empty, GIN indexed | Skills used in the project |
 
 ## Claim revisions
@@ -363,7 +460,7 @@ Many CVs list projects without dates, so both dates are optional.
 Owned by the `candidates` module.
 
 Before a claim's details are edited, its previous values are archived in
-`claim_revisions` in the API shape (camelCase fields, `YYYY-MM` dates). The
+`claim_revisions` in the API shape (camelCase fields, `YYYY` or `YYYY-MM` dates). The
 details tables therefore always hold current values, and the oldest revision of
 an edited claim holds its original values. Unchanged edits create no revision.
 Revisions are not searched and cascade on claim deletion.
@@ -381,6 +478,7 @@ Revisions are not searched and cascade on claim deletion.
   `language`, `project`
 - `claim_origin`: `manual`, `extracted`
 - `claim_status`: `pending`, `accepted`, `rejected`
+- `claim_date_precision`: `year`, `month`
 
 ## Normalization
 
@@ -429,12 +527,36 @@ value is not repeated.
 | `claim_id` | UUID | Required, claim FK, cascade delete, indexed with `created_at` | Normalized claim |
 | `term_id` | UUID | Nullable, canonical term FK, set null on delete | Chosen term; null when unmatched or ambiguous |
 | `original_value` | Text | Required | The claim value that was normalized |
-| `method` | `normalization_method` | Nullable | How the term was found; null when unmatched |
-| `confidence_score` | Numeric(3, 2) | Nullable | `1` for an exact match; null otherwise |
-| `actor_type` | `actor_type` | Required | Who decided; `system` for automatic matching |
-| `rule_version` | Text | Required | Matching rules used, such as `exact-v1` |
+| `method` | `normalization_method` | Nullable | How the term was found; null when exact and spelling matching found nothing |
+| `confidence_score` | Numeric(3, 2) | Nullable | `1` for an exact match, below `1` for a spelling or AI match; null when not matched |
+| `actor_type` | `actor_type` | Required | Who decided: `system` for exact and spelling matching, `ai` for AI matching |
+| `rule_version` | Text | Required | `fuzzy-v1` for exact and spelling matching; the AI prompt version, such as `normalization-match-v1`, for AI matching |
 | `status` | `normalization_status` | Required | `matched`, `unmatched`, or `ambiguous` |
 | `created_at` | Timestamp with time zone | Required, generated | Decision time |
+
+### `normalization_ai_requests`
+
+Values that exact and spelling matching could not link, waiting for the AI.
+The worker processes them in the background. A claim has at most one active
+request (`queued` or `processing`), enforced by the partial unique index
+`normalization_ai_requests_active_claim_unique`. Requests cascade on claim
+deletion. See [Normalization](../modules/normalization.md#ai-matching).
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `request_id` | UUID | Primary key, generated | Request identifier |
+| `claim_id` | UUID | Required, claim FK, cascade delete | Claim whose value is matched |
+| `category` | `canonical_category` | Required | Category of the value |
+| `original_value` | Text | Required | Value to match; the request applies only while the claim still has it |
+| `context` | JSONB | Required, defaults to `{}` | The claim's other fields, given to the AI |
+| `preferred_term_ids` | JSONB | Required, defaults to `[]` | Terms spelling matching found equally close, offered first |
+| `status` | `normalization_ai_request_status` | Required, defaults to `queued`, indexed with `available_at` | Request lifecycle |
+| `attempt_count` | Integer | Required, defaults to `0` | Increases with each claim; writes by an older claim are refused |
+| `failure_code` | Text | Nullable | Reason for the last retry or the failure, such as `rate_limited` |
+| `available_at` | Timestamp with time zone | Required, generated | Earliest time the request may run |
+| `locked_until` | Timestamp with time zone | Nullable | Processing lease expiration |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Last update |
 
 ### Normalization enumerations
 
@@ -446,9 +568,12 @@ value is not repeated.
 - `normalization_method`: `canonical`, `alias`, `fuzzy`, `ai`, `candidate`
 - `normalization_status`: `matched`, `unmatched`, `ambiguous`
 - `actor_type`: `system`, `ai`, `candidate`, `reviewer`
+- `normalization_ai_request_status`: `queued`, `processing`, `completed`,
+  `failed`, `superseded`
 
-Values that the first version does not use are defined for the later matching
-steps of the requirements.
+`candidate`-scoped aliases, `candidate` and `reviewer` origins, the `candidate`
+method, and the `candidate` and `reviewer` actors are defined for the later
+matching steps of the requirements.
 
 ## Documents
 
@@ -511,19 +636,50 @@ are refused. Deleting a document deletes its processing history.
 - `processing_job_status`: `queued`, `processing`, `retrying`, `completed`,
   `failed`
 
+## LLM invocations
+
+Owned by the shared LLM infrastructure and defined in
+`src/infrastructure/llm/llm.table.ts`.
+
+`llm_invocations` records safe metadata for each actual provider request.
+`operation_id` groups retries for one logical feature action without creating
+a foreign-key dependency on a processing job or feature table. Prompts,
+document content, raw responses, credentials, and feature results are not
+stored here.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `invocation_id` | UUID | Primary key, generated | Stable identifier for one provider request |
+| `operation_id` | UUID | Required, indexed | Groups provider requests for one logical action |
+| `task` | Text | Required, indexed with start time | Feature-owned task name |
+| `provider` | Text | Required, unique with a present provider request ID | Configured provider |
+| `model` | Text | Required | Configured provider model |
+| `prompt_version` | Text | Required | Feature-owned prompt version |
+| `contract_version` | Integer | Required, positive | Feature output contract version |
+| `status` | `llm_invocation_status` | Required, defaults to `started` | Provider-call lifecycle state |
+| `provider_request_id` | Text | Nullable, unique per provider when present | Provider-side request identifier |
+| `input_tokens` | Integer | Nullable, nonnegative | Provider-reported input token count |
+| `output_tokens` | Integer | Nullable, nonnegative | Provider-reported output token count |
+| `error_category` | Text | Nullable | Safe application error category |
+| `error_code` | Text | Nullable | Safe provider or application error code |
+| `started_at` | Timestamp with time zone | Required, generated | Request start time |
+| `completed_at` | Timestamp with time zone | Nullable, not before start | Request completion time |
+
+### LLM invocation enumeration
+
+- `llm_invocation_status`: `started`, `succeeded`, `failed`
+
 ### Not yet implemented
 
 The [target domain ERD](erd.md) includes claim details that belong to later
 features and are intentionally not part of the current schema:
 
 - `claims.confidence_score`, `claims.matched_claim_id`, and
-  `claims.match_status` arrive with extraction and duplicate matching.
+  `claims.match_status` arrive only when review prioritization and duplicate
+  matching have a concrete consumer. Model confidence remains transient.
 - Field-level validation flags for low-confidence extracted values, previously
   modeled as `ClaimValueHistory.validation_status`, are left to the extraction
   review feature to place.
-- `source_occurrences`, which links extracted claims to their source document
-  and location, arrives with document upload and parsing. Exported claims
-  already include an empty `sources` array for these references.
 
 ## Document extractions
 
@@ -562,7 +718,7 @@ erDiagram
 | `page_count` | Integer | Nullable, positive | PDF page count; null for DOCX or unopened files |
 | `content` | JSONB | Required | `{ version, pages, blocks }`, described below |
 | `failures` | JSONB | Required, defaults to `[]` | Failed pages or file with an error code, such as `NO_TEXT_LAYER` or `UNSUPPORTED_LANGUAGE` |
-| `unmapped_data` | JSONB | Required, defaults to `[]` | Information outside the profile schema, such as courses or awards, or items that could not become claims; filled by the AI-output mapping |
+| `unmapped_data` | JSONB | Required, defaults to `[]` | Latest successful AI-extraction snapshot of information outside the profile schema or items that could not become claims; replaced on re-extraction, including with `[]` |
 | `parser_version` | Text | Required | Library and version that produced the result |
 | `created_at` | Timestamp with time zone | Required, generated | First extraction time |
 | `updated_at` | Timestamp with time zone | Required, generated | Latest extraction time |
@@ -598,6 +754,31 @@ references (such as `L12` or `B3`), and a `reason`, such as
 `unsupported_section` or `missing_start_date`. The parser does not fill it, and
 parsing a document again does not clear it yet; that is decided with the
 AI-output mapping.
+
+## Extraction review items
+
+Owned by the `extraction` module and defined in
+`src/modules/extraction/extraction-review.table.ts`.
+
+`extraction_review_items` retains supported claim types that cannot safely be
+written to canonical claim tables. Re-extraction deletes and replaces only the
+document's `pending` items; `resolved` and `dismissed` rows remain.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `review_item_id` | UUID | Primary key, generated | Stable review item identifier |
+| `document_id` | UUID | Required, document FK, cascade delete | Source document and ownership path |
+| `extraction_invocation_id` | UUID | Required | LLM invocation that produced the item |
+| `claim_type` | Text | Required, supported claim type check | Intended canonical claim type |
+| `fields` | JSONB | Required | Original structured extracted fields, including raw text and evidence |
+| `issues` | JSONB | Required, nonempty array | Field, code, and required flag for each mapping problem |
+| `sources` | Text array | Required | Combined AI-input evidence references |
+| `fingerprint` | Text | Required, nonblank | Deterministic identity of the extracted claim content |
+| `status` | `extraction_review_status` | Required, defaults to `pending` | Review lifecycle: `pending`, `resolved`, or `dismissed` |
+| `resolved_claim_id` | UUID | Nullable, unique claim FK, set null on claim deletion | Accepted claim created from the corrected item |
+| `version` | Integer | Required, defaults to 1 | Optimistic version for dismissal and resolution |
+| `created_at` | Timestamp with time zone | Required, generated | Creation time |
+| `updated_at` | Timestamp with time zone | Required, generated | Latest update time |
 
 ## Maintenance rules
 

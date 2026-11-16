@@ -6,12 +6,22 @@ import type {
 } from '../../infrastructure/database/unit-of-work.js';
 import type { ProcessingDocumentsService } from '../documents/index.js';
 import type { DocumentRecord } from '../documents/documents.repository.js';
+import {
+  InvalidExtractionProvenanceError,
+  SourceReferenceResolutionError,
+  type CandidateExtractionResult,
+  type CandidateExtractionService,
+  type ExtractionPersistenceCoordinator
+} from '../extraction/index.js';
 import type { ParsingService } from '../parsing/index.js';
 import type { ExtractionRecord } from '../parsing/parsing.repository.js';
 import type { ExtractionResult } from '../parsing/parsing.types.js';
 import type { ProcessingJobRecord } from './document-processing.repository.js';
 import type { DocumentProcessingService } from './document-processing.service.js';
-import { createParseDocumentHandler } from './parse-document.handler.js';
+import {
+  createParseDocumentHandler as createHandlerImplementation,
+  type ParseDocumentHandlerDependencies
+} from './parse-document.handler.js';
 import type { ParseDocumentJob } from './parse-document.job.js';
 
 const job: ParseDocumentJob = {
@@ -93,6 +103,17 @@ function createResult(
   };
 }
 
+function createCandidateExtractionResult(): CandidateExtractionResult {
+  return {
+    invocationId: '55555555-5555-4555-8555-555555555555',
+    version: 1,
+    profile: { values: {}, rawValues: {}, confidence: {}, sources: {} },
+    claims: [],
+    reviewItems: [],
+    unmapped: []
+  };
+}
+
 // Records every write so a test can check the order and that each write used
 // the transaction.
 function createRecorder() {
@@ -165,6 +186,41 @@ function failingParser(error = new Error('parser failed')): ParsingDouble {
   return parsingThat(vi.fn().mockRejectedValue(error));
 }
 
+type HandlerDependencies = Omit<
+  ParseDocumentHandlerDependencies,
+  'candidateExtractionService' | 'extractionPersistenceCoordinator'
+> &
+  Partial<
+    Pick<
+      ParseDocumentHandlerDependencies,
+      'candidateExtractionService' | 'extractionPersistenceCoordinator'
+    >
+  >;
+
+function createParseDocumentHandler(
+  dependencies: HandlerDependencies
+) {
+  const {
+    candidateExtractionService = {
+      extract: vi
+        .fn<CandidateExtractionService['extract']>()
+        .mockResolvedValue(createCandidateExtractionResult())
+    },
+    extractionPersistenceCoordinator = {
+      persist: vi
+        .fn<ExtractionPersistenceCoordinator['persist']>()
+        .mockResolvedValue([])
+    },
+    ...handlerDependencies
+  } = dependencies;
+
+  return createHandlerImplementation({
+    ...handlerDependencies,
+    candidateExtractionService,
+    extractionPersistenceCoordinator
+  });
+}
+
 describe('parse document handler', () => {
   it('parses outside the transaction and finishes inside it', async () => {
     const { operations, record } = createRecorder();
@@ -188,9 +244,18 @@ describe('parse document handler', () => {
       parse: vi.fn(record('parse', result)),
       saveExtraction: vi.fn(record('save', createExtraction()))
     };
+    const candidateExtraction = createCandidateExtractionResult();
+    const candidateExtractionService = {
+      extract: vi.fn(record('extract', candidateExtraction))
+    };
+    const extractionPersistenceCoordinator = {
+      persist: vi.fn(record('persist', []))
+    };
     const handler = createParseDocumentHandler({
       documentsService,
       parsingService,
+      candidateExtractionService,
+      extractionPersistenceCoordinator,
       processingService,
       unitOfWork: createUnitOfWork(operations)
     });
@@ -203,11 +268,14 @@ describe('parse document handler', () => {
       'claim',
       'mark-processing',
       'parse',
+      'extract',
       'begin',
       'lock',
       'lock:in-transaction',
       'save',
       'save:in-transaction',
+      'persist',
+      'persist:in-transaction',
       'complete',
       'complete:in-transaction',
       'mark-ready',
@@ -221,6 +289,21 @@ describe('parse document handler', () => {
     expect(parsingService.saveExtraction).toHaveBeenCalledWith(
       job.documentId,
       result,
+      transaction
+    );
+    expect(candidateExtractionService.extract).toHaveBeenCalledWith({
+      operationId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      input: ''
+    });
+    expect(extractionPersistenceCoordinator.persist).toHaveBeenCalledWith(
+      {
+        documentId: job.documentId,
+        ownerUserId: createDocument('processing').ownerUserId,
+        result: candidateExtraction,
+        sourceContent: result
+      },
       transaction
     );
     expect(processingService.lockClaim).toHaveBeenCalledWith(claimedJob, transaction);
@@ -244,6 +327,146 @@ describe('parse document handler', () => {
     );
     expect(processingService.retry).not.toHaveBeenCalled();
     expect(processingService.fail).not.toHaveBeenCalled();
+  });
+
+  it('retries without completion writes when candidate extraction fails', async () => {
+    const failure = new Error('candidate extraction failed');
+    const claimedJob = createProcessingJob();
+    const retryingJob = createProcessingJob('retrying');
+    const processingService = createProcessingService(claimedJob);
+    processingService.retry = vi.fn().mockResolvedValue(retryingJob);
+    const documentsService = createDocumentsService();
+    const parsingService = createParsingService();
+    const candidateExtractionService = {
+      extract: vi
+        .fn<CandidateExtractionService['extract']>()
+        .mockRejectedValue(failure)
+    };
+    const extractionPersistenceCoordinator = {
+      persist: vi.fn<ExtractionPersistenceCoordinator['persist']>()
+    };
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      candidateExtractionService,
+      extractionPersistenceCoordinator,
+      processingService,
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'retrying',
+      processingJob: retryingJob
+    });
+    expect(parsingService.saveExtraction).toHaveBeenCalledWith(
+      job.documentId,
+      createResult(),
+      transaction
+    );
+    expect(processingService.retry).toHaveBeenCalledWith(
+      claimedJob,
+      'EXTRACTION_FAILED',
+      transaction
+    );
+    expect(extractionPersistenceCoordinator.persist).not.toHaveBeenCalled();
+    expect(processingService.complete).not.toHaveBeenCalled();
+    expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
+  });
+
+  it('records invalid extraction provenance as a permanent failure', async () => {
+    const claimedJob = createProcessingJob();
+    const failedJob = createProcessingJob('failed');
+    const processingService = createProcessingService(claimedJob);
+    processingService.fail = vi.fn().mockResolvedValue(failedJob);
+    const documentsService = createDocumentsService();
+    const parsingService = createParsingService();
+    const provenanceError = new InvalidExtractionProvenanceError(
+      new Error('conflicting physical anchors')
+    );
+    const extractionPersistenceCoordinator = {
+      persist: vi
+        .fn<ExtractionPersistenceCoordinator['persist']>()
+        .mockRejectedValue(provenanceError)
+    };
+    const unitOfWork = createUnitOfWork();
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      extractionPersistenceCoordinator,
+      processingService,
+      unitOfWork
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'failed',
+      processingJob: failedJob
+    });
+    expect(unitOfWork.run).toHaveBeenCalledTimes(2);
+    expect(parsingService.saveExtraction).toHaveBeenCalledTimes(2);
+    expect(processingService.fail).toHaveBeenCalledWith(
+      claimedJob,
+      'INVALID_EXTRACTION_PROVENANCE',
+      transaction
+    );
+    expect(documentsService.markDocumentFailed).toHaveBeenCalledWith(
+      job.documentId,
+      'INVALID_EXTRACTION_PROVENANCE',
+      transaction
+    );
+    expect(processingService.retry).not.toHaveBeenCalled();
+    expect(processingService.complete).not.toHaveBeenCalled();
+    expect(documentsService.markDocumentReady).not.toHaveBeenCalled();
+  });
+
+  it('retries when AI source references cannot be resolved', async () => {
+    const claimedJob = createProcessingJob();
+    const retryingJob = createProcessingJob('retrying');
+    const processingService = createProcessingService(claimedJob);
+    processingService.retry = vi.fn().mockResolvedValue(retryingJob);
+    const extractionPersistenceCoordinator = {
+      persist: vi
+        .fn<ExtractionPersistenceCoordinator['persist']>()
+        .mockRejectedValue(new SourceReferenceResolutionError(['L99'], []))
+    };
+    const handler = createParseDocumentHandler({
+      documentsService: createDocumentsService(),
+      parsingService: createParsingService(),
+      extractionPersistenceCoordinator,
+      processingService,
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'retrying',
+      processingJob: retryingJob
+    });
+    expect(processingService.retry).toHaveBeenCalledWith(
+      claimedJob,
+      'EXTRACTION_FAILED',
+      transaction
+    );
+    expect(processingService.complete).not.toHaveBeenCalled();
+  });
+
+  it('continues to propagate unknown persistence failures', async () => {
+    const failure = new Error('database unavailable');
+    const processingService = createProcessingService();
+    const extractionPersistenceCoordinator = {
+      persist: vi
+        .fn<ExtractionPersistenceCoordinator['persist']>()
+        .mockRejectedValue(failure)
+    };
+    const handler = createParseDocumentHandler({
+      documentsService: createDocumentsService(),
+      parsingService: createParsingService(),
+      extractionPersistenceCoordinator,
+      processingService,
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).rejects.toBe(failure);
+    expect(processingService.fail).not.toHaveBeenCalled();
+    expect(processingService.retry).not.toHaveBeenCalled();
   });
 
   it('skips an unavailable delivery without touching the document', async () => {

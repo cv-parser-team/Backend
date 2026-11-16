@@ -1,7 +1,13 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
-import { DictionaryLookup, DictionaryTerm } from './normalization.matching.js';
+import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
+import {
+  CanonicalCategory,
+  DictionaryEntry,
+  DictionaryLookup,
+  DictionaryTerm
+} from './normalization.matching.js';
 import { DictionaryWriter } from './normalization.seed.js';
 import { aliases, canonicalTerms, normalizationDecisions } from './normalization.table.js';
 
@@ -12,15 +18,42 @@ export type CreateNormalizationDecisionInput = Omit<
 >;
 
 export interface DecisionStore {
-  saveDecision(input: CreateNormalizationDecisionInput): Promise<NormalizationDecisionRecord>;
+  saveDecision(
+    input: CreateNormalizationDecisionInput,
+    transaction?: DatabaseExecutor
+  ): Promise<NormalizationDecisionRecord>;
   // The newest decision is the claim's current one.
-  findLatestDecision(claimId: string): Promise<NormalizationDecisionRecord | null>;
+  findLatestDecision(
+    claimId: string,
+    transaction?: DatabaseExecutor
+  ): Promise<NormalizationDecisionRecord | null>;
+}
+
+// The dictionary access that AI matching needs.
+export interface AiDictionary {
+  // Active terms of the category, which the AI may choose from.
+  listActiveTerms(category: CanonicalCategory): Promise<DictionaryTerm[]>;
+  // The term an earlier AI match proposed for this spelling, so the same value
+  // is not sent to the AI again while its alias awaits review.
+  findAiProposedTerm(
+    category: CanonicalCategory,
+    matchKey: string
+  ): Promise<DictionaryTerm | null>;
+  // Records the AI's match as a pending global alias for human review. It is
+  // not used by exact matching until a reviewer approves it.
+  proposeAiAlias(
+    termId: string,
+    aliasText: string,
+    matchKey: string,
+    transaction?: DatabaseExecutor
+  ): Promise<void>;
 }
 
 export interface NormalizationRepository
   extends DictionaryLookup,
     DictionaryWriter,
-    DecisionStore {}
+    DecisionStore,
+    AiDictionary {}
 
 const termColumns = {
   termId: canonicalTerms.termId,
@@ -71,6 +104,29 @@ export function createNormalizationRepository(database: AppDatabase): Normalizat
       });
     },
 
+    async listDictionaryEntries(category) {
+      return withDbErrors('Canonical term', async (): Promise<DictionaryEntry[]> => {
+        const [names, approvedAliases] = await Promise.all([
+          database.db
+            .select({ matchKey: canonicalTerms.matchKey, term: termColumns })
+            .from(canonicalTerms)
+            .where(eq(canonicalTerms.category, category)),
+          database.db
+            .select({ matchKey: aliases.matchKey, term: termColumns })
+            .from(aliases)
+            .innerJoin(canonicalTerms, eq(canonicalTerms.termId, aliases.termId))
+            .where(
+              and(
+                eq(aliases.status, 'approved'),
+                eq(aliases.scope, 'global'),
+                eq(canonicalTerms.category, category)
+              )
+            )
+        ]);
+        return [...names, ...approvedAliases];
+      });
+    },
+
     async ensureTerm(category, canonicalName, matchKey) {
       return withDbErrors('Canonical term', async () => {
         const [inserted] = await database.db
@@ -111,9 +167,48 @@ export function createNormalizationRepository(database: AppDatabase): Normalizat
       });
     },
 
-    async saveDecision(input) {
+    async listActiveTerms(category) {
+      return withDbErrors('Canonical term', () =>
+        database.db
+          .select(termColumns)
+          .from(canonicalTerms)
+          .where(and(eq(canonicalTerms.category, category), eq(canonicalTerms.status, 'active')))
+          .orderBy(asc(canonicalTerms.canonicalName))
+      );
+    },
+
+    async findAiProposedTerm(category, matchKey) {
+      return withDbErrors('Alias', async () => {
+        const [term] = await database.db
+          .select(termColumns)
+          .from(aliases)
+          .innerJoin(canonicalTerms, eq(canonicalTerms.termId, aliases.termId))
+          .where(
+            and(
+              eq(aliases.matchKey, matchKey),
+              eq(aliases.origin, 'ai'),
+              eq(aliases.status, 'pending'),
+              eq(aliases.scope, 'global'),
+              eq(canonicalTerms.category, category)
+            )
+          )
+          .limit(1);
+        return term ?? null;
+      });
+    },
+
+    async proposeAiAlias(termId, aliasText, matchKey, transaction = database.db) {
+      await withDbErrors('Alias', () =>
+        transaction
+          .insert(aliases)
+          .values({ termId, aliasText, matchKey, scope: 'global', origin: 'ai', status: 'pending' })
+          .onConflictDoNothing()
+      );
+    },
+
+    async saveDecision(input, transaction = database.db) {
       return withDbErrors('Normalization decision', async () => {
-        const [decision] = await database.db
+        const [decision] = await transaction
           .insert(normalizationDecisions)
           .values(input)
           .returning();
@@ -124,9 +219,9 @@ export function createNormalizationRepository(database: AppDatabase): Normalizat
       });
     },
 
-    async findLatestDecision(claimId) {
+    async findLatestDecision(claimId, transaction = database.db) {
       return withDbErrors('Normalization decision', async () => {
-        const [decision] = await database.db
+        const [decision] = await transaction
           .select()
           .from(normalizationDecisions)
           .where(eq(normalizationDecisions.claimId, claimId))

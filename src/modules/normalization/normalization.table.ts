@@ -1,6 +1,9 @@
+import { sql, type SQL } from 'drizzle-orm';
 import {
   AnyPgColumn,
   index,
+  integer,
+  jsonb,
   numeric,
   pgEnum,
   pgTable,
@@ -105,3 +108,58 @@ export const normalizationDecisions = pgTable(
   },
   (table) => [index('normalization_decisions_claim_id_idx').on(table.claimId, table.createdAt)]
 );
+
+export const aiRequestStatus = pgEnum('normalization_ai_request_status', [
+  'queued',
+  'processing',
+  'completed',
+  'failed',
+  // The claim's value changed before the request finished.
+  'superseded'
+]);
+
+export type AiRequestStatus = (typeof aiRequestStatus.enumValues)[number];
+
+// A value that exact and spelling matching could not link, waiting for the AI.
+// The worker processes these in the background, so saving a claim never waits
+// for the AI, and a request survives restarts.
+export const normalizationAiRequests = pgTable(
+  'normalization_ai_requests',
+  {
+    requestId: uuid('request_id').primaryKey().defaultRandom(),
+    claimId: uuid('claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    category: canonicalCategory('category').notNull(),
+    originalValue: text('original_value').notNull(),
+    // Other fields of the claim, such as the employer of a job title.
+    context: jsonb('context').$type<Record<string, string>>().default({}).notNull(),
+    // Terms that spelling matching found equally close, offered to the AI first.
+    preferredTermIds: jsonb('preferred_term_ids').$type<string[]>().default([]).notNull(),
+    status: aiRequestStatus('status').default('queued').notNull(),
+    // Increases with each claim of the request; writes by an older claim fail.
+    attemptCount: integer('attempt_count').default(0).notNull(),
+    failureCode: text('failure_code'),
+    availableAt: timestamp('available_at', { withTimezone: true, mode: 'date' })
+      .defaultNow()
+      .notNull(),
+    lockedUntil: timestamp('locked_until', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex('normalization_ai_requests_active_claim_unique')
+      .on(table.claimId)
+      .where(isActiveAiRequest(table.status)),
+    index('normalization_ai_requests_runnable_idx').on(table.status, table.availableAt)
+  ]
+);
+
+// Written as literals so an insert's conflict target can repeat the partial
+// index's condition exactly.
+export function isActiveAiRequest(status: AnyPgColumn): SQL {
+  return sql`${status} in ('queued', 'processing')`;
+}

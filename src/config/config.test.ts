@@ -53,3 +53,12 @@ describe('messaging configuration', () => {
     expect(config.messaging.rabbitMqUrl).toMatch(/^amqps?:\/\//);
   });
 });
+
+describe('LLM configuration', () => {
+  it('exposes provider settings and positive request limits', () => {
+    expect(config.llm.provider.length).toBeGreaterThan(0);
+    expect(config.llm.model.length).toBeGreaterThan(0);
+    expect(config.llm.timeoutMs).toBeGreaterThan(0);
+    expect(config.llm.maximumInputCharacters).toBeGreaterThan(0);
+  });
+});

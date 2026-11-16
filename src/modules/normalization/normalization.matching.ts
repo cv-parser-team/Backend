@@ -1,3 +1,4 @@
+import { fuzzyMatch } from './normalization.fuzzy.js';
 import { canonicalCategory, canonicalStatus } from './normalization.table.js';
 
 export type CanonicalCategory = (typeof canonicalCategory.enumValues)[number];
@@ -10,8 +11,15 @@ export interface DictionaryTerm {
   mergedIntoId: string | null;
 }
 
+// One spelling of a term in a category: its canonical name or an approved,
+// global alias.
+export interface DictionaryEntry {
+  matchKey: string;
+  term: DictionaryTerm;
+}
+
 // The dictionary lookups that matching needs. Only global, approved aliases
-// are used in V1.
+// are used.
 export interface DictionaryLookup {
   findTermByMatchKey(category: CanonicalCategory, matchKey: string): Promise<DictionaryTerm | null>;
   findTermsByApprovedAlias(
@@ -19,22 +27,25 @@ export interface DictionaryLookup {
     matchKey: string
   ): Promise<DictionaryTerm[]>;
   findTermById(termId: string): Promise<DictionaryTerm | null>;
+  // Every canonical name and approved global alias of the category, for
+  // spelling-tolerant matching.
+  listDictionaryEntries(category: CanonicalCategory): Promise<DictionaryEntry[]>;
 }
 
 export type MatchResult =
   | {
       status: 'matched';
-      method: 'canonical' | 'alias';
+      method: 'canonical' | 'alias' | 'fuzzy';
       term: DictionaryTerm;
-      // Exact matches are certain.
-      confidence: 1;
+      // 1 for exact matches; below 1 for a spelling correction.
+      confidence: number;
     }
-  | { status: 'ambiguous'; method: 'alias'; terms: DictionaryTerm[] }
+  | { status: 'ambiguous'; method: 'alias' | 'fuzzy'; terms: DictionaryTerm[] }
   | { status: 'unmatched' };
 
 // The rule version stored with each decision, so decisions made by different
 // matching rules can be told apart.
-export const MATCHING_RULE_VERSION = 'exact-v1';
+export const MATCHING_RULE_VERSION = 'fuzzy-v1';
 
 // Compares values case- and space-insensitively. Punctuation is kept, because
 // it carries meaning in values such as "C", "C#", and "C++".
@@ -60,9 +71,46 @@ async function activeTerm(
   return current;
 }
 
-// Matches a value against canonical terms first, then approved aliases, and
-// stops at the first match. Aliases that lead to more than one term are
-// ambiguous and are left for the candidate to resolve.
+// Corrects spelling against every canonical name and approved alias of the
+// category. Entries of merged terms count as the term they were merged into.
+async function matchSpelling(
+  lookup: DictionaryLookup,
+  category: CanonicalCategory,
+  matchKey: string
+): Promise<MatchResult> {
+  const entries = await lookup.listDictionaryEntries(category);
+  const activeById = new Map<string, DictionaryTerm | null>();
+  const candidates: { matchKey: string; item: DictionaryTerm }[] = [];
+
+  for (const entry of entries) {
+    if (!activeById.has(entry.term.termId)) {
+      activeById.set(entry.term.termId, await activeTerm(lookup, entry.term));
+    }
+    const active = activeById.get(entry.term.termId);
+    if (active) {
+      candidates.push({ matchKey: entry.matchKey, item: active });
+    }
+  }
+
+  const result = fuzzyMatch(matchKey, candidates, (item) => item.termId);
+  switch (result.status) {
+    case 'matched':
+      return {
+        status: 'matched',
+        method: 'fuzzy',
+        term: result.item,
+        confidence: result.confidence
+      };
+    case 'ambiguous':
+      return { status: 'ambiguous', method: 'fuzzy', terms: result.items };
+    case 'unmatched':
+      return { status: 'unmatched' };
+  }
+}
+
+// Matches a value against canonical terms first, then approved aliases, then
+// spelling corrections of either, and stops at the first match. A value that
+// leads to more than one term is ambiguous and is not guessed.
 export async function matchTerm(
   lookup: DictionaryLookup,
   category: CanonicalCategory,
@@ -94,5 +142,5 @@ export async function matchTerm(
   if (terms.length > 1) {
     return { status: 'ambiguous', method: 'alias', terms };
   }
-  return { status: 'unmatched' };
+  return matchSpelling(lookup, category, matchKey);
 }

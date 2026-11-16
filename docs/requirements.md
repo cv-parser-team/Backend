@@ -56,6 +56,9 @@ and design decisions where useful.
 
 ## 05 — Conflict detection
 
+The claim-to-claim MVP behavior is specified in
+[Merge duplicate claims and resolve related conflicts](merge-duplicate-claims.md).
+
 | ID | Requirement |
 | --- | --- |
 | `FR-CD-01` | Use similarity-based matching to identify claims that may describe the same record, considering employer, job title, and employment dates. |
