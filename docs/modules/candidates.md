@@ -58,6 +58,10 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
 returns its version in `ETag`. A missing claim and another candidate's claim
 both return 404.
 
+`GET /api/candidates/me/claims/merge-proposal?leftClaimId=...&rightClaimId=...`
+compares two active ownership-scoped claims and returns a read-only merge
+proposal. It does not approve, retire, or otherwise change either claim.
+
 ## Editing a claim
 
 ```mermaid

@@ -69,9 +69,12 @@ const candidateRecord: CandidateRecord = {
 function claimRecord(overrides: Partial<ClaimRecord> = {}): ClaimRecord {
   return {
     claimId,
+    supersededByClaimId: null,
     claimType: 'skill',
     origin: 'manual',
     status: 'accepted',
+    current: false,
+    candidateEdited: false,
     values: { name: 'Python' },
     extraction: null,
     version: 1,
@@ -199,7 +202,7 @@ describe('candidates tables', () => {
 
   it('links profiles to users and claims to their owners', () => {
     expect(getTableConfig(candidates).foreignKeys).toHaveLength(1);
-    expect(getTableConfig(claims).foreignKeys).toHaveLength(1);
+    expect(getTableConfig(claims).foreignKeys).toHaveLength(2);
     expect(getTableConfig(claimRevisions).foreignKeys).toHaveLength(1);
     expect(getTableConfig(sourceOccurrences).foreignKeys).toHaveLength(2);
     expect(
@@ -898,6 +901,80 @@ describe('candidates service', () => {
   });
 });
 
+describe('claim merge proposal service', () => {
+  const otherClaimId = '44444444-4444-4444-8444-444444444444';
+
+  it('maps stored claim authority and versions into a proposal', async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.findClaim)
+      .mockResolvedValueOnce(
+        {
+          ...extractedClaim('pending', 3),
+          candidateEdited: true,
+          values: { name: 'TypeScript' }
+        }
+      )
+      .mockResolvedValueOnce(
+        claimRecord({
+          claimId: otherClaimId,
+          origin: 'extracted',
+          status: 'accepted',
+          version: 5,
+          values: { name: ' typescript ' }
+        })
+      );
+
+    await expect(
+      createService(repository).getClaimMergeProposal(
+        userId,
+        claimId,
+        otherClaimId
+      )
+    ).resolves.toMatchObject({
+      result: 'proposal',
+      left: { claimId, version: 3 },
+      right: { claimId: otherClaimId, version: 5 },
+      survivorClaimId: claimId,
+      survivorReason: 'candidate_authority',
+      recommendedAction: 'candidate_review'
+    });
+  });
+
+  it('refuses identical, rejected, and superseded claim pairs', async () => {
+    const sameRepository = createRepositoryDouble();
+    await expect(
+      createService(sameRepository).getClaimMergeProposal(userId, claimId, claimId)
+    ).resolves.toEqual({ result: 'no_proposal', reason: 'same_claim' });
+    expect(sameRepository.findClaim).not.toHaveBeenCalled();
+
+    const rejectedRepository = createRepositoryDouble();
+    vi.mocked(rejectedRepository.findClaim)
+      .mockResolvedValueOnce(claimRecord({ status: 'rejected' }))
+      .mockResolvedValueOnce(claimRecord({ claimId: otherClaimId }));
+    await expect(
+      createService(rejectedRepository).getClaimMergeProposal(
+        userId,
+        claimId,
+        otherClaimId
+      )
+    ).resolves.toEqual({ result: 'no_proposal', reason: 'rejected_claim' });
+
+    const supersededRepository = createRepositoryDouble();
+    vi.mocked(supersededRepository.findClaim)
+      .mockResolvedValueOnce(
+        claimRecord({ supersededByClaimId: otherClaimId })
+      )
+      .mockResolvedValueOnce(claimRecord({ claimId: otherClaimId }));
+    await expect(
+      createService(supersededRepository).getClaimMergeProposal(
+        userId,
+        claimId,
+        otherClaimId
+      )
+    ).resolves.toEqual({ result: 'no_proposal', reason: 'superseded_claim' });
+  });
+});
+
 function createAuthRepositoryDouble(role: UserRole): AuthRepository {
   const state = { userId, role, accountStatus: 'active' as const, tokenVersion: 0 };
 
@@ -940,6 +1017,7 @@ function createServiceDouble(): CandidatesService {
     createClaim: vi.fn().mockResolvedValue(claimRecord()),
     listClaims: vi.fn().mockResolvedValue([claimRecord()]),
     getClaim: vi.fn().mockResolvedValue(claimRecord()),
+    getClaimMergeProposal: vi.fn(),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
     reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
@@ -1255,6 +1333,47 @@ describe('candidates routes', () => {
 
     expect(languages.statusCode).toBe(200);
     expect(service.listClaims).toHaveBeenCalledWith(userId, { type: 'language' });
+  });
+
+  it('returns a read-only merge proposal for two claim IDs', async () => {
+    const service = createServiceDouble();
+    const rightClaimId = '44444444-4444-4444-8444-444444444444';
+    vi.mocked(service.getClaimMergeProposal).mockResolvedValue({
+      result: 'no_proposal',
+      reason: 'different_identity'
+    });
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/candidates/me/claims/merge-proposal?leftClaimId=${claimId}&rightClaimId=${rightClaimId}`,
+      headers: authorization
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { result: 'no_proposal', reason: 'different_identity' }
+    });
+    expect(service.getClaimMergeProposal).toHaveBeenCalledWith(
+      userId,
+      claimId,
+      rightClaimId
+    );
+  });
+
+  it('validates merge-proposal claim IDs', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/candidates/me/claims/merge-proposal?leftClaimId=invalid&rightClaimId=${claimId}`,
+      headers: authorization
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.getClaimMergeProposal).not.toHaveBeenCalled();
   });
 
   it('returns one owned claim with its entity tag', async () => {

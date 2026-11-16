@@ -233,6 +233,20 @@ export const claimParamsSchema = {
 
 export type ClaimParams = FromSchema<typeof claimParamsSchema>;
 
+export const claimMergeProposalQuerySchema = {
+  type: 'object',
+  properties: {
+    leftClaimId: { type: 'string', format: 'uuid' },
+    rightClaimId: { type: 'string', format: 'uuid' }
+  },
+  required: ['leftClaimId', 'rightClaimId'],
+  additionalProperties: false
+} as const;
+
+export type ClaimMergeProposalQuery = FromSchema<
+  typeof claimMergeProposalQuerySchema
+>;
+
 export const reviewClaimBodySchema = {
   type: 'object',
   properties: {

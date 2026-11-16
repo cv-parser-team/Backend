@@ -10,6 +10,11 @@ import {
 } from './candidates.errors.js';
 import { prepareClaimValues } from './candidates.claim-values.js';
 import {
+  buildClaimMergeProposal,
+  type ClaimMergeProposalResult,
+  toMergeCandidateClaim
+} from './candidates.claim-comparison.js';
+import {
   CandidateRecord,
   CandidatesRepository,
   ClaimRecord,
@@ -82,6 +87,11 @@ export interface CandidatesService {
   createClaim(userId: string, input: ClaimBody): Promise<ClaimRecord>;
   listClaims(userId: string, query: ListClaimsQuery): Promise<ClaimRecord[]>;
   getClaim(userId: string, claimId: string): Promise<ClaimRecord>;
+  getClaimMergeProposal(
+    userId: string,
+    leftClaimId: string,
+    rightClaimId: string
+  ): Promise<ClaimMergeProposalResult>;
   updateClaim(
     userId: string,
     claimId: string,
@@ -314,6 +324,28 @@ export function createCandidatesService({
     async getClaim(userId, claimId) {
       const candidate = await requireCandidate(userId);
       return requireClaim(candidate.candidateId, claimId);
+    },
+
+    async getClaimMergeProposal(userId, leftClaimId, rightClaimId) {
+      const candidate = await requireCandidate(userId);
+      if (leftClaimId === rightClaimId) {
+        return { result: 'no_proposal', reason: 'same_claim' };
+      }
+
+      const [left, right] = await Promise.all([
+        requireClaim(candidate.candidateId, leftClaimId),
+        requireClaim(candidate.candidateId, rightClaimId)
+      ]);
+      if (left.supersededByClaimId !== null || right.supersededByClaimId !== null) {
+        return { result: 'no_proposal', reason: 'superseded_claim' };
+      }
+
+      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
+      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      if (!leftCandidate || !rightCandidate) {
+        return { result: 'no_proposal', reason: 'rejected_claim' };
+      }
+      return buildClaimMergeProposal(leftCandidate, rightCandidate);
     },
 
     async updateClaim(userId, claimId, input, expectedVersion) {

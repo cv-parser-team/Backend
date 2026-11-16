@@ -29,9 +29,12 @@ function toSql(condition: SQL | undefined) {
 
 const claim: ClaimRecord = {
   claimId,
+  supersededByClaimId: null,
   claimType: 'skill',
   origin: 'manual',
   status: 'accepted',
+  current: false,
+  candidateEdited: false,
   values: { name: 'TypeScript' },
   extraction: null,
   version: 1,
@@ -44,10 +47,13 @@ function claimRow(version: number, name = 'TypeScript') {
   return {
     claim: {
       claimId,
+      supersededByClaimId: null,
       candidateId,
       claimType: 'skill',
       origin: 'manual',
       status: 'accepted',
+      current: false,
+      candidateEditedAt: null,
       extractionInvocationId: null,
       extractionDocumentId: null,
       extractionRawValues: null,
@@ -149,6 +155,33 @@ describe('editing a claim', () => {
     });
     const versionUpdate = tx.claimUpdates[0]?.version as SQL | undefined;
     expect(toSql(versionUpdate)?.sql).toBe('"claims"."version" + 1');
+    expect(tx.claimUpdates[0]).not.toHaveProperty('candidateEditedAt');
+  });
+
+  it('marks an extracted claim as candidate-edited without changing its origin', async () => {
+    const beforeRow = claimRow(1);
+    const before = {
+      ...beforeRow,
+      claim: { ...beforeRow.claim, origin: 'extracted' as const }
+    };
+    const afterRow = claimRow(2, 'Node.js');
+    const after = {
+      ...afterRow,
+      claim: {
+        ...afterRow.claim,
+        origin: 'extracted' as const,
+        candidateEditedAt: timestamp
+      }
+    };
+    const tx = createClaimTransaction([{ claimId }], [[before], [after]]);
+    const repository = createCandidatesRepository(databaseWith(tx.transaction));
+
+    await expect(repository.updateClaimValues(edit(1))).resolves.toMatchObject({
+      status: 'saved',
+      record: { origin: 'extracted', candidateEdited: true }
+    });
+
+    expect(tx.claimUpdates[0]?.candidateEditedAt).toBeInstanceOf(Date);
   });
 
   it('refuses an edit based on an older version and writes nothing', async () => {
@@ -375,7 +408,7 @@ describe('creating a claim with extraction provenance', () => {
       sourceDocumentId: '44444444-4444-4444-8444-444444444444',
       rawValues: { name: 'TypeScript' },
       fieldSources: { name: ['L12'] },
-      current: false
+      current: true
     };
     const extractedRow = {
       ...claimRow(1),
@@ -383,6 +416,7 @@ describe('creating a claim with extraction provenance', () => {
         ...claimRow(1).claim,
         origin: 'extracted' as const,
         status: 'pending' as const,
+        current: extraction.current,
         extractionInvocationId: extraction.invocationId,
         extractionDocumentId: extraction.sourceDocumentId,
         extractionRawValues: extraction.rawValues,
@@ -407,6 +441,7 @@ describe('creating a claim with extraction provenance', () => {
       )
     ).resolves.toMatchObject({
       origin: 'extracted',
+      current: true,
       extraction
     });
     expect(claimValues).toHaveBeenCalledWith({
@@ -414,11 +449,12 @@ describe('creating a claim with extraction provenance', () => {
       claimType: 'skill',
       origin: 'extracted',
       status: 'pending',
+      current: true,
       extractionInvocationId: extraction.invocationId,
       extractionDocumentId: extraction.sourceDocumentId,
       extractionRawValues: extraction.rawValues,
       extractionFieldSources: extraction.fieldSources,
-      extractionCurrent: false
+      extractionCurrent: true
     });
     expect(databaseTransaction).not.toHaveBeenCalled();
   });
@@ -442,6 +478,7 @@ describe('creating a claim with extraction provenance', () => {
       claimType: 'skill',
       origin: 'manual',
       status: 'accepted',
+      current: false,
       extractionInvocationId: null,
       extractionDocumentId: null,
       extractionRawValues: null,
@@ -657,6 +694,7 @@ describe('reading claim source occurrences', () => {
     const query = toSql(where.mock.calls[0]?.[0]);
     expect(query?.sql).toContain('"claims"."candidate_id" = $1');
     expect(query?.sql).toContain('"claims"."status" = $2');
+    expect(query?.sql).toContain('"claims"."superseded_by_claim_id" is null');
     expect(query?.sql).toContain('"claims"."claim_id" in ($3, $4)');
     expect(query?.params).toEqual([
       candidateId,
@@ -677,6 +715,26 @@ describe('reading claim source occurrences', () => {
       repository.listClaimSourceOccurrences(candidateId, [])
     ).resolves.toEqual([]);
     expect(select).not.toHaveBeenCalled();
+  });
+});
+
+describe('listing active claims', () => {
+  it('excludes claims that were superseded by a merge', async () => {
+    const orderBy = vi.fn().mockResolvedValue([]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const readQuery = {
+      leftJoin: () => readQuery,
+      where
+    };
+    const repository = createCandidatesRepository({
+      db: { select: () => ({ from: () => readQuery }) }
+    } as unknown as AppDatabase);
+
+    await expect(repository.listClaims(candidateId)).resolves.toEqual([]);
+
+    const query = toSql(where.mock.calls[0]?.[0]);
+    expect(query?.sql).toContain('"claims"."candidate_id" = $1');
+    expect(query?.sql).toContain('"claims"."superseded_by_claim_id" is null');
   });
 });
 

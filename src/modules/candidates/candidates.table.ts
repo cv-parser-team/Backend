@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   check,
   date,
@@ -136,6 +137,17 @@ export const claims = pgTable(
     claimType: claimType('claim_type').notNull(),
     origin: claimOrigin('origin').notNull(),
     status: claimStatus('status').default('pending').notNull(),
+    current: boolean('current').default(false).notNull(),
+    // Candidate authority is separate from origin so edited extraction keeps
+    // its original evidence while outranking untouched extraction.
+    candidateEditedAt: timestamp('candidate_edited_at', {
+      withTimezone: true,
+      mode: 'date'
+    }),
+    supersededByClaimId: uuid('superseded_by_claim_id').references(
+      (): AnyPgColumn => claims.claimId,
+      { onDelete: 'restrict' }
+    ),
     // Original AI evidence stays separate from the reviewed claim values.
     extractionInvocationId: uuid('extraction_invocation_id'),
     extractionDocumentId: uuid('extraction_document_id'),
@@ -162,6 +174,11 @@ export const claims = pgTable(
   },
   (table) => [
     index('claims_candidate_id_idx').on(table.candidateId),
+    index('claims_superseded_by_claim_id_idx').on(table.supersededByClaimId),
+    check(
+      'claims_not_self_superseded',
+      sql`${table.supersededByClaimId} is null or ${table.supersededByClaimId} <> ${table.claimId}`
+    ),
     check(
       'claims_extraction_metadata_matches_origin',
       sql`(

@@ -91,9 +91,12 @@ function dependencies(records: ExtractionReviewItemRecord[] = [reviewRecord()]) 
     .mockResolvedValue({ status: 'saved', record: resolved });
   const claim: ClaimRecord = {
     claimId,
+    supersededByClaimId: null,
     claimType: 'employment',
     origin: 'extracted',
     status: 'accepted',
+    current: false,
+    candidateEdited: false,
     values: {
       employer: 'Example Corp',
       jobTitle: 'Engineer',

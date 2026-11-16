@@ -1,4 +1,5 @@
 import type {
+  ClaimRecord,
   ClaimValues,
   CreateClaimInput
 } from './candidates.repository.js';
@@ -15,6 +16,7 @@ export interface ComparableClaim {
 
 export interface MergeCandidateClaim extends ComparableClaim {
   claimId: string;
+  version: number;
   origin: CreateClaimInput['origin'];
   status: Extract<CreateClaimInput['status'], 'pending' | 'accepted'>;
   candidateEdited: boolean;
@@ -109,10 +111,62 @@ export type ClaimFieldsComparisonResult =
     }
   | {
       result: 'compared';
-      fields: Record<
-        string,
-        ClaimFieldDifference | ClaimDateFieldDifference
-      >;
+      fields: Record<string, ClaimFieldComparison>;
+    };
+
+export type ClaimFieldComparison =
+  | ClaimFieldDifference
+  | ClaimDateFieldDifference;
+
+type ClaimSurvivorReason = Extract<
+  ClaimSurvivorSelection,
+  { result: 'selected' }
+>['reason'];
+
+export type ClaimMergeProposalResult =
+  | {
+      result: 'no_proposal';
+      reason:
+        | 'different_candidate'
+        | 'different_type'
+        | 'different_identity'
+        | 'unsupported_type'
+        | 'same_claim'
+        | 'rejected_claim'
+        | 'superseded_claim';
+    }
+  | {
+      result: 'proposal';
+      identity: 'equivalent' | 'suspected_duplicate';
+      left: { claimId: string; version: number };
+      right: { claimId: string; version: number };
+      survivorClaimId: string | null;
+      survivorReason: ClaimSurvivorReason | null;
+      fields: Record<string, ClaimFieldComparison>;
+      proposedValues: ClaimValues;
+      proposedCurrent?: boolean | null;
+      unresolvedFields: string[];
+      requiresCandidateChoice: boolean;
+      recommendedAction: 'automatic_coalesce' | 'candidate_review';
+    };
+
+type NoMergeProposalReason = Extract<
+  ClaimMergeProposalResult,
+  { result: 'no_proposal' }
+>['reason'];
+
+export type AutomaticCoalescePlanResult =
+  | {
+      result: 'no_merge';
+      reason: NoMergeProposalReason | 'same_claim';
+    }
+  | { result: 'candidate_review_required' }
+  | {
+      result: 'ready';
+      survivor: { claimId: string; expectedVersion: number };
+      duplicate: { claimId: string; expectedVersion: number };
+      values: ClaimValues;
+      current?: boolean;
     };
 
 type ClaimDateFieldName =
@@ -127,6 +181,33 @@ const CLAIM_DATE_FIELDS = new Set<ClaimDateFieldName>([
   'issueDate',
   'expiryDate'
 ]);
+
+const CLAIM_TYPES_WITH_CURRENT = new Set<ClaimType>([
+  'employment',
+  'education',
+  'project'
+]);
+
+export function toMergeCandidateClaim(
+  candidateId: string,
+  claim: ClaimRecord
+): MergeCandidateClaim | null {
+  if (claim.status === 'rejected') {
+    return null;
+  }
+  return {
+    candidateId,
+    claimId: claim.claimId,
+    version: claim.version,
+    claimType: claim.claimType,
+    values: claim.values,
+    current: claim.current,
+    origin: claim.origin,
+    status: claim.status,
+    candidateEdited: claim.candidateEdited,
+    createdAt: claim.createdAt
+  };
+}
 
 interface ParsedClaimDate {
   year: number;
@@ -378,10 +459,7 @@ export function compareClaimFields(
     fieldNames.add('endDate');
   }
 
-  const fields: Record<
-    string,
-    ClaimFieldDifference | ClaimDateFieldDifference
-  > = {};
+  const fields: Record<string, ClaimFieldComparison> = {};
   for (const field of [...fieldNames].sort()) {
     if (!isClaimDateField(field)) {
       fields[field] = compareClaimFieldValues(
@@ -417,6 +495,13 @@ export function compareClaimFields(
 
 function isCandidateAuthoritative(claim: MergeCandidateClaim): boolean {
   return claim.origin === 'manual' || claim.candidateEdited;
+}
+
+function claimAuthority(claim: MergeCandidateClaim): number {
+  if (isCandidateAuthoritative(claim)) {
+    return 2;
+  }
+  return claim.status === 'accepted' ? 1 : 0;
 }
 
 export function selectClaimSurvivor(
@@ -464,6 +549,205 @@ export function selectClaimSurvivor(
     result: 'selected',
     survivor: left.claimId.localeCompare(right.claimId) <= 0 ? 'left' : 'right',
     reason: 'claim_id_tiebreaker'
+  };
+}
+
+function proposedValue(
+  value: ComparableFieldValue | ComparableClaimDate
+): ComparableFieldValue | undefined {
+  if (typeof value === 'string' || Array.isArray(value)) {
+    return value;
+  }
+  return value.kind === 'date' ? value.value : undefined;
+}
+
+function buildProposedValues(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim,
+  fields: Record<string, ClaimFieldComparison>,
+  survivor: Exclude<ClaimSurvivorSelection, { result: 'not_comparable' }>
+): ClaimValues {
+  const leftAuthority = claimAuthority(left);
+  const rightAuthority = claimAuthority(right);
+  const preferred =
+    leftAuthority !== rightAuthority
+      ? leftAuthority > rightAuthority
+        ? left
+        : right
+      : survivor.result === 'selected' && survivor.survivor === 'right'
+        ? right
+        : left;
+  const fallback = preferred === left ? right : left;
+  const values: ClaimValues = {};
+
+  for (const [field, difference] of Object.entries(fields)) {
+    if (difference.kind === 'same') {
+      const value = preferred.values[field] ?? fallback.values[field];
+      if (value !== undefined) {
+        values[field] = value;
+      }
+      continue;
+    }
+    if (
+      difference.kind !== 'enrichment' &&
+      difference.kind !== 'precision_improvement'
+    ) {
+      continue;
+    }
+
+    const value = proposedValue(difference.value);
+    if (value !== undefined) {
+      values[field] = value;
+    }
+  }
+
+  return values;
+}
+
+function buildProposedCurrent(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim,
+  fields: Record<string, ClaimFieldComparison>
+): boolean | null | undefined {
+  if (!CLAIM_TYPES_WITH_CURRENT.has(left.claimType)) {
+    return undefined;
+  }
+
+  const endDate = fields.endDate;
+  if (endDate === undefined) {
+    return false;
+  }
+  if (endDate.kind === 'same') {
+    return left.current === true && right.current === true;
+  }
+  if (!('value' in endDate)) {
+    return null;
+  }
+
+  const value = endDate.value;
+  return typeof value === 'object' && !Array.isArray(value)
+    ? value.kind === 'present'
+    : false;
+}
+
+export function buildClaimMergeProposal(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim
+): ClaimMergeProposalResult {
+  const identity = compareClaimIdentity(left, right);
+  if (identity.result === 'not_comparable') {
+    return { result: 'no_proposal', reason: identity.reason };
+  }
+  if (identity.result === 'different') {
+    return { result: 'no_proposal', reason: 'different_identity' };
+  }
+  if (identity.result === 'unsupported_type') {
+    return { result: 'no_proposal', reason: 'unsupported_type' };
+  }
+
+  const fieldComparison = compareClaimFields(left, right);
+  const survivor = selectClaimSurvivor(left, right);
+  if (fieldComparison.result === 'not_comparable') {
+    return {
+      result: 'no_proposal',
+      reason: fieldComparison.reason
+    };
+  }
+  if (survivor.result === 'not_comparable') {
+    return { result: 'no_proposal', reason: survivor.reason };
+  }
+
+  const unresolvedFields = Object.entries(fieldComparison.fields)
+    .filter(([, difference]) =>
+      difference.kind === 'conflict' ||
+      difference.kind === 'warning' ||
+      difference.kind === 'compatible'
+    )
+    .map(([field]) => field);
+  const requiresSurvivorChoice = survivor.result === 'candidate_choice_required';
+  const proposedCurrent = buildProposedCurrent(
+    left,
+    right,
+    fieldComparison.fields
+  );
+  const canAutomaticallyCoalesce =
+    left.origin === 'extracted' &&
+    right.origin === 'extracted' &&
+    left.status === 'pending' &&
+    right.status === 'pending' &&
+    !left.candidateEdited &&
+    !right.candidateEdited &&
+    identity.result === 'equivalent' &&
+    !requiresSurvivorChoice &&
+    proposedCurrent !== null &&
+    unresolvedFields.length === 0;
+
+  return {
+    result: 'proposal',
+    identity: identity.result,
+    left: { claimId: left.claimId, version: left.version },
+    right: { claimId: right.claimId, version: right.version },
+    survivorClaimId:
+      survivor.result === 'selected'
+        ? survivor.survivor === 'left'
+          ? left.claimId
+          : right.claimId
+        : null,
+    survivorReason:
+      survivor.result === 'selected' ? survivor.reason : null,
+    fields: fieldComparison.fields,
+    proposedValues: buildProposedValues(
+      left,
+      right,
+      fieldComparison.fields,
+      survivor
+    ),
+    ...(proposedCurrent !== undefined ? { proposedCurrent } : {}),
+    unresolvedFields,
+    requiresCandidateChoice:
+      requiresSurvivorChoice || unresolvedFields.length > 0,
+    recommendedAction: canAutomaticallyCoalesce
+      ? 'automatic_coalesce'
+      : 'candidate_review'
+  };
+}
+
+export function buildAutomaticCoalescePlan(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim
+): AutomaticCoalescePlanResult {
+  if (left.claimId === right.claimId) {
+    return { result: 'no_merge', reason: 'same_claim' };
+  }
+
+  const proposal = buildClaimMergeProposal(left, right);
+  if (proposal.result === 'no_proposal') {
+    return { result: 'no_merge', reason: proposal.reason };
+  }
+  if (
+    proposal.recommendedAction !== 'automatic_coalesce' ||
+    proposal.survivorClaimId === null
+  ) {
+    return { result: 'candidate_review_required' };
+  }
+
+  const survivorIsLeft = proposal.survivorClaimId === left.claimId;
+  const survivor = survivorIsLeft ? left : right;
+  const duplicate = survivorIsLeft ? right : left;
+  return {
+    result: 'ready',
+    survivor: {
+      claimId: survivor.claimId,
+      expectedVersion: survivor.version
+    },
+    duplicate: {
+      claimId: duplicate.claimId,
+      expectedVersion: duplicate.version
+    },
+    values: proposal.proposedValues,
+    ...(typeof proposal.proposedCurrent === 'boolean'
+      ? { current: proposal.proposedCurrent }
+      : {})
   };
 }
 

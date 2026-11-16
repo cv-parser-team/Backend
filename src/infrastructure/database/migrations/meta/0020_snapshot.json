@@ -1,6 +1,6 @@
 {
-  "id": "8492c319-97e4-46c8-95b4-7f7d9bb0be6e",
-  "prevId": "f17f038e-9919-4d53-acd8-f9dad3754c1a",
+  "id": "1c1337ee-5a60-4cc7-aa18-fc78ed51dab6",
+  "prevId": "486d396e-4ac5-4ced-850c-3b9ad7511127",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -376,6 +376,19 @@
           "notNull": true,
           "default": "'pending'"
         },
+        "current": {
+          "name": "current",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "superseded_by_claim_id": {
+          "name": "superseded_by_claim_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "extraction_invocation_id": {
           "name": "extraction_invocation_id",
           "type": "uuid",
@@ -443,6 +456,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "claims_superseded_by_claim_id_idx": {
+          "name": "claims_superseded_by_claim_id_idx",
+          "columns": [
+            {
+              "expression": "superseded_by_claim_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -458,12 +486,29 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "claims_superseded_by_claim_id_claims_claim_id_fk": {
+          "name": "claims_superseded_by_claim_id_claims_claim_id_fk",
+          "tableFrom": "claims",
+          "tableTo": "claims",
+          "columnsFrom": [
+            "superseded_by_claim_id"
+          ],
+          "columnsTo": [
+            "claim_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "claims_not_self_superseded": {
+          "name": "claims_not_self_superseded",
+          "value": "\"claims\".\"superseded_by_claim_id\" is null or \"claims\".\"superseded_by_claim_id\" <> \"claims\".\"claim_id\""
+        },
         "claims_extraction_metadata_matches_origin": {
           "name": "claims_extraction_metadata_matches_origin",
           "value": "(\n        \"claims\".\"origin\" = 'manual'\n        and \"claims\".\"extraction_invocation_id\" is null\n        and \"claims\".\"extraction_document_id\" is null\n        and \"claims\".\"extraction_raw_values\" is null\n        and \"claims\".\"extraction_field_sources\" is null\n        and \"claims\".\"extraction_current\" is null\n      ) or (\n        \"claims\".\"origin\" = 'extracted'\n        and \"claims\".\"extraction_invocation_id\" is not null\n        and \"claims\".\"extraction_raw_values\" is not null\n        and \"claims\".\"extraction_field_sources\" is not null\n        and \"claims\".\"extraction_current\" is not null\n      )"
@@ -1780,159 +1825,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.normalization_ai_requests": {
-      "name": "normalization_ai_requests",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "category": {
-          "name": "category",
-          "type": "canonical_category",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "original_value": {
-          "name": "original_value",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "context": {
-          "name": "context",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "preferred_term_ids": {
-          "name": "preferred_term_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "status": {
-          "name": "status",
-          "type": "normalization_ai_request_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "attempt_count": {
-          "name": "attempt_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "failure_code": {
-          "name": "failure_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "available_at": {
-          "name": "available_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "locked_until": {
-          "name": "locked_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "normalization_ai_requests_active_claim_unique": {
-          "name": "normalization_ai_requests_active_claim_unique",
-          "columns": [
-            {
-              "expression": "claim_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"normalization_ai_requests\".\"status\" in ('queued', 'processing')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "normalization_ai_requests_runnable_idx": {
-          "name": "normalization_ai_requests_runnable_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "available_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "normalization_ai_requests_claim_id_claims_claim_id_fk": {
-          "name": "normalization_ai_requests_claim_id_claims_claim_id_fk",
-          "tableFrom": "normalization_ai_requests",
-          "tableTo": "claims",
-          "columnsFrom": [
-            "claim_id"
-          ],
-          "columnsTo": [
-            "claim_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.normalization_decisions": {
       "name": "normalization_decisions",
       "schema": "",
@@ -2462,6 +2354,159 @@
         }
       },
       "isRLSEnabled": false
+    },
+    "public.normalization_ai_requests": {
+      "name": "normalization_ai_requests",
+      "schema": "",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "claim_id": {
+          "name": "claim_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "category": {
+          "name": "category",
+          "type": "canonical_category",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_value": {
+          "name": "original_value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "context": {
+          "name": "context",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "preferred_term_ids": {
+          "name": "preferred_term_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "status": {
+          "name": "status",
+          "type": "normalization_ai_request_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "available_at": {
+          "name": "available_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "normalization_ai_requests_active_claim_unique": {
+          "name": "normalization_ai_requests_active_claim_unique",
+          "columns": [
+            {
+              "expression": "claim_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"normalization_ai_requests\".\"status\" in ('queued', 'processing')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "normalization_ai_requests_runnable_idx": {
+          "name": "normalization_ai_requests_runnable_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "normalization_ai_requests_claim_id_claims_claim_id_fk": {
+          "name": "normalization_ai_requests_claim_id_claims_claim_id_fk",
+          "tableFrom": "normalization_ai_requests",
+          "tableTo": "claims",
+          "columnsFrom": [
+            "claim_id"
+          ],
+          "columnsTo": [
+            "claim_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
   "enums": {
@@ -2549,17 +2594,6 @@
         "ai",
         "candidate",
         "reviewer"
-      ]
-    },
-    "public.normalization_ai_request_status": {
-      "name": "normalization_ai_request_status",
-      "schema": "public",
-      "values": [
-        "queued",
-        "processing",
-        "completed",
-        "failed",
-        "superseded"
       ]
     },
     "public.alias_origin": {
@@ -2668,6 +2702,17 @@
         "started",
         "succeeded",
         "failed"
+      ]
+    },
+    "public.normalization_ai_request_status": {
+      "name": "normalization_ai_request_status",
+      "schema": "public",
+      "values": [
+        "queued",
+        "processing",
+        "completed",
+        "failed",
+        "superseded"
       ]
     }
   },

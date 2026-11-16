@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAutomaticCoalescePlan,
+  buildClaimMergeProposal,
   compareClaimIdentity,
   compareClaimDateFieldValues,
   compareClaimDates,
@@ -30,6 +32,7 @@ function mergeCandidate(
 ): MergeCandidateClaim {
   return {
     claimId: '11111111-1111-4111-8111-111111111111',
+    version: 1,
     candidateId,
     claimType: 'skill',
     origin: 'extracted',
@@ -903,5 +906,356 @@ describe('claim survivor selection', () => {
     expect(
       selectClaimSurvivor(left, mergeCandidate({ claimType: 'language' }))
     ).toEqual({ result: 'not_comparable', reason: 'different_type' });
+  });
+});
+
+describe('claim merge proposal', () => {
+  it('builds an equivalent pending-claim proposal with version guards', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({ version: 3 }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          version: 5,
+          values: { name: ' typescript ' },
+          createdAt: new Date('2026-02-01T00:00:00.000Z')
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      identity: 'equivalent',
+      left: {
+        claimId: '11111111-1111-4111-8111-111111111111',
+        version: 3
+      },
+      right: {
+        claimId: '22222222-2222-4222-8222-222222222222',
+        version: 5
+      },
+      survivorClaimId: '11111111-1111-4111-8111-111111111111',
+      survivorReason: 'oldest_pending',
+      proposedValues: { name: 'TypeScript' },
+      unresolvedFields: [],
+      requiresCandidateChoice: false,
+      recommendedAction: 'automatic_coalesce'
+    });
+  });
+
+  it('builds a suspected-duplicate proposal', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({ claimType: 'project', values: { name: 'LuminaCV' } }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'project',
+          values: { name: ' luminacv ', description: 'Candidate profile app' }
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      identity: 'suspected_duplicate',
+      recommendedAction: 'candidate_review',
+      fields: {
+        description: {
+          kind: 'enrichment',
+          value: 'Candidate profile app',
+          from: 'right'
+        }
+      }
+    });
+  });
+
+  it('lists conflicting fields as requiring candidate choice', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({
+          claimType: 'language',
+          values: { name: 'English', proficiency: 'professional' }
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'language',
+          values: { name: 'English', proficiency: 'native' }
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      unresolvedFields: ['proficiency'],
+      requiresCandidateChoice: true,
+      proposedValues: { name: 'English' },
+      fields: {
+        proficiency: {
+          kind: 'conflict',
+          left: 'professional',
+          right: 'native'
+        }
+      }
+    });
+  });
+
+  it('proposes enrichment and date precision with authoritative formatting', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({
+          claimType: 'certification',
+          origin: 'manual',
+          status: 'accepted',
+          values: {
+            title: ' AWS Architect ',
+            issuer: 'Amazon',
+            issueDate: '2024'
+          }
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'certification',
+          values: {
+            title: 'aws architect',
+            issuer: 'amazon',
+            issueDate: '2024-03',
+            credentialId: 'ABC-123'
+          }
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      proposedValues: {
+        title: ' AWS Architect ',
+        issuer: 'Amazon',
+        issueDate: '2024-03',
+        credentialId: 'ABC-123'
+      },
+      unresolvedFields: []
+    });
+  });
+
+  it('leaves the survivor unresolved for equally authoritative accepted claims', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({ status: 'accepted' }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          status: 'accepted'
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      survivorClaimId: null,
+      survivorReason: null,
+      requiresCandidateChoice: true,
+      recommendedAction: 'candidate_review'
+    });
+  });
+
+  it('requires review for an otherwise safe accepted or candidate-edited pair', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({ status: 'accepted' }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222'
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      recommendedAction: 'candidate_review'
+    });
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({ candidateEdited: true }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222'
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      recommendedAction: 'candidate_review'
+    });
+  });
+
+  it('preserves Present when both claims are current', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({
+          claimType: 'employment',
+          current: true,
+          currentAsOf: '2025-06',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020'
+          }
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'employment',
+          current: true,
+          currentAsOf: '2026-01',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020-03'
+          }
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      proposedCurrent: true,
+      recommendedAction: 'automatic_coalesce'
+    });
+  });
+
+  it('leaves Present versus an explicit end date unresolved', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({
+          claimType: 'employment',
+          current: true,
+          currentAsOf: '2024-06',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020'
+          }
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'employment',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020-03',
+            endDate: '2025'
+          }
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      proposedCurrent: null,
+      unresolvedFields: ['endDate'],
+      recommendedAction: 'candidate_review'
+    });
+  });
+
+  it('marks missing non-current end dates as not current', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate({
+          claimType: 'employment',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020'
+          }
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          claimType: 'employment',
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020-03'
+          }
+        })
+      )
+    ).toMatchObject({
+      result: 'proposal',
+      proposedCurrent: false
+    });
+  });
+
+  it('does not propose merges for non-comparable or different identities', () => {
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate(),
+        mergeCandidate({
+          candidateId: '22222222-2222-4222-8222-222222222222'
+        })
+      )
+    ).toEqual({ result: 'no_proposal', reason: 'different_candidate' });
+    expect(
+      buildClaimMergeProposal(
+        mergeCandidate(),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          values: { name: 'JavaScript' }
+        })
+      )
+    ).toEqual({ result: 'no_proposal', reason: 'different_identity' });
+  });
+});
+
+describe('automatic claim coalesce plan', () => {
+  it('returns version-guarded final values for a safe automatic merge', () => {
+    expect(
+      buildAutomaticCoalescePlan(
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          version: 4,
+          claimType: 'employment',
+          current: true,
+          currentAsOf: '2026-01',
+          createdAt: new Date('2026-02-01T00:00:00.000Z'),
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020'
+          }
+        }),
+        mergeCandidate({
+          claimId: '11111111-1111-4111-8111-111111111111',
+          version: 7,
+          claimType: 'employment',
+          current: true,
+          currentAsOf: '2026-02',
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          values: {
+            employer: 'Example Labs',
+            jobTitle: 'Engineer',
+            startDate: '2020-03',
+            location: 'Amman'
+          }
+        })
+      )
+    ).toEqual({
+      result: 'ready',
+      survivor: {
+        claimId: '11111111-1111-4111-8111-111111111111',
+        expectedVersion: 7
+      },
+      duplicate: {
+        claimId: '22222222-2222-4222-8222-222222222222',
+        expectedVersion: 4
+      },
+      values: {
+        employer: 'Example Labs',
+        jobTitle: 'Engineer',
+        location: 'Amman',
+        startDate: '2020-03'
+      },
+      current: true
+    });
+  });
+
+  it('refuses review-required, different, and identical claim pairs', () => {
+    expect(
+      buildAutomaticCoalescePlan(
+        mergeCandidate({ status: 'accepted' }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222'
+        })
+      )
+    ).toEqual({ result: 'candidate_review_required' });
+    expect(
+      buildAutomaticCoalescePlan(
+        mergeCandidate(),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          values: { name: 'JavaScript' }
+        })
+      )
+    ).toEqual({ result: 'no_merge', reason: 'different_identity' });
+    expect(
+      buildAutomaticCoalescePlan(mergeCandidate(), mergeCandidate())
+    ).toEqual({ result: 'no_merge', reason: 'same_claim' });
   });
 });

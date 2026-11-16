@@ -136,6 +136,7 @@ and always act on the authenticated user's own profile:
 - `GET /api/candidates/me/profile` (structured JSON with accepted claims only)
 - `POST /api/candidates/me/claims` (add a manual claim)
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
+- `GET /api/candidates/me/claims/merge-proposal` (`leftClaimId` and `rightClaimId`; read-only)
 - `GET /api/candidates/me/claims/:claimId`
 - `PUT /api/candidates/me/claims/:claimId`
 - `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)

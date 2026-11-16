@@ -34,9 +34,12 @@ function dependencies(
     .mockImplementation(async (inputs) =>
       inputs.map((input) => ({
         claimId: randomUUID(),
+        supersededByClaimId: null,
         claimType: input.claimType,
         origin: input.origin,
         status: input.status,
+        current: input.origin === 'extracted' ? input.extraction.current : false,
+        candidateEdited: false,
         values: input.values,
         extraction: input.origin === 'extracted' ? input.extraction : null,
         version: 1,
@@ -48,9 +51,12 @@ function dependencies(
     .fn<CandidateExtractionWriterDependencies['repository']['createClaim']>()
     .mockImplementation(async (input) => ({
       claimId: randomUUID(),
+      supersededByClaimId: null,
       claimType: input.claimType,
       origin: input.origin,
       status: input.status,
+      current: input.origin === 'extracted' ? input.extraction.current : false,
+      candidateEdited: false,
       values: input.values,
       extraction: input.origin === 'extracted' ? input.extraction : null,
       version: 1,
@@ -278,9 +284,12 @@ describe('candidate extraction writer', () => {
     const reviewedClaims: ClaimRecord[] = [
       {
         claimId: randomUUID(),
+        supersededByClaimId: null,
         claimType: 'employment',
         origin: 'extracted',
         status: 'accepted',
+        current: false,
+        candidateEdited: false,
         values: {
           skills: [' postgresql ', 'TYPESCRIPT'],
           employer: '  EXAMPLE   LABS ',
@@ -294,9 +303,12 @@ describe('candidate extraction writer', () => {
       },
       {
         claimId: randomUUID(),
+        supersededByClaimId: null,
         claimType: 'skill',
         origin: 'extracted',
         status: 'rejected',
+        current: false,
+        candidateEdited: false,
         values: { name: 'ＴｙｐｅＳｃｒｉｐｔ' },
         extraction: null,
         version: 2,
@@ -305,9 +317,12 @@ describe('candidate extraction writer', () => {
       },
       {
         claimId: randomUUID(),
+        supersededByClaimId: null,
         claimType: 'skill',
         origin: 'extracted',
         status: 'accepted',
+        current: false,
+        candidateEdited: false,
         values: { name: 'NodeJS' },
         extraction: null,
         version: 2,

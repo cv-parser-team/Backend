@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, sql, SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql, SQL } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
@@ -56,9 +56,12 @@ export interface CreateClaimSourceOccurrenceInput {
 
 export interface ClaimRecord {
   claimId: string;
+  supersededByClaimId: string | null;
   claimType: ClaimRow['claimType'];
   origin: ClaimRow['origin'];
   status: ClaimRow['status'];
+  current: boolean;
+  candidateEdited: boolean;
   values: ClaimValues;
   extraction: ClaimExtractionMetadata | null;
   version: number;
@@ -359,6 +362,7 @@ function toClaimInsert({ claimId, input }: ClaimWithId): typeof claims.$inferIns
     claimType: input.claimType,
     origin: input.origin,
     status: input.status,
+    current: input.origin === 'extracted' ? input.extraction.current : false,
     extractionInvocationId:
       input.origin === 'extracted' ? input.extraction.invocationId : null,
     extractionDocumentId:
@@ -561,9 +565,12 @@ async function selectClaims(
 
     return {
       claimId: claim.claimId,
+      supersededByClaimId: claim.supersededByClaimId,
       claimType: claim.claimType,
       origin: claim.origin,
       status: claim.status,
+      current: claim.current,
+      candidateEdited: claim.candidateEditedAt !== null,
       values,
       extraction:
         claim.origin === 'extracted' &&
@@ -597,6 +604,7 @@ async function insertClaim(
       claimType: input.claimType,
       origin: input.origin,
       status: input.status,
+      current: input.origin === 'extracted' ? input.extraction.current : false,
       extractionInvocationId:
         input.origin === 'extracted' ? input.extraction.invocationId : null,
       extractionDocumentId:
@@ -861,6 +869,7 @@ export function createCandidatesRepository(
           database.db,
           and(
             eq(claims.candidateId, candidateId),
+            isNull(claims.supersededByClaimId),
             filters.claimType ? eq(claims.claimType, filters.claimType) : undefined,
             filters.status ? eq(claims.status, filters.status) : undefined
           )
@@ -882,6 +891,7 @@ export function createCandidatesRepository(
             and(
               eq(claims.candidateId, candidateId),
               eq(claims.status, 'accepted'),
+              isNull(claims.supersededByClaimId),
               inArray(claims.claimId, claimIds)
             )
           )
@@ -943,7 +953,13 @@ export function createCandidatesRepository(
             );
             await transaction
               .update(claims)
-              .set({ updatedAt: new Date(), version: sql`${claims.version} + 1` })
+              .set({
+                updatedAt: new Date(),
+                version: sql`${claims.version} + 1`,
+                ...(current.origin === 'extracted'
+                  ? { candidateEditedAt: new Date() }
+                  : {})
+              })
               .where(ownedClaim);
 
             const [updated] = await selectClaims(transaction, ownedClaim);

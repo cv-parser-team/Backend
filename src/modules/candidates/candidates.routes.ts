@@ -6,6 +6,8 @@ import { ClaimRecord } from './candidates.repository.js';
 import {
   ClaimBody,
   claimBodySchema,
+  ClaimMergeProposalQuery,
+  claimMergeProposalQuerySchema,
   ClaimParams,
   claimParamsSchema,
   CreateCandidateBody,
@@ -238,6 +240,40 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     async (request) => {
       const data = await service.listClaims(request.auth.userId, request.query);
       const response: ApiResponse<ClaimRecord[]> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.get<{ Querystring: ClaimMergeProposalQuery }>(
+    '/me/claims/merge-proposal',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Compare two claims and build a merge proposal',
+        description: 'Read-only comparison; this endpoint never changes either claim.',
+        security: candidateSecurity,
+        querystring: claimMergeProposalQuerySchema,
+        response: {
+          200: documentedResponse('Claim merge proposal'),
+          400: documentedResponse('Invalid claim IDs'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.getClaimMergeProposal(
+        request.auth.userId,
+        request.query.leftClaimId,
+        request.query.rightClaimId
+      );
+      const response: ApiResponse<typeof data> = {
         success: true,
         data,
         timestamp: new Date().toISOString()

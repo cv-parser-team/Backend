@@ -1,0 +1,4 @@
+ALTER TABLE "claims" ADD COLUMN "superseded_by_claim_id" uuid;--> statement-breakpoint
+ALTER TABLE "claims" ADD CONSTRAINT "claims_superseded_by_claim_id_claims_claim_id_fk" FOREIGN KEY ("superseded_by_claim_id") REFERENCES "public"."claims"("claim_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "claims_superseded_by_claim_id_idx" ON "claims" USING btree ("superseded_by_claim_id");--> statement-breakpoint
+ALTER TABLE "claims" ADD CONSTRAINT "claims_not_self_superseded" CHECK ("claims"."superseded_by_claim_id" is null or "claims"."superseded_by_claim_id" <> "claims"."claim_id");
