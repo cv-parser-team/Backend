@@ -1,5 +1,5 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createTestApp } from '../../testing/create-test-app.js';
 import {
   CreateNormalizationDecisionInput,
@@ -8,7 +8,7 @@ import {
 } from './normalization.repository.js';
 import { SEED_DICTIONARY } from './normalization.seed-data.js';
 import { DictionaryWriter, seedDictionary } from './normalization.seed.js';
-import { createNormalizationService } from './normalization.service.js';
+import { claimContext, createNormalizationService } from './normalization.service.js';
 import {
   CanonicalCategory,
   DictionaryLookup,
@@ -114,6 +114,20 @@ function dictionary(
     },
     async findTermById(termId) {
       return terms.find((item) => item.termId === termId) ?? null;
+    },
+    async listDictionaryEntries(category) {
+      const names = terms
+        .filter((item) => item.category === category)
+        .map((item) => ({ matchKey: toMatchKey(item.canonicalName), term: item }));
+      const approved = aliasList
+        .filter((alias) => alias.approved !== false)
+        .flatMap((alias) => {
+          const owner = terms.find((item) => item.termId === alias.termId);
+          return owner?.category === category
+            ? [{ matchKey: toMatchKey(alias.text), term: owner }]
+            : [];
+        });
+      return [...names, ...approved];
     }
   };
 }
@@ -222,6 +236,80 @@ describe('term matching', () => {
     });
   });
 
+  it('corrects spelling after exact and alias matching fail', async () => {
+    const python = term('t-py', 'skill', 'Python');
+    const lookup = dictionary([python, javascript]);
+
+    expect(await matchTerm(lookup, 'skill', 'Pyhton')).toEqual({
+      status: 'matched',
+      method: 'fuzzy',
+      term: python,
+      confidence: 0.83
+    });
+  });
+
+  it('corrects spelling against approved aliases only', async () => {
+    const postgresql = term('t-pg', 'skill', 'PostgreSQL');
+
+    expect(
+      await matchTerm(
+        dictionary([postgresql], [{ termId: 't-pg', text: 'Postgres' }]),
+        'skill',
+        'Postgress'
+      )
+    ).toMatchObject({ status: 'matched', method: 'fuzzy', term: postgresql });
+    expect(
+      await matchTerm(
+        dictionary([postgresql], [{ termId: 't-pg', text: 'Postgres', approved: false }]),
+        'skill',
+        'Postgress'
+      )
+    ).toEqual({ status: 'unmatched' });
+  });
+
+  it('prefers an exact match over a spelling correction', async () => {
+    const reactNative = term('t-rn', 'skill', 'React Native');
+    const lookup = dictionary([reactNative], [{ termId: 't-rn', text: 'ReactNative' }]);
+
+    expect(await matchTerm(lookup, 'skill', 'reactnative')).toMatchObject({
+      method: 'alias',
+      confidence: 1
+    });
+  });
+
+  it('corrects spelling only within the same category', async () => {
+    const lookup = dictionary([term('t-se', 'job_title', 'Software Engineer')]);
+
+    expect(await matchTerm(lookup, 'skill', 'Sofware Enginer')).toEqual({
+      status: 'unmatched'
+    });
+    expect(await matchTerm(lookup, 'job_title', 'Sofware Enginer')).toMatchObject({
+      status: 'matched',
+      method: 'fuzzy'
+    });
+  });
+
+  it('corrects to the term a merged spelling was merged into', async () => {
+    const kubernetes = term('t-k8s', 'skill', 'Kubernetes');
+    const oldName = term('t-old', 'skill', 'Kubernetes Engine', 't-k8s');
+    const lookup = dictionary([kubernetes, oldName]);
+
+    expect(await matchTerm(lookup, 'skill', 'Kubernetes Engne')).toMatchObject({
+      status: 'matched',
+      method: 'fuzzy',
+      term: kubernetes
+    });
+  });
+
+  it('leaves a value between two close terms ambiguous', async () => {
+    const project = term('t-pjm', 'job_title', 'Project Manager');
+    const product = term('t-pdm', 'job_title', 'Product Manager');
+
+    expect(
+      await matchTerm(dictionary([project, product]), 'job_title', 'Prodject Manager')
+    ).toEqual({ status: 'ambiguous', method: 'fuzzy', terms: [project, product] });
+  });
+
   it('finds no term through a broken or circular merge', async () => {
     const lookup = dictionary([
       term('t-a', 'skill', 'Alpha', 't-b'),
@@ -280,6 +368,71 @@ function serviceWith() {
   return { repository, service: createNormalizationService({ repository }) };
 }
 
+describe('AI requests', () => {
+  function serviceWithAi() {
+    const { repository } = serviceWith();
+    const aiRequests = { enqueue: vi.fn().mockResolvedValue({}) };
+    return {
+      repository,
+      aiRequests,
+      service: createNormalizationService({ repository, aiRequests })
+    };
+  }
+
+  it('asks the AI about a value exact and spelling matching left unmatched', async () => {
+    const { service, aiRequests, repository } = serviceWithAi();
+
+    const decision = await service.normalizeClaim({
+      claimId: 'c-1',
+      claimType: 'employment',
+      values: {
+        employer: 'Aramex',
+        jobTitle: 'Server-side Engineer',
+        startDate: '2021-03',
+        skills: ['Node.js', 'SQL']
+      }
+    });
+
+    expect(decision).toMatchObject({ status: 'unmatched' });
+    expect(repository.decisions).toHaveLength(1);
+    expect(aiRequests.enqueue).toHaveBeenCalledWith({
+      claimId: 'c-1',
+      category: 'job_title',
+      originalValue: 'Server-side Engineer',
+      context: { employer: 'Aramex', startDate: '2021-03', skills: 'Node.js, SQL' },
+      preferredTermIds: []
+    });
+  });
+
+  it('offers the AI the terms an ambiguous value could mean', async () => {
+    const { service, aiRequests } = serviceWithAi();
+
+    await service.normalizeClaim({ claimId: 'c-1', claimType: 'skill', values: { name: 'J' } });
+
+    expect(aiRequests.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ preferredTermIds: ['t-js', 't-java'] })
+    );
+  });
+
+  it('does not ask the AI about matched or unchanged values', async () => {
+    const { service, aiRequests } = serviceWithAi();
+    const claim = { claimId: 'c-1', claimType: 'skill', values: { name: 'Rustacean' } };
+
+    await service.normalizeClaim({ ...claim, values: { name: 'JS' } });
+    expect(aiRequests.enqueue).not.toHaveBeenCalled();
+
+    await service.normalizeClaim({ ...claim, claimId: 'c-2' });
+    await service.normalizeClaim({ ...claim, claimId: 'c-2' });
+    expect(aiRequests.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('keeps long context short', () => {
+    expect(claimContext({ name: 'Go', description: 'x'.repeat(500) }, 'name')).toEqual({
+      description: 'x'.repeat(300)
+    });
+  });
+});
+
 describe('claim normalization', () => {
   it('stores a decision that links the value to its canonical term', async () => {
     const { repository, service } = serviceWith();
@@ -297,7 +450,7 @@ describe('claim normalization', () => {
       method: 'alias',
       confidenceScore: 1,
       actorType: 'system',
-      ruleVersion: 'exact-v1',
+      ruleVersion: 'fuzzy-v1',
       status: 'matched'
     });
     expect(repository.decisions).toHaveLength(1);
@@ -461,6 +614,16 @@ function seededStore(): DictionaryWriter & DictionaryLookup & { aliasCount(): nu
     async findTermById(termId) {
       return terms.find((item) => item.termId === termId) ?? null;
     },
+    async listDictionaryEntries(category) {
+      const names = terms
+        .filter((item) => item.category === category)
+        .map((item) => ({ matchKey: toMatchKey(item.canonicalName), term: item }));
+      const aliasEntries = aliasRows.flatMap((row) => {
+        const owner = terms.find((item) => item.termId === row.termId);
+        return owner?.category === category ? [{ matchKey: row.matchKey, term: owner }] : [];
+      });
+      return [...names, ...aliasEntries];
+    },
     aliasCount: () => aliasRows.length
   };
 }
@@ -486,7 +649,9 @@ describe('dictionary seeding', () => {
     ['skill', 'Postgres', 'PostgreSQL'],
     ['skill', 'C#', 'C#'],
     ['job_title', 'Back-end Developer', 'Backend Developer'],
-    ['degree', 'B.Sc.', 'Bachelor of Science']
+    ['degree', 'B.Sc.', 'Bachelor of Science'],
+    ['skill', 'Javascirpt', 'JavaScript'],
+    ['job_title', 'Sofware Enginer', 'Software Engineer']
   ] as const)('matches %s "%s" to "%s" after seeding', async (category, value, expected) => {
     const store = seededStore();
     await seedDictionary(store);

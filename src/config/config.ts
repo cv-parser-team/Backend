@@ -78,6 +78,15 @@ export const config = {
       100_000
     )
   },
+  normalization: {
+    // AI matching also needs LLM_API_KEY; without it, it stays off.
+    aiEnabled: process.env.NORMALIZATION_AI_ENABLED !== 'false',
+    aiPollIntervalMs: extractPositiveIntegerOrDefault(
+      'NORMALIZATION_AI_POLL_INTERVAL_MS',
+      5_000
+    ),
+    aiBatchSize: extractPositiveIntegerOrDefault('NORMALIZATION_AI_BATCH_SIZE', 10)
+  },
   auth: {
     jwtSecret,
     issuer: extractOrThrow('JWT_ISSUER'),
