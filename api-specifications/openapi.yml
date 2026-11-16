@@ -1886,8 +1886,8 @@ components:
             - same_claim
             - rejected_claim
             - superseded_claim
-    ComparableClaimDate:
-      description: A normalized claim date, an ongoing value, or a missing date.
+    ClaimMergeDateValue:
+      description: A normalized date used while comparing claims. It can be explicit, ongoing, or missing.
       oneOf:
         - type: object
           required: [kind, value]
@@ -1918,16 +1918,17 @@ components:
             kind:
               type: string
               enum: [missing]
-    ClaimComparableValue:
-      description: A text, text-list, or normalized date value used in a field comparison.
+    ClaimMergeComparableValue:
+      description: A scalar, list, or normalized date that can appear in a claim merge comparison.
       oneOf:
         - type: string
         - type: array
           items:
             type: string
-        - $ref: "#/components/schemas/ComparableClaimDate"
-    SameClaimFieldComparison:
+        - $ref: "#/components/schemas/ClaimMergeDateValue"
+    ClaimMergeSameValue:
       type: object
+      description: Both claims provide the same value; no candidate decision is needed.
       required: [kind]
       additionalProperties: false
       properties:
@@ -1935,9 +1936,10 @@ components:
           type: string
           enum: [same]
         value:
-          $ref: "#/components/schemas/ClaimComparableValue"
-    EnrichmentClaimFieldComparison:
+          $ref: "#/components/schemas/ClaimMergeComparableValue"
+    ClaimMergeEnrichedValue:
       type: object
+      description: One claim adds a missing value, or both lists can be combined safely.
       required: [kind, value, from]
       additionalProperties: false
       properties:
@@ -1945,12 +1947,14 @@ components:
           type: string
           enum: [enrichment]
         value:
-          $ref: "#/components/schemas/ClaimComparableValue"
+          $ref: "#/components/schemas/ClaimMergeComparableValue"
         from:
           type: string
+          description: Claim side that supplied the proposed value; both means two lists were combined.
           enum: [left, right, both]
-    PrecisionImprovementClaimFieldComparison:
+    ClaimMergeMorePreciseDate:
       type: object
+      description: Both dates agree, and one provides greater precision; no candidate decision is needed.
       required: [kind, value, from]
       additionalProperties: false
       properties:
@@ -1958,12 +1962,14 @@ components:
           type: string
           enum: [precision_improvement]
         value:
-          $ref: "#/components/schemas/ComparableClaimDate"
+          $ref: "#/components/schemas/ClaimMergeDateValue"
         from:
           type: string
+          description: Claim side containing the more precise date.
           enum: [left, right]
-    CompatibleClaimFieldComparison:
+    ClaimMergeCompatibleDates:
       type: object
+      description: The dates may both be valid, but the candidate must choose the final value.
       required: [kind, left, right]
       additionalProperties: false
       properties:
@@ -1971,11 +1977,12 @@ components:
           type: string
           enum: [compatible]
         left:
-          $ref: "#/components/schemas/ComparableClaimDate"
+          $ref: "#/components/schemas/ClaimMergeDateValue"
         right:
-          $ref: "#/components/schemas/ComparableClaimDate"
-    WarningClaimFieldComparison:
+          $ref: "#/components/schemas/ClaimMergeDateValue"
+    ClaimMergeUncertainDates:
       type: object
+      description: The dates cannot be compared confidently, so the candidate must review them.
       required: [kind, left, right]
       additionalProperties: false
       properties:
@@ -1983,11 +1990,12 @@ components:
           type: string
           enum: [warning]
         left:
-          $ref: "#/components/schemas/ComparableClaimDate"
+          $ref: "#/components/schemas/ClaimMergeDateValue"
         right:
-          $ref: "#/components/schemas/ComparableClaimDate"
-    ConflictClaimFieldComparison:
+          $ref: "#/components/schemas/ClaimMergeDateValue"
+    ClaimMergeConflictingValues:
       type: object
+      description: The claims disagree and the candidate must choose the final value.
       required: [kind, left, right]
       additionalProperties: false
       properties:
@@ -1995,27 +2003,27 @@ components:
           type: string
           enum: [conflict]
         left:
-          $ref: "#/components/schemas/ClaimComparableValue"
+          $ref: "#/components/schemas/ClaimMergeComparableValue"
         right:
-          $ref: "#/components/schemas/ClaimComparableValue"
-    ClaimFieldComparison:
-      description: The comparison of one field from the left and right claims.
+          $ref: "#/components/schemas/ClaimMergeComparableValue"
+    ClaimMergeFieldComparison:
+      description: Comparison outcome for one claim field, selected by the kind discriminator.
       oneOf:
-        - $ref: "#/components/schemas/SameClaimFieldComparison"
-        - $ref: "#/components/schemas/EnrichmentClaimFieldComparison"
-        - $ref: "#/components/schemas/PrecisionImprovementClaimFieldComparison"
-        - $ref: "#/components/schemas/CompatibleClaimFieldComparison"
-        - $ref: "#/components/schemas/WarningClaimFieldComparison"
-        - $ref: "#/components/schemas/ConflictClaimFieldComparison"
+        - $ref: "#/components/schemas/ClaimMergeSameValue"
+        - $ref: "#/components/schemas/ClaimMergeEnrichedValue"
+        - $ref: "#/components/schemas/ClaimMergeMorePreciseDate"
+        - $ref: "#/components/schemas/ClaimMergeCompatibleDates"
+        - $ref: "#/components/schemas/ClaimMergeUncertainDates"
+        - $ref: "#/components/schemas/ClaimMergeConflictingValues"
       discriminator:
         propertyName: kind
         mapping:
-          same: "#/components/schemas/SameClaimFieldComparison"
-          enrichment: "#/components/schemas/EnrichmentClaimFieldComparison"
-          precision_improvement: "#/components/schemas/PrecisionImprovementClaimFieldComparison"
-          compatible: "#/components/schemas/CompatibleClaimFieldComparison"
-          warning: "#/components/schemas/WarningClaimFieldComparison"
-          conflict: "#/components/schemas/ConflictClaimFieldComparison"
+          same: "#/components/schemas/ClaimMergeSameValue"
+          enrichment: "#/components/schemas/ClaimMergeEnrichedValue"
+          precision_improvement: "#/components/schemas/ClaimMergeMorePreciseDate"
+          compatible: "#/components/schemas/ClaimMergeCompatibleDates"
+          warning: "#/components/schemas/ClaimMergeUncertainDates"
+          conflict: "#/components/schemas/ClaimMergeConflictingValues"
     ClaimMergeProposal:
       type: object
       required:
@@ -2056,11 +2064,27 @@ components:
             - claim_id_tiebreaker
         fields:
           type: object
-          description: Field names mapped to same, enrichment, precision improvement, warning, compatible, or conflict comparisons.
+          description: Claim field names mapped to their comparison outcome. Compatible, warning, and conflict outcomes require candidate review.
           additionalProperties:
-            $ref: "#/components/schemas/ClaimFieldComparison"
+            $ref: "#/components/schemas/ClaimMergeFieldComparison"
+          example:
+            employer:
+              kind: same
+              value: Acme Ltd
+            skills:
+              kind: enrichment
+              value: [Built APIs, Led migrations]
+              from: both
+            endDate:
+              kind: warning
+              left:
+                kind: present
+              right:
+                kind: date
+                value: "2025-06"
         proposedValues:
           type: object
+          description: Values that can be proposed without inventing a choice for unresolved fields.
           additionalProperties: true
         proposedCurrent:
           type: boolean
@@ -2072,8 +2096,10 @@ components:
             type: string
         requiresCandidateChoice:
           type: boolean
+          description: True when the candidate must choose a survivor or resolve at least one field.
         recommendedAction:
           type: string
+          description: Whether the pair is eligible for safe coalescing or must be reviewed by the candidate.
           enum: [automatic_coalesce, candidate_review]
     ClaimMergeProposalResponse:
       allOf:
