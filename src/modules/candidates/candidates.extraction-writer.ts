@@ -10,6 +10,7 @@ import type {
 } from './candidates.repository.js';
 import type { ClaimSourceAnchor } from './candidates.table.js';
 import { prepareUnknownClaimValues } from './candidates.claim-values.js';
+import { strictClaimComparisonKey } from './candidates.claim-comparison.js';
 
 export interface ExtractedClaimSourceOccurrenceInput {
   anchorKey: string;
@@ -71,32 +72,6 @@ export class ConflictingSourceOccurrenceError extends Error {
     super(`Source occurrence '${anchorKey}' has conflicting physical anchors`);
     this.name = 'ConflictingSourceOccurrenceError';
   }
-}
-
-function normalizeComparisonText(value: string): string {
-  return value
-    .normalize('NFKC')
-    .trim()
-    .replace(/\s+/gu, ' ')
-    .toLowerCase();
-}
-
-function normalizeList(values: string[]): string[] {
-  return [...new Set(values.map(normalizeComparisonText))].sort();
-}
-
-function claimKey(
-  claimType: CreateClaimInput['claimType'],
-  values: ClaimValues
-): string {
-  const normalizedValues = Object.entries(values)
-    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
-    .map(([key, value]) => [
-      key,
-      Array.isArray(value) ? normalizeList(value) : normalizeComparisonText(value)
-    ]);
-
-  return JSON.stringify([claimType, normalizedValues]);
 }
 
 function mergeUnique(left: string[], right: string[]): string[] {
@@ -176,7 +151,7 @@ function coalesceDrafts(
   const merged = new Map<string, ExtractedClaimDraftInput>();
 
   for (const draft of drafts) {
-    const key = claimKey(draft.type, draft.values);
+    const key = strictClaimComparisonKey(draft.type, draft.values);
     const existing = merged.get(key);
     if (existing) {
       existing.fieldSources = mergeFieldSources(
@@ -235,13 +210,15 @@ export function createCandidateExtractionWriter({
       );
       const reviewedClaimKeys = new Set(
         reviewedClaims.map((claim) =>
-          claimKey(claim.claimType, claim.values)
+          strictClaimComparisonKey(claim.claimType, claim.values)
         )
       );
 
       const draftsToCreate = coalescedDrafts.filter(
         (draft) =>
-          !reviewedClaimKeys.has(claimKey(draft.type, draft.values))
+          !reviewedClaimKeys.has(
+            strictClaimComparisonKey(draft.type, draft.values)
+          )
       );
       const inputs: CreateClaimInput[] = draftsToCreate.map((draft) => ({
         candidateId: candidate.candidateId,

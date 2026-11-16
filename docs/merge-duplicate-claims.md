@@ -24,6 +24,11 @@ claim type. It supports:
 - accepted claim + accepted claim; and
 - manual or candidate-edited claim + extracted claim.
 
+The review UI may present many independent claim pairs and let the candidate
+resolve or approve a selected batch. Each selected pair is still evaluated and
+applied independently; the MVP does not merge three or more claims as one
+group.
+
 The MVP does not merge extraction review items, compare more than two claims
 in one operation, infer a claim type, or change the global normalization
 dictionary. A review item continues through its existing resolve or dismiss
@@ -35,18 +40,24 @@ include it.
 1. **Extraction is staged.** A claim created by document extraction starts as
    `pending` and is excluded from profile export. Duplicate handling must not
    make extracted information visible without candidate confirmation.
-2. **Candidate decisions have precedence.** Candidate-entered and
+2. **Resolution is approval.** When the candidate explicitly confirms the
+   final values of a duplicate or conflict, the surviving claim becomes
+   `accepted` and is exported. A second approval step is not required.
+3. **Automatic work stays staged.** Detection, proposed values, and automatic
+   coalescing never count as approval. An automatically coalesced extracted
+   claim remains `pending`.
+4. **Candidate decisions have precedence.** Candidate-entered and
    candidate-edited values are authoritative over extracted values.
-3. **Completeness is only a tie-breaker.** A populated optional field or a
+5. **Completeness is only a tie-breaker.** A populated optional field or a
    more precise date wins automatically only when the values are compatible
    and have equal authority.
-4. **Conflicts are not guessed away.** Incompatible populated values require
+6. **Conflicts are not guessed away.** Incompatible populated values require
    the candidate to select or enter the final value.
-5. **Provenance survives.** A merge retains the original claims, revisions,
+7. **Provenance survives.** A merge retains the original claims, revisions,
    extraction metadata, and physical source occurrences needed for audit.
-6. **One confirmation, one atomic result.** Applying a merge and retiring its
+8. **One confirmation, one atomic result.** Applying a merge and retiring its
    duplicate claims succeeds or fails in one transaction.
-7. **Concurrent edits are refused.** The merge is conditional on the versions
+9. **Concurrent edits are refused.** The merge is conditional on the versions
    the candidate reviewed; a changed claim returns `409 VERSION_CONFLICT`.
 
 The existing `origin` remains provenance: editing an extracted claim must not
@@ -148,7 +159,9 @@ and retires the other claim. The survivor remains `pending`, so it is still not
 exported.
 
 If identity is uncertain or any field conflicts, both claims remain unchanged
-and the candidate receives a merge proposal with the conflicting fields.
+and the candidate receives a merge proposal with the conflicting fields. When
+the candidate resolves every conflict and confirms the final values, the
+survivor becomes `accepted` and is exported immediately.
 
 ### Accepted + pending
 
@@ -161,13 +174,16 @@ On confirmation, the service updates the accepted survivor, archives its
 previous values as a revision, attaches the accepted source occurrences, and
 retires the pending duplicate in one transaction. Rejecting the proposal
 leaves the accepted claim unchanged and marks the pending claim rejected.
+Because the survivor was already accepted, the updated values appear in export
+as soon as the transaction commits.
 
 ### Accepted + accepted
 
 Both claims remain exported until the candidate explicitly confirms that they
 are duplicates. The candidate chooses the survivor and final values. Applying
 the decision updates the survivor and retires the other claim while preserving
-history and provenance.
+history and provenance. The survivor remains accepted and the resolved values
+replace the two previous exported records.
 
 ### Candidate-authoritative + extracted
 
@@ -191,6 +207,26 @@ A proposal is a read model, not a claim and not profile output. It contains:
 The candidate can confirm the proposal, edit its final values, declare the
 claims different, or reject the pending extracted claim. Confirmation is not
 allowed while any required conflict choice is unresolved.
+
+Candidate confirmation is both resolution and publication. If the survivor is
+pending, confirmation changes it to `accepted`; if it is already accepted,
+confirmation updates it while retaining that status. The UI action should make
+this result explicit, for example **Resolve and add to profile**. Saving or
+automatically generating a proposal does not publish anything.
+
+### Selected-batch resolution
+
+The candidate may select multiple ready proposals or non-conflicting pending
+claims and approve them with one action. Safe proposals may be preselected for
+convenience, but candidate action is still required. Proposals with unresolved
+conflicts are not eligible and must not be preselected.
+
+Atomicity is per claim or duplicate pair, not across the whole selected batch.
+Each pair preserves its own merge transaction and version checks. A conflict
+or stale version in one item does not prevent unrelated selections from being
+accepted. The batch response reports `accepted`, `conflict`, and `failed`
+results per item so the UI can export successful resolutions immediately and
+refresh only unsuccessful ones.
 
 Declaring the claims different records that decision for the pair so unchanged
 claims are not repeatedly suggested. A material value or normalization change
@@ -230,7 +266,8 @@ Applying a merge must:
    versions;
 3. validate the final values with the existing claim schema;
 4. write a revision when the survivor's values change;
-5. update the survivor and increment its version;
+5. update the survivor, set it to `accepted` when confirmation resolves a
+   pending pair, and increment its version;
 6. transfer or associate accepted source occurrences;
 7. retire the duplicate and complete the duplicate decision; and
 8. commit all changes together.
@@ -240,6 +277,9 @@ current claims so the candidate can review a fresh proposal. Transient database
 errors follow the existing bounded retry policy; version conflicts are never
 retried.
 
+A selected batch invokes this transaction separately for each independent
+claim or pair. It is not one database transaction spanning the whole batch.
+
 ## 11. MVP acceptance scenarios
 
 | Scenario | Expected result |
@@ -247,11 +287,14 @@ retried.
 | Two pending employment claims differ only by absent `endDate` | One pending survivor with the populated compatible value and all sources |
 | Pending claims contain `2020` and `2020-03` | One pending survivor with `2020-03` |
 | Pending claims contain `2020-03` and `2020-04` | Both remain; candidate must resolve the conflict |
+| Candidate resolves a pending pair and confirms its final values | Survivor becomes accepted and is exported without a second approval step |
+| Service automatically coalesces compatible pending claims | Survivor remains pending and is not exported |
 | Accepted manual claim and pending extraction have the same values | Accepted claim survives; pending duplicate can be rejected without changing export |
 | Accepted manual claim lacks an optional field found by extraction | Field is proposed but export does not change before confirmation |
 | Candidate value conflicts with a more detailed extraction | Candidate value is preselected; extraction cannot overwrite it |
 | Two accepted claims are suspected duplicates | Neither is retired without explicit confirmation |
 | Either claim changes after proposal creation | Merge fails with `409 VERSION_CONFLICT` and writes nothing |
+| One item in a selected batch has a version conflict | Unrelated items may succeed; the response identifies the item to refresh |
 | Candidate declares the pair different | Both remain and the unchanged pair is not suggested again |
 
 ## 12. Deferred work
