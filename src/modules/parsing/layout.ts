@@ -17,6 +17,7 @@ import {
 } from './macro-layout.js';
 import {
   establishSectionScopes,
+  type SectionAdjudications,
   type SectionScope
 } from './section-scopes.js';
 import {
@@ -117,6 +118,15 @@ export interface LayoutTrace {
   usualGap: number;
   pages: LayoutTracePage[];
 }
+
+// Decisions an AI made about uncertain roles on one page. Stages apply them as
+// role overrides and derive geometry, ownership, and order as usual.
+export interface PageAdjudications extends SectionAdjudications {
+  continuingAnchors?: ReadonlySet<number>;
+}
+
+// By page number.
+export type LayoutAdjudications = ReadonlyMap<number, PageAdjudications>;
 
 // A bullet character or a list number at the start of a line.
 export const BULLET = /^([•●▪◦‣∙·*\-–—]|\d+[.)])\s/;
@@ -540,9 +550,10 @@ export function buildPages(pages: PositionedPage[]): ParsedPage[] {
 }
 
 export function buildPagesWithTrace(
-  pages: PositionedPage[]
+  pages: PositionedPage[],
+  adjudications?: LayoutAdjudications
 ): { pages: ParsedPage[]; trace: LayoutTrace } {
-  const built = buildPagesInternal(pages, true);
+  const built = buildPagesInternal(pages, true, adjudications);
   if (!built.trace) {
     throw new Error('Layout trace was not collected');
   }
@@ -551,7 +562,8 @@ export function buildPagesWithTrace(
 
 function buildPagesInternal(
   pages: PositionedPage[],
-  collectTrace: boolean
+  collectTrace: boolean,
+  adjudications?: LayoutAdjudications
 ): { pages: ParsedPage[]; trace: LayoutTrace | null } {
   const pageLines = pages.map(({ pieces, marks }) => reconstructLines(pieces, marks));
   const pageMetrics = pages.map((page, pageIndex) =>
@@ -578,18 +590,21 @@ function buildPagesInternal(
       boundaryCandidates: candidates.lines,
       nonTextBoundaryCandidates: candidates.nonText
     });
+    const pageAdjudications = adjudications?.get(page.pageNumber);
     const sectionScopes = establishSectionScopes({
       lines: pageLines[pageIndex]!,
       metrics: pageMetrics[pageIndex]!,
       boundaryCandidates: candidates.lines,
       nonTextBoundaryCandidates: candidates.nonText,
-      layoutZoneCandidates
+      layoutZoneCandidates,
+      adjudications: pageAdjudications
     });
     const entryResolution = resolveEntries({
       lines: pageLines[pageIndex]!,
       metrics: pageMetrics[pageIndex]!,
       boundaryCandidates: candidates.lines,
-      sectionScopes
+      sectionScopes,
+      continuingAnchors: pageAdjudications?.continuingAnchors
     });
     const finalLayout = resolveFinalLayout({
       pageNumber: page.pageNumber,
