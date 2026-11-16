@@ -78,6 +78,32 @@ export type ClaimFieldDifference =
       right: ComparableFieldValue;
     };
 
+export type ClaimFieldsComparisonResult =
+  | {
+      result: 'not_comparable';
+      reason: 'different_candidate' | 'different_type';
+    }
+  | {
+      result: 'compared';
+      fields: Record<
+        string,
+        ClaimFieldDifference | ClaimDateFieldDifference
+      >;
+    };
+
+type ClaimDateFieldName =
+  | 'startDate'
+  | 'endDate'
+  | 'issueDate'
+  | 'expiryDate';
+
+const CLAIM_DATE_FIELDS = new Set<ClaimDateFieldName>([
+  'startDate',
+  'endDate',
+  'issueDate',
+  'expiryDate'
+]);
+
 interface ParsedClaimDate {
   year: number;
   month: number | null;
@@ -259,12 +285,16 @@ function requiredTextFieldsMatch(
 
 function dateValue(
   values: ClaimValues,
-  field: 'startDate' | 'endDate'
+  field: ClaimDateFieldName
 ): ComparableClaimDate {
   const value = values[field];
   return typeof value === 'string'
     ? { kind: 'date', value }
     : { kind: 'missing' };
+}
+
+function isClaimDateField(field: string): field is ClaimDateFieldName {
+  return CLAIM_DATE_FIELDS.has(field as ClaimDateFieldName);
 }
 
 function endDateValue(claim: ComparableClaim): ComparableClaimDate | null {
@@ -303,6 +333,62 @@ function compareDatedIdentity(
     endComparison === 'invalid'
     ? { result: 'suspected_duplicate' }
     : { result: 'equivalent' };
+}
+
+export function compareClaimFields(
+  left: ComparableClaim,
+  right: ComparableClaim
+): ClaimFieldsComparisonResult {
+  if (left.candidateId !== right.candidateId) {
+    return { result: 'not_comparable', reason: 'different_candidate' };
+  }
+  if (left.claimType !== right.claimType) {
+    return { result: 'not_comparable', reason: 'different_type' };
+  }
+
+  const fieldNames = new Set([
+    ...Object.keys(left.values),
+    ...Object.keys(right.values)
+  ]);
+  if (left.current === true || right.current === true) {
+    fieldNames.add('endDate');
+  }
+
+  const fields: Record<
+    string,
+    ClaimFieldDifference | ClaimDateFieldDifference
+  > = {};
+  for (const field of [...fieldNames].sort()) {
+    if (!isClaimDateField(field)) {
+      fields[field] = compareClaimFieldValues(
+        left.values[field],
+        right.values[field]
+      );
+      continue;
+    }
+
+    if (field === 'endDate') {
+      const leftEndDate = endDateValue(left);
+      const rightEndDate = endDateValue(right);
+      if (!leftEndDate || !rightEndDate) {
+        fields[field] = {
+          kind: 'conflict',
+          left: leftEndDate ?? dateValue(left.values, field),
+          right: rightEndDate ?? dateValue(right.values, field)
+        };
+      } else {
+        fields[field] = compareClaimDateFieldValues(leftEndDate, rightEndDate);
+      }
+      continue;
+    }
+
+    fields[field] = compareClaimDateFieldValues(
+      dateValue(left.values, field),
+      dateValue(right.values, field)
+    );
+  }
+
+  return { result: 'compared', fields };
 }
 
 export function strictClaimComparisonKey(

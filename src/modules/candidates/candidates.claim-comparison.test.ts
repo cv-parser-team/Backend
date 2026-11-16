@@ -4,6 +4,7 @@ import {
   compareClaimDateFieldValues,
   compareClaimDates,
   compareClaimFieldValues,
+  compareClaimFields,
   compareClaims,
   type ComparableClaim
 } from './candidates.claim-comparison.js';
@@ -673,5 +674,110 @@ describe('claim date field comparison', () => {
       left: invalid,
       right: explicit
     });
+  });
+});
+
+describe('claim fields comparison', () => {
+  it('compares employment fields including arrays and Present', () => {
+    expect(
+      compareClaimFields(
+        claim(
+          {
+            employer: 'Example Labs',
+            jobTitle: 'Backend Engineer',
+            startDate: '2020',
+            skills: ['TypeScript']
+          },
+          { current: true, currentAsOf: '2024-06' }
+        ),
+        claim({
+          employer: ' example   labs ',
+          jobTitle: 'Backend Engineer',
+          startDate: '2020-03',
+          endDate: '2025',
+          location: 'Amman',
+          skills: ['TypeScript', 'PostgreSQL']
+        })
+      )
+    ).toEqual({
+      result: 'compared',
+      fields: {
+        employer: { kind: 'same', value: 'Example Labs' },
+        endDate: {
+          kind: 'compatible',
+          left: { kind: 'present', asOf: '2024-06' },
+          right: { kind: 'date', value: '2025' }
+        },
+        jobTitle: { kind: 'same', value: 'Backend Engineer' },
+        location: { kind: 'enrichment', value: 'Amman', from: 'right' },
+        skills: {
+          kind: 'enrichment',
+          value: ['TypeScript', 'PostgreSQL'],
+          from: 'both'
+        },
+        startDate: {
+          kind: 'precision_improvement',
+          value: { kind: 'date', value: '2020-03' },
+          from: 'right'
+        }
+      }
+    });
+  });
+
+  it('compares certification dates and optional fields', () => {
+    expect(
+      compareClaimFields(
+        claim(
+          { title: 'AWS Architect', issuer: 'Amazon', issueDate: '2024' },
+          { claimType: 'certification' }
+        ),
+        claim(
+          {
+            title: 'AWS Architect',
+            issuer: 'Amazon',
+            issueDate: '2024-03',
+            credentialId: 'ABC-123'
+          },
+          { claimType: 'certification' }
+        )
+      )
+    ).toMatchObject({
+      result: 'compared',
+      fields: {
+        issueDate: {
+          kind: 'precision_improvement',
+          value: { kind: 'date', value: '2024-03' },
+          from: 'right'
+        },
+        credentialId: {
+          kind: 'enrichment',
+          value: 'ABC-123',
+          from: 'right'
+        }
+      }
+    });
+  });
+
+  it('refuses cross-candidate and cross-type field comparisons', () => {
+    const skill = claim({ name: 'TypeScript' }, { claimType: 'skill' });
+
+    expect(
+      compareClaimFields(
+        skill,
+        claim(
+          { name: 'TypeScript' },
+          {
+            candidateId: '22222222-2222-4222-8222-222222222222',
+            claimType: 'skill'
+          }
+        )
+      )
+    ).toEqual({ result: 'not_comparable', reason: 'different_candidate' });
+    expect(
+      compareClaimFields(
+        skill,
+        claim({ name: 'TypeScript' }, { claimType: 'language' })
+      )
+    ).toEqual({ result: 'not_comparable', reason: 'different_type' });
   });
 });
