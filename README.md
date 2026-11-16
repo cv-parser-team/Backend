@@ -25,13 +25,22 @@ The API listens on `http://localhost:4000` by default. Environment variables
 must be exported by your shell or development environment; the application
 does not load `.env` files itself.
 
+AI features use Gemini and need `LLM_API_KEY`, created in
+[Google AI Studio](https://aistudio.google.com/docs/api-key). Keep the key in
+your local `.env` only. Without it, CV extraction cannot run, and claim values
+that exact and spelling matching cannot normalize are left for the candidate.
+`NORMALIZATION_AI_ENABLED=false` turns AI normalization off even with a key;
+`NORMALIZATION_AI_POLL_INTERVAL_MS` and `NORMALIZATION_AI_BATCH_SIZE` set how
+often and how many requests the worker processes. See
+[Normalization](docs/modules/normalization.md#ai-matching).
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the API in watch mode |
-| `npm run worker:dev` | Start the document-processing worker in watch mode |
-| `npm run worker` | Start the compiled document-processing worker |
+| `npm run worker:dev` | Start the worker in watch mode: document processing and AI normalization requests |
+| `npm run worker` | Start the compiled worker: document processing and AI normalization requests |
 | `npm run parsing:inspect -- [file] [output] [--llm]` | Write a visual HTML parsing report; `--llm` embeds structured AI claims in the same report |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
 | `npm run llm:inspect -- [output.html]` | Run one tracked candidate-extraction request and write a formatted HTML claims report (defaults to `llm-inspection.html`) |
