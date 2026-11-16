@@ -209,6 +209,65 @@ paths:
         "401": { $ref: "#/components/responses/AuthenticationRequired" }
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /api/candidates/me/claims/merge-proposal:
+    get:
+      tags: [Candidates]
+      summary: Compare two claims and build a merge proposal
+      operationId: getMyClaimMergeProposal
+      description: Read-only comparison that never changes or publishes either claim.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/LeftClaimId"
+        - $ref: "#/components/parameters/RightClaimId"
+      responses:
+        "200": { $ref: "#/components/responses/ClaimMergeProposalSuccess" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/AuthenticationRequired" }
+        "403": { $ref: "#/components/responses/CandidateAccessRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/candidates/me/claims/coalesce:
+    post:
+      tags: [Candidates]
+      summary: Safely coalesce pending extracted claims
+      operationId: coalesceMyPendingClaims
+      description: Atomically combines only an automatically safe pair. The survivor remains pending and is not exported.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimPairRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ClaimCoalesceSuccess" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/AuthenticationRequired" }
+        "403": { $ref: "#/components/responses/CandidateAccessRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+  /api/candidates/me/claims/merge:
+    post:
+      tags: [Candidates]
+      summary: Confirm and apply a claim merge
+      operationId: mergeMyConfirmedClaims
+      description: Atomically applies candidate-confirmed values, accepts the survivor for profile export, and retires the duplicate.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmedClaimMergeRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ConfirmedClaimMergeSuccess" }
+        "400": { $ref: "#/components/responses/ClaimInputError" }
+        "401": { $ref: "#/components/responses/AuthenticationRequired" }
+        "403": { $ref: "#/components/responses/CandidateAccessRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
   /api/candidates/me/claims/{claimId}:
     parameters:
       - $ref: "#/components/parameters/ClaimId"
@@ -583,6 +642,20 @@ components:
       schema:
         type: string
         format: uuid
+    LeftClaimId:
+      name: leftClaimId
+      in: query
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RightClaimId:
+      name: rightClaimId
+      in: query
+      required: true
+      schema:
+        type: string
+        format: uuid
     IfMatch:
       name: If-Match
       in: header
@@ -643,6 +716,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ClaimListResponse"
+    ClaimMergeProposalSuccess:
+      description: Read-only claim merge proposal
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ClaimMergeProposalResponse"
+    ClaimCoalesceSuccess:
+      description: Safe pending-claim coalescing result
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ClaimCoalesceResponse"
+    ConfirmedClaimMergeSuccess:
+      description: Candidate-confirmed claim merge result
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConfirmedClaimMergeResponse"
     DocumentSuccess:
       description: Document metadata response
       content:
@@ -764,7 +855,7 @@ components:
           schema:
             $ref: "#/components/schemas/ClaimUpdateErrorResponse"
     VersionConflict:
-      description: Resource version does not match If-Match
+      description: Resource version does not match the version reviewed by the client
       content:
         application/json:
           schema:
@@ -1523,6 +1614,269 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/ClaimRecord"
+    ClaimPairRequest:
+      type: object
+      required:
+        - leftClaimId
+        - rightClaimId
+      additionalProperties: false
+      properties:
+        leftClaimId:
+          type: string
+          format: uuid
+        rightClaimId:
+          type: string
+          format: uuid
+    ConfirmedClaimMergeRequest:
+      type: object
+      required:
+        - leftClaimId
+        - rightClaimId
+        - leftVersion
+        - rightVersion
+        - survivorClaimId
+        - values
+      additionalProperties: false
+      properties:
+        leftClaimId:
+          type: string
+          format: uuid
+        rightClaimId:
+          type: string
+          format: uuid
+        leftVersion:
+          type: integer
+          minimum: 1
+        rightVersion:
+          type: integer
+          minimum: 1
+        survivorClaimId:
+          type: string
+          format: uuid
+        values:
+          description: Final values validated against the stored claim type.
+          anyOf:
+            - $ref: "#/components/schemas/SkillClaimValues"
+            - $ref: "#/components/schemas/EmploymentClaimValues"
+            - $ref: "#/components/schemas/EducationClaimValues"
+            - $ref: "#/components/schemas/CertificationClaimValues"
+            - $ref: "#/components/schemas/LanguageClaimValues"
+            - $ref: "#/components/schemas/ProjectClaimValues"
+        current:
+          type: boolean
+          description: Whether an employment, education, or project claim is ongoing.
+    ClaimVersionReference:
+      type: object
+      required:
+        - claimId
+        - version
+      additionalProperties: false
+      properties:
+        claimId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+    ClaimMergeNoProposal:
+      type: object
+      required:
+        - result
+        - reason
+      additionalProperties: false
+      properties:
+        result:
+          type: string
+          enum: [no_proposal]
+        reason:
+          type: string
+          enum:
+            - different_candidate
+            - different_type
+            - different_identity
+            - unsupported_type
+            - same_claim
+            - rejected_claim
+            - superseded_claim
+    ClaimMergeProposal:
+      type: object
+      required:
+        - result
+        - identity
+        - left
+        - right
+        - survivorClaimId
+        - survivorReason
+        - fields
+        - proposedValues
+        - unresolvedFields
+        - requiresCandidateChoice
+        - recommendedAction
+      additionalProperties: false
+      properties:
+        result:
+          type: string
+          enum: [proposal]
+        identity:
+          type: string
+          enum: [equivalent, suspected_duplicate]
+        left:
+          $ref: "#/components/schemas/ClaimVersionReference"
+        right:
+          $ref: "#/components/schemas/ClaimVersionReference"
+        survivorClaimId:
+          type: string
+          format: uuid
+          nullable: true
+        survivorReason:
+          type: string
+          nullable: true
+          enum:
+            - candidate_authority
+            - accepted_status
+            - oldest_pending
+            - claim_id_tiebreaker
+        fields:
+          type: object
+          description: Field names mapped to same, enrichment, precision improvement, warning, compatible, or conflict comparisons.
+          additionalProperties:
+            type: object
+            additionalProperties: true
+        proposedValues:
+          type: object
+          additionalProperties: true
+        proposedCurrent:
+          type: boolean
+          nullable: true
+        unresolvedFields:
+          type: array
+          items:
+            type: string
+        requiresCandidateChoice:
+          type: boolean
+        recommendedAction:
+          type: string
+          enum: [automatic_coalesce, candidate_review]
+    ClaimMergeProposalResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              oneOf:
+                - $ref: "#/components/schemas/ClaimMergeNoProposal"
+                - $ref: "#/components/schemas/ClaimMergeProposal"
+    ClaimNoMergeResult:
+      type: object
+      required:
+        - result
+        - reason
+      additionalProperties: false
+      properties:
+        result:
+          type: string
+          enum: [no_merge]
+        reason:
+          type: string
+          enum:
+            - different_candidate
+            - different_type
+            - different_identity
+            - unsupported_type
+            - same_claim
+            - rejected_claim
+            - superseded_claim
+    ClaimCoalescedResult:
+      type: object
+      required:
+        - result
+        - survivor
+        - duplicate
+      additionalProperties: false
+      properties:
+        result:
+          type: string
+          enum: [coalesced]
+        survivor:
+          $ref: "#/components/schemas/ClaimRecord"
+        duplicate:
+          $ref: "#/components/schemas/ClaimRecord"
+    ClaimCoalesceResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              oneOf:
+                - $ref: "#/components/schemas/ClaimNoMergeResult"
+                - type: object
+                  required:
+                    - result
+                  additionalProperties: false
+                  properties:
+                    result:
+                      type: string
+                      enum: [candidate_review_required]
+                - $ref: "#/components/schemas/ClaimCoalescedResult"
+    InvalidClaimMergeResolution:
+      type: object
+      required:
+        - result
+        - reason
+      additionalProperties: false
+      properties:
+        result:
+          type: string
+          enum: [invalid_resolution]
+        reason:
+          type: string
+          enum:
+            - invalid_survivor
+            - missing_field_choice
+            - inconsistent_current
+        fields:
+          type: array
+          items:
+            type: string
+    ConfirmedClaimMergedResult:
+      type: object
+      required:
+        - result
+        - survivor
+        - duplicate
+      additionalProperties: false
+      properties:
+        result:
+          type: string
+          enum: [merged]
+        survivor:
+          $ref: "#/components/schemas/ClaimRecord"
+        duplicate:
+          $ref: "#/components/schemas/ClaimRecord"
+    ConfirmedClaimMergeResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              oneOf:
+                - $ref: "#/components/schemas/ClaimNoMergeResult"
+                - $ref: "#/components/schemas/InvalidClaimMergeResolution"
+                - type: object
+                  required:
+                    - result
+                  additionalProperties: false
+                  properties:
+                    result:
+                      type: string
+                      enum: [not_eligible]
+                - $ref: "#/components/schemas/ConfirmedClaimMergedResult"
     ExportedProfilePersonalInfo:
       type: object
       required:

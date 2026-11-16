@@ -66,6 +66,13 @@ proposal. It does not approve, retire, or otherwise change either claim.
 equivalent pending extracted claims. The survivor remains `pending`, so this
 operation does not publish extracted information to the profile.
 
+`POST /api/candidates/me/claims/merge` applies the candidate's final values to
+a reviewed pair using both reviewed versions. It archives changed survivor
+values, transfers source occurrences, retires the duplicate, and makes the
+survivor `accepted`. The resolved survivor therefore appears in profile export
+without a second approval action. A concurrent change returns
+`409 VERSION_CONFLICT` and writes nothing.
+
 ## Editing a claim
 
 ```mermaid

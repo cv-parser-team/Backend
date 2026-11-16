@@ -250,6 +250,32 @@ export type ClaimMergeProposalQuery = FromSchema<
 export const claimCoalesceBodySchema = claimMergeProposalQuerySchema;
 export type ClaimCoalesceBody = ClaimMergeProposalQuery;
 
+export const confirmClaimMergeBodySchema = {
+  type: 'object',
+  properties: {
+    leftClaimId: { type: 'string', format: 'uuid' },
+    rightClaimId: { type: 'string', format: 'uuid' },
+    leftVersion: { type: 'integer', minimum: 1 },
+    rightVersion: { type: 'integer', minimum: 1 },
+    survivorClaimId: { type: 'string', format: 'uuid' },
+    values: { type: 'object', minProperties: 1 },
+    current: { type: 'boolean' }
+  },
+  required: [
+    'leftClaimId',
+    'rightClaimId',
+    'leftVersion',
+    'rightVersion',
+    'survivorClaimId',
+    'values'
+  ],
+  additionalProperties: false
+} as const;
+
+export type ConfirmClaimMergeBody = FromSchema<
+  typeof confirmClaimMergeBodySchema
+>;
+
 export const reviewClaimBodySchema = {
   type: 'object',
   properties: {

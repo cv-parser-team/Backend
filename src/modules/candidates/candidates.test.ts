@@ -1645,6 +1645,69 @@ describe('candidates routes', () => {
     expect(service.coalescePendingClaims).not.toHaveBeenCalled();
   });
 
+  it('confirms a merge and accepts the survivor for export', async () => {
+    const service = createServiceDouble();
+    const rightClaimId = '44444444-4444-4444-8444-444444444444';
+    vi.mocked(service.mergeConfirmedClaims).mockResolvedValue({
+      result: 'merged',
+      survivor: extractedClaim('accepted', 3),
+      duplicate: {
+        ...extractedClaim('pending', 5),
+        claimId: rightClaimId,
+        supersededByClaimId: claimId
+      }
+    });
+    app = await createCandidatesApp(service);
+    const payload = {
+      leftClaimId: claimId,
+      rightClaimId,
+      leftVersion: 2,
+      rightVersion: 4,
+      survivorClaimId: claimId,
+      values: { name: 'TypeScript' }
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims/merge',
+      headers: authorization,
+      payload
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: {
+        result: 'merged',
+        survivor: { status: 'accepted' },
+        duplicate: { supersededByClaimId: claimId }
+      }
+    });
+    expect(service.mergeConfirmedClaims).toHaveBeenCalledWith(userId, payload);
+  });
+
+  it('validates confirmed merge IDs and reviewed versions', async () => {
+    const service = createServiceDouble();
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims/merge',
+      headers: authorization,
+      payload: {
+        leftClaimId: claimId,
+        rightClaimId: 'invalid',
+        leftVersion: 0,
+        rightVersion: 1,
+        survivorClaimId: claimId,
+        values: { name: 'TypeScript' }
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(service.mergeConfirmedClaims).not.toHaveBeenCalled();
+  });
+
   it('returns one owned claim with its entity tag', async () => {
     const service = createServiceDouble();
     app = await createCandidatesApp(service);

@@ -8,6 +8,8 @@ import {
   claimBodySchema,
   ClaimCoalesceBody,
   claimCoalesceBodySchema,
+  ConfirmClaimMergeBody,
+  confirmClaimMergeBodySchema,
   ClaimMergeProposalQuery,
   claimMergeProposalQuerySchema,
   ClaimParams,
@@ -314,6 +316,45 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
       const response: ApiResponse<typeof data> = {
         success: true,
         data,
+        timestamp: new Date().toISOString()
+      };
+
+      return response;
+    }
+  );
+
+  fastify.post<{ Body: ConfirmClaimMergeBody }>(
+    '/me/claims/merge',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Confirm and apply a claim merge',
+        description:
+          'Applies the candidate-confirmed values atomically. The survivor becomes accepted and is included in profile export.',
+        security: candidateSecurity,
+        body: confirmClaimMergeBodySchema,
+        response: {
+          200: documentedResponse('Confirmed claim merge result'),
+          400: documentedResponse('Invalid claim merge resolution'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Candidate profile or claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.mergeConfirmedClaims(
+        request.auth.userId,
+        request.body
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        message:
+          data.result === 'merged'
+            ? 'Claims merged and survivor accepted successfully'
+            : undefined,
         timestamp: new Date().toISOString()
       };
 
