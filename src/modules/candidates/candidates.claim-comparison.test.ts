@@ -6,7 +6,9 @@ import {
   compareClaimFieldValues,
   compareClaimFields,
   compareClaims,
-  type ComparableClaim
+  selectClaimSurvivor,
+  type ComparableClaim,
+  type MergeCandidateClaim
 } from './candidates.claim-comparison.js';
 
 const candidateId = '11111111-1111-4111-8111-111111111111';
@@ -19,6 +21,22 @@ function claim(
     candidateId,
     claimType: 'employment',
     values,
+    ...overrides
+  };
+}
+
+function mergeCandidate(
+  overrides: Partial<MergeCandidateClaim> = {}
+): MergeCandidateClaim {
+  return {
+    claimId: '11111111-1111-4111-8111-111111111111',
+    candidateId,
+    claimType: 'skill',
+    origin: 'extracted',
+    status: 'pending',
+    candidateEdited: false,
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    values: { name: 'TypeScript' },
     ...overrides
   };
 }
@@ -778,6 +796,112 @@ describe('claim fields comparison', () => {
         skill,
         claim({ name: 'TypeScript' }, { claimType: 'language' })
       )
+    ).toEqual({ result: 'not_comparable', reason: 'different_type' });
+  });
+});
+
+describe('claim survivor selection', () => {
+  it('prefers manual or candidate-edited claims', () => {
+    const extracted = mergeCandidate({
+      status: 'accepted',
+      claimId: '22222222-2222-4222-8222-222222222222'
+    });
+
+    expect(
+      selectClaimSurvivor(
+        mergeCandidate({ origin: 'manual', status: 'accepted' }),
+        extracted
+      )
+    ).toEqual({
+      result: 'selected',
+      survivor: 'left',
+      reason: 'candidate_authority'
+    });
+    expect(
+      selectClaimSurvivor(
+        extracted,
+        mergeCandidate({
+          claimId: '33333333-3333-4333-8333-333333333333',
+          candidateEdited: true
+        })
+      )
+    ).toEqual({
+      result: 'selected',
+      survivor: 'right',
+      reason: 'candidate_authority'
+    });
+  });
+
+  it('prefers accepted claims at equal authority', () => {
+    expect(
+      selectClaimSurvivor(
+        mergeCandidate({ status: 'accepted' }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222'
+        })
+      )
+    ).toEqual({
+      result: 'selected',
+      survivor: 'left',
+      reason: 'accepted_status'
+    });
+  });
+
+  it('requires a candidate choice between equally authoritative accepted claims', () => {
+    expect(
+      selectClaimSurvivor(
+        mergeCandidate({ status: 'accepted' }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          status: 'accepted'
+        })
+      )
+    ).toEqual({ result: 'candidate_choice_required' });
+  });
+
+  it('selects the oldest pending claim with a stable ID tie-breaker', () => {
+    expect(
+      selectClaimSurvivor(
+        mergeCandidate({ createdAt: new Date('2026-02-01T00:00:00.000Z') }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          createdAt: new Date('2026-01-01T00:00:00.000Z')
+        })
+      )
+    ).toEqual({
+      result: 'selected',
+      survivor: 'right',
+      reason: 'oldest_pending'
+    });
+    expect(
+      selectClaimSurvivor(
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222'
+        }),
+        mergeCandidate({
+          claimId: '11111111-1111-4111-8111-111111111111'
+        })
+      )
+    ).toEqual({
+      result: 'selected',
+      survivor: 'right',
+      reason: 'claim_id_tiebreaker'
+    });
+  });
+
+  it('refuses survivor selection across candidates or claim types', () => {
+    const left = mergeCandidate();
+
+    expect(
+      selectClaimSurvivor(
+        left,
+        mergeCandidate({
+          candidateId: '22222222-2222-4222-8222-222222222222'
+        })
+      )
+    ).toEqual({ result: 'not_comparable', reason: 'different_candidate' });
+    expect(
+      selectClaimSurvivor(left, mergeCandidate({ claimType: 'language' }))
     ).toEqual({ result: 'not_comparable', reason: 'different_type' });
   });
 });

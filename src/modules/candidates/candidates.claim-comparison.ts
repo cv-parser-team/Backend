@@ -13,6 +13,30 @@ export interface ComparableClaim {
   currentAsOf?: string;
 }
 
+export interface MergeCandidateClaim extends ComparableClaim {
+  claimId: string;
+  origin: CreateClaimInput['origin'];
+  status: Extract<CreateClaimInput['status'], 'pending' | 'accepted'>;
+  candidateEdited: boolean;
+  createdAt: Date;
+}
+
+export type ClaimSurvivorSelection =
+  | {
+      result: 'not_comparable';
+      reason: 'different_candidate' | 'different_type';
+    }
+  | {
+      result: 'selected';
+      survivor: 'left' | 'right';
+      reason:
+        | 'candidate_authority'
+        | 'accepted_status'
+        | 'oldest_pending'
+        | 'claim_id_tiebreaker';
+    }
+  | { result: 'candidate_choice_required' };
+
 export type ClaimComparisonResult =
   | {
       result: 'not_comparable';
@@ -389,6 +413,58 @@ export function compareClaimFields(
   }
 
   return { result: 'compared', fields };
+}
+
+function isCandidateAuthoritative(claim: MergeCandidateClaim): boolean {
+  return claim.origin === 'manual' || claim.candidateEdited;
+}
+
+export function selectClaimSurvivor(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim
+): ClaimSurvivorSelection {
+  if (left.candidateId !== right.candidateId) {
+    return { result: 'not_comparable', reason: 'different_candidate' };
+  }
+  if (left.claimType !== right.claimType) {
+    return { result: 'not_comparable', reason: 'different_type' };
+  }
+
+  const leftAuthoritative = isCandidateAuthoritative(left);
+  const rightAuthoritative = isCandidateAuthoritative(right);
+  if (leftAuthoritative !== rightAuthoritative) {
+    return {
+      result: 'selected',
+      survivor: leftAuthoritative ? 'left' : 'right',
+      reason: 'candidate_authority'
+    };
+  }
+
+  if (left.status !== right.status) {
+    return {
+      result: 'selected',
+      survivor: left.status === 'accepted' ? 'left' : 'right',
+      reason: 'accepted_status'
+    };
+  }
+
+  if (left.status === 'accepted') {
+    return { result: 'candidate_choice_required' };
+  }
+
+  const createdDifference = left.createdAt.getTime() - right.createdAt.getTime();
+  if (createdDifference !== 0) {
+    return {
+      result: 'selected',
+      survivor: createdDifference < 0 ? 'left' : 'right',
+      reason: 'oldest_pending'
+    };
+  }
+  return {
+    result: 'selected',
+    survivor: left.claimId.localeCompare(right.claimId) <= 0 ? 'left' : 'right',
+    reason: 'claim_id_tiebreaker'
+  };
 }
 
 export function strictClaimComparisonKey(
