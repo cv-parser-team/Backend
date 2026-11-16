@@ -1886,6 +1886,136 @@ components:
             - same_claim
             - rejected_claim
             - superseded_claim
+    ComparableClaimDate:
+      description: A normalized claim date, an ongoing value, or a missing date.
+      oneOf:
+        - type: object
+          required: [kind, value]
+          additionalProperties: false
+          properties:
+            kind:
+              type: string
+              enum: [date]
+            value:
+              type: string
+              pattern: '^\d{4}(-\d{2})?$'
+              example: "2024-06"
+        - type: object
+          required: [kind]
+          additionalProperties: false
+          properties:
+            kind:
+              type: string
+              enum: [present]
+            asOf:
+              type: string
+              pattern: '^\d{4}(-\d{2})?$'
+              description: Reliable source date used to compare Present with an explicit date.
+        - type: object
+          required: [kind]
+          additionalProperties: false
+          properties:
+            kind:
+              type: string
+              enum: [missing]
+    ClaimComparableValue:
+      description: A text, text-list, or normalized date value used in a field comparison.
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+        - $ref: "#/components/schemas/ComparableClaimDate"
+    SameClaimFieldComparison:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [same]
+        value:
+          $ref: "#/components/schemas/ClaimComparableValue"
+    EnrichmentClaimFieldComparison:
+      type: object
+      required: [kind, value, from]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [enrichment]
+        value:
+          $ref: "#/components/schemas/ClaimComparableValue"
+        from:
+          type: string
+          enum: [left, right, both]
+    PrecisionImprovementClaimFieldComparison:
+      type: object
+      required: [kind, value, from]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [precision_improvement]
+        value:
+          $ref: "#/components/schemas/ComparableClaimDate"
+        from:
+          type: string
+          enum: [left, right]
+    CompatibleClaimFieldComparison:
+      type: object
+      required: [kind, left, right]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [compatible]
+        left:
+          $ref: "#/components/schemas/ComparableClaimDate"
+        right:
+          $ref: "#/components/schemas/ComparableClaimDate"
+    WarningClaimFieldComparison:
+      type: object
+      required: [kind, left, right]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [warning]
+        left:
+          $ref: "#/components/schemas/ComparableClaimDate"
+        right:
+          $ref: "#/components/schemas/ComparableClaimDate"
+    ConflictClaimFieldComparison:
+      type: object
+      required: [kind, left, right]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [conflict]
+        left:
+          $ref: "#/components/schemas/ClaimComparableValue"
+        right:
+          $ref: "#/components/schemas/ClaimComparableValue"
+    ClaimFieldComparison:
+      description: The comparison of one field from the left and right claims.
+      oneOf:
+        - $ref: "#/components/schemas/SameClaimFieldComparison"
+        - $ref: "#/components/schemas/EnrichmentClaimFieldComparison"
+        - $ref: "#/components/schemas/PrecisionImprovementClaimFieldComparison"
+        - $ref: "#/components/schemas/CompatibleClaimFieldComparison"
+        - $ref: "#/components/schemas/WarningClaimFieldComparison"
+        - $ref: "#/components/schemas/ConflictClaimFieldComparison"
+      discriminator:
+        propertyName: kind
+        mapping:
+          same: "#/components/schemas/SameClaimFieldComparison"
+          enrichment: "#/components/schemas/EnrichmentClaimFieldComparison"
+          precision_improvement: "#/components/schemas/PrecisionImprovementClaimFieldComparison"
+          compatible: "#/components/schemas/CompatibleClaimFieldComparison"
+          warning: "#/components/schemas/WarningClaimFieldComparison"
+          conflict: "#/components/schemas/ConflictClaimFieldComparison"
     ClaimMergeProposal:
       type: object
       required:
@@ -1928,8 +2058,7 @@ components:
           type: object
           description: Field names mapped to same, enrichment, precision improvement, warning, compatible, or conflict comparisons.
           additionalProperties:
-            type: object
-            additionalProperties: true
+            $ref: "#/components/schemas/ClaimFieldComparison"
         proposedValues:
           type: object
           additionalProperties: true
@@ -1938,6 +2067,7 @@ components:
           nullable: true
         unresolvedFields:
           type: array
+          description: Field names classified as compatible, warning, or conflict.
           items:
             type: string
         requiresCandidateChoice:
