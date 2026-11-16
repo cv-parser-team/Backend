@@ -34,6 +34,39 @@ that exact and spelling matching cannot normalize are left for the candidate.
 often and how many requests the worker processes. See
 [Normalization](docs/modules/normalization.md#ai-matching).
 
+## Demo data
+
+To try the application without creating accounts and claims by hand, fill
+your local database with demo data:
+
+```bash
+npm run infra:up
+npm run db:push
+npm run demo:seed
+```
+
+Every demo account uses the password `Demo-Password-2026!`.
+
+| Account | Role | What it shows |
+| --- | --- | --- |
+| `sara@demo.luminacv.test` | Candidate | A full profile with an accepted claim of every type, a rejected extracted skill, and an extracted job waiting for review; the export contains the accepted claims only |
+| `omar@demo.luminacv.test` | Candidate | Normalization: `JavaScript` (exact), `Postgres` (alias), `Pyhton` (spelling correction), `Server-side Engineer` and `Bachelors in Computer Science` (AI), `Prodject Manager` (ambiguous, then AI), and `Underwater Basket Weaving` (no term) |
+| `lina@demo.luminacv.test` | Candidate | A processed CV with three extracted claims and two review items waiting for review |
+| `reviewer@demo.luminacv.test` | Reviewer | |
+| `admin@demo.luminacv.test` | Admin | |
+
+- Demo accounts use the reserved `demo.luminacv.test` domain. `demo:seed`
+  first removes the previous demo data, so running it again gives the same
+  data without duplicates. `demo:reset` removes it, with everything the demo
+  users own and their files. Neither touches any other data.
+- Both commands refuse to run when `NODE_ENV` is `production`.
+- `demo:seed` loads the normalization dictionary if needed. Omar's AI values
+  are matched by the worker (`npm run worker:dev`) when `LLM_API_KEY` is set;
+  without it they stay unmatched.
+- The demo data lives in `src/tools/demo/demo-data.ts`. Tests check that every
+  claim passes the API's value rules and that Omar's values reach every
+  normalization step.
+
 ## Commands
 
 | Command | Purpose |
@@ -45,6 +78,8 @@ often and how many requests the worker processes. See
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
 | `npm run llm:inspect -- [output.html]` | Run one tracked candidate-extraction request and write a formatted HTML claims report (defaults to `llm-inspection.html`) |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
+| `npm run demo:seed` | Replace all demo data with a fresh copy (see [Demo data](#demo-data)) |
+| `npm run demo:reset` | Remove all demo data |
 | `npm run build` | Type-check and compile TypeScript |
 | `npm test` | Run the Vitest suite once |
 | `npm run test:watch` | Run tests in watch mode |
