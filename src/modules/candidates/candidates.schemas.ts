@@ -250,6 +250,22 @@ export type ClaimMergeProposalQuery = FromSchema<
 export const claimCoalesceBodySchema = claimMergeProposalQuerySchema;
 export type ClaimCoalesceBody = ClaimMergeProposalQuery;
 
+export const recordClaimsDifferentBodySchema = {
+  type: 'object',
+  properties: {
+    leftClaimId: { type: 'string', format: 'uuid' },
+    rightClaimId: { type: 'string', format: 'uuid' },
+    leftVersion: { type: 'integer', minimum: 1 },
+    rightVersion: { type: 'integer', minimum: 1 }
+  },
+  required: ['leftClaimId', 'rightClaimId', 'leftVersion', 'rightVersion'],
+  additionalProperties: false
+} as const;
+
+export type RecordClaimsDifferentBody = FromSchema<
+  typeof recordClaimsDifferentBodySchema
+>;
+
 export const confirmClaimMergeBodySchema = {
   type: 'object',
   properties: {
@@ -275,6 +291,100 @@ export const confirmClaimMergeBodySchema = {
 export type ConfirmClaimMergeBody = FromSchema<
   typeof confirmClaimMergeBodySchema
 >;
+
+const claimBatchActionSchema = {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['accept_claim', 'merge_claims'] },
+    claimId: { type: 'string', format: 'uuid' },
+    version: { type: 'integer', minimum: 1 },
+    leftClaimId: { type: 'string', format: 'uuid' },
+    rightClaimId: { type: 'string', format: 'uuid' },
+    leftVersion: { type: 'integer', minimum: 1 },
+    rightVersion: { type: 'integer', minimum: 1 },
+    survivorClaimId: { type: 'string', format: 'uuid' },
+    values: { type: 'object', minProperties: 1 },
+    current: { type: 'boolean' }
+  },
+  required: ['action'],
+  additionalProperties: false,
+  allOf: [
+    {
+      if: {
+        properties: { action: { const: 'accept_claim' } },
+        required: ['action']
+      },
+      then: {
+        required: ['claimId', 'version'],
+        not: {
+          anyOf: [
+            { required: ['leftClaimId'] },
+            { required: ['rightClaimId'] },
+            { required: ['leftVersion'] },
+            { required: ['rightVersion'] },
+            { required: ['survivorClaimId'] },
+            { required: ['values'] },
+            { required: ['current'] }
+          ]
+        }
+      }
+    },
+    {
+      if: {
+        properties: { action: { const: 'merge_claims' } },
+        required: ['action']
+      },
+      then: {
+        required: [
+          'leftClaimId',
+          'rightClaimId',
+          'leftVersion',
+          'rightVersion',
+          'survivorClaimId',
+          'values'
+        ],
+        not: {
+          anyOf: [{ required: ['claimId'] }, { required: ['version'] }]
+        }
+      }
+    }
+  ]
+} as const;
+
+export const resolveClaimBatchBodySchema = {
+  type: 'object',
+  properties: {
+    actions: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 100,
+      items: claimBatchActionSchema
+    }
+  },
+  required: ['actions'],
+  additionalProperties: false
+} as const;
+
+export type ClaimBatchResolutionAction =
+  | {
+      action: 'accept_claim';
+      claimId: string;
+      version: number;
+    }
+  | {
+      action: 'merge_claims';
+      leftClaimId: string;
+      rightClaimId: string;
+      leftVersion: number;
+      rightVersion: number;
+      survivorClaimId: string;
+      values: unknown;
+      current?: boolean;
+    };
+
+export interface ResolveClaimBatchBody {
+  actions: ClaimBatchResolutionAction[];
+}
 
 export const reviewClaimBodySchema = {
   type: 'object',

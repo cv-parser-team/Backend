@@ -199,6 +199,59 @@ export const claims = pgTable(
   ]
 );
 
+export const claimPairDecisions = pgTable(
+  'claim_pair_decisions',
+  {
+    decisionId: uuid('decision_id').primaryKey().defaultRandom(),
+    candidateId: uuid('candidate_id')
+      .notNull()
+      .references(() => candidates.candidateId, { onDelete: 'cascade' }),
+    leftClaimId: uuid('left_claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    rightClaimId: uuid('right_claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    leftVersion: integer('left_version').notNull(),
+    rightVersion: integer('right_version').notNull(),
+    decision: text('decision').$type<'different'>().default('different').notNull(),
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex('claim_pair_decisions_candidate_pair_unique').on(
+      table.candidateId,
+      table.leftClaimId,
+      table.rightClaimId
+    ),
+    index('claim_pair_decisions_left_claim_id_idx').on(table.leftClaimId),
+    index('claim_pair_decisions_right_claim_id_idx').on(table.rightClaimId),
+    check(
+      'claim_pair_decisions_claims_ordered',
+      sql`${table.leftClaimId} < ${table.rightClaimId}`
+    ),
+    check(
+      'claim_pair_decisions_versions_positive',
+      sql`${table.leftVersion} > 0 and ${table.rightVersion} > 0`
+    ),
+    check(
+      'claim_pair_decisions_decision_valid',
+      sql`${table.decision} = 'different'`
+    )
+  ]
+);
+
 // Physical document evidence only. Parser-inferred headings, sections, and
 // semantic-support decisions do not belong in this table.
 export const sourceOccurrences = pgTable(

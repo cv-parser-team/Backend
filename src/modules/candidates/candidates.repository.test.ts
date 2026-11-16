@@ -9,6 +9,7 @@ import {
   createCandidatesRepository
 } from './candidates.repository.js';
 import {
+  claimPairDecisions,
   claimRevisions,
   claims,
   employmentDetails,
@@ -769,7 +770,8 @@ describe('atomic claim merging', () => {
             ? { where: occurrenceWhere }
             : { where: lockWhere }
     }));
-    const inserted = vi.fn().mockResolvedValue(undefined);
+    const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+    const inserted = vi.fn(() => ({ onConflictDoUpdate }));
     const insert = vi.fn(() => ({ values: inserted }));
     const claimUpdates: Record<string, unknown>[] = [];
     const detailUpdates: Record<string, unknown>[] = [];
@@ -797,6 +799,7 @@ describe('atomic claim merging', () => {
       inserted,
       lock,
       lockOrderBy,
+      onConflictDoUpdate,
       repository: createCandidatesRepository(database),
       update
     };
@@ -924,6 +927,65 @@ describe('atomic claim merging', () => {
     expect(context.inserted).not.toHaveBeenCalled();
     expect(context.update).not.toHaveBeenCalled();
   });
+
+  it('records a different decision using canonical claim order', async () => {
+    const before = [
+      pendingRow(claimId, 2, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.recordClaimsDifferent({
+        candidateId,
+        left: { claimId: duplicateClaimId, expectedVersion: 4 },
+        right: { claimId, expectedVersion: 2 }
+      })
+    ).resolves.toEqual({ status: 'saved' });
+
+    expect(context.lock).toHaveBeenCalledWith('update');
+    expect(context.inserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId,
+        leftClaimId: claimId,
+        rightClaimId: duplicateClaimId,
+        leftVersion: 2,
+        rightVersion: 4,
+        decision: 'different'
+      })
+    );
+    expect(context.onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: [
+          claimPairDecisions.candidateId,
+          claimPairDecisions.leftClaimId,
+          claimPairDecisions.rightClaimId
+        ],
+        set: expect.objectContaining({
+          leftVersion: 2,
+          rightVersion: 4,
+          decision: 'different'
+        })
+      })
+    );
+  });
+
+  it('refuses stale different decisions before writing', async () => {
+    const before = [
+      pendingRow(claimId, 3, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript')
+    ];
+    const context = coalesceContext([before]);
+
+    await expect(
+      context.repository.recordClaimsDifferent({
+        candidateId,
+        left: { claimId, expectedVersion: 2 },
+        right: { claimId: duplicateClaimId, expectedVersion: 4 }
+      })
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(context.inserted).not.toHaveBeenCalled();
+  });
 });
 
 describe('reading claim source occurrences', () => {
@@ -984,6 +1046,35 @@ describe('reading claim source occurrences', () => {
       repository.listClaimSourceOccurrences(candidateId, [])
     ).resolves.toEqual([]);
     expect(select).not.toHaveBeenCalled();
+  });
+});
+
+describe('reading claim pair decisions', () => {
+  it('lists decisions for one candidate in canonical pair order', async () => {
+    const decision = {
+      decisionId: '44444444-4444-4444-8444-444444444444',
+      candidateId,
+      leftClaimId: claimId,
+      rightClaimId: '33333333-3333-4333-8333-333333333333',
+      leftVersion: 2,
+      rightVersion: 4,
+      decision: 'different' as const,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const orderBy = vi.fn().mockResolvedValue([decision]);
+    const where = vi.fn((_condition: SQL) => ({ orderBy }));
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const repository = createCandidatesRepository({
+      db: { select }
+    } as unknown as AppDatabase);
+
+    await expect(
+      repository.listClaimPairDecisions(candidateId)
+    ).resolves.toEqual([decision]);
+
+    expect(toSql(where.mock.calls[0]?.[0])?.params).toEqual([candidateId]);
+    expect(orderBy).toHaveBeenCalledOnce();
   });
 });
 

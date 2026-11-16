@@ -1,11 +1,12 @@
 import { FastifyBaseLogger } from 'fastify';
 import { UniqueConstraintViolationError } from '../../infrastructure/database/database.errors.js';
-import { RecordNotFoundError } from '../../shared/errors/app.error.js';
+import { AppError, RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { UsersService } from '../users/users.service.js';
 import {
   CandidateProfileExistsError,
   ClaimNotReviewableError,
   ClaimTypeMismatchError,
+  OverlappingBatchClaimsError,
   VersionConflictError
 } from './candidates.errors.js';
 import {
@@ -31,6 +32,7 @@ import {
 } from './candidates.repository.js';
 import {
   ClaimBody,
+  type ClaimBatchResolutionAction,
   CreateCandidateBody,
   ListClaimsQuery,
   ReviewClaimBody,
@@ -86,6 +88,11 @@ export type AutomaticClaimCoalesceResult =
   | Extract<AutomaticCoalescePlanResult, { result: 'candidate_review_required' }>
   | { result: 'coalesced'; survivor: ClaimRecord; duplicate: ClaimRecord };
 
+export type ClaimMergeCandidate = Extract<
+  ClaimMergeProposalResult,
+  { result: 'proposal' }
+>;
+
 export interface ConfirmClaimMergeInput {
   leftClaimId: string;
   rightClaimId: string;
@@ -103,6 +110,59 @@ export type ConfirmClaimMergeResult =
     >
   | { result: 'not_eligible' }
   | { result: 'merged'; survivor: ClaimRecord; duplicate: ClaimRecord };
+
+type ClaimMergeNoProposalReason = Extract<
+  ClaimMergeProposalResult,
+  { result: 'no_proposal' }
+>['reason'];
+
+export interface RecordClaimsDifferentInput {
+  leftClaimId: string;
+  rightClaimId: string;
+  leftVersion: number;
+  rightVersion: number;
+}
+
+export type RecordClaimsDifferentResult =
+  | { result: 'recorded' }
+  | { result: 'no_decision'; reason: ClaimMergeNoProposalReason }
+  | { result: 'not_eligible' };
+
+type ClaimBatchActionName = ClaimBatchResolutionAction['action'];
+
+export type ClaimBatchResolutionItemResult =
+  | {
+      index: number;
+      action: 'accept_claim';
+      status: 'accepted';
+      claim: ClaimRecord;
+    }
+  | {
+      index: number;
+      action: 'merge_claims';
+      status: 'accepted';
+      survivor: ClaimRecord;
+      duplicate: ClaimRecord;
+    }
+  | {
+      index: number;
+      action: ClaimBatchActionName;
+      status: 'conflict';
+      current: unknown;
+    }
+  | {
+      index: number;
+      action: ClaimBatchActionName;
+      status: 'not_eligible';
+      reason: string;
+    }
+  | {
+      index: number;
+      action: ClaimBatchActionName;
+      status: 'failed';
+      code: string;
+      message: string;
+    };
 
 export interface CandidatesService {
   createProfile(userId: string, input: CreateCandidateBody): Promise<CandidateProfile>;
@@ -122,6 +182,11 @@ export interface CandidatesService {
     leftClaimId: string,
     rightClaimId: string
   ): Promise<ClaimMergeProposalResult>;
+  listClaimMergeCandidates(userId: string): Promise<ClaimMergeCandidate[]>;
+  recordClaimsDifferent(
+    userId: string,
+    input: RecordClaimsDifferentInput
+  ): Promise<RecordClaimsDifferentResult>;
   coalescePendingClaims(
     userId: string,
     leftClaimId: string,
@@ -131,6 +196,10 @@ export interface CandidatesService {
     userId: string,
     input: ConfirmClaimMergeInput
   ): Promise<ConfirmClaimMergeResult>;
+  resolveClaimBatch(
+    userId: string,
+    actions: ClaimBatchResolutionAction[]
+  ): Promise<ClaimBatchResolutionItemResult[]>;
   updateClaim(
     userId: string,
     claimId: string,
@@ -198,6 +267,15 @@ function hasSameValues(left: ClaimValues, right: ClaimValues): boolean {
   );
 }
 
+function claimPairVersionKey(
+  leftClaimId: string,
+  leftVersion: number,
+  rightClaimId: string,
+  rightVersion: number
+): string {
+  return `${leftClaimId}:${leftVersion}:${rightClaimId}:${rightVersion}`;
+}
+
 function toSourceReference(
   occurrence: ClaimSourceOccurrenceRecord
 ): ClaimSourceReference {
@@ -256,7 +334,7 @@ export function createCandidatesService({
     return claim;
   }
 
-  return {
+  const service: CandidatesService = {
     async createProfile(userId, input) {
       const existing = await repository.findCandidateByUserId(userId);
       if (existing) {
@@ -387,6 +465,121 @@ export function createCandidatesService({
       return buildClaimMergeProposal(leftCandidate, rightCandidate);
     },
 
+    async listClaimMergeCandidates(userId) {
+      const candidate = await requireCandidate(userId);
+      const [claims, decisions] = await Promise.all([
+        repository.listClaims(candidate.candidateId),
+        repository.listClaimPairDecisions(candidate.candidateId)
+      ]);
+      const activeDecisionKeys = new Set(
+        decisions.map((decision) =>
+          claimPairVersionKey(
+            decision.leftClaimId,
+            decision.leftVersion,
+            decision.rightClaimId,
+            decision.rightVersion
+          )
+        )
+      );
+      const activeClaims = claims
+        .filter(
+          (claim) =>
+            claim.status !== 'rejected' && claim.supersededByClaimId === null
+        )
+        .sort((left, right) => left.claimId.localeCompare(right.claimId))
+        .map((claim) => toMergeCandidateClaim(candidate.candidateId, claim))
+        .filter((claim) => claim !== null);
+      const proposals: ClaimMergeCandidate[] = [];
+
+      for (let leftIndex = 0; leftIndex < activeClaims.length; leftIndex += 1) {
+        const left = activeClaims[leftIndex];
+        if (!left) {
+          continue;
+        }
+        for (
+          let rightIndex = leftIndex + 1;
+          rightIndex < activeClaims.length;
+          rightIndex += 1
+        ) {
+          const right = activeClaims[rightIndex];
+          if (!right || left.claimType !== right.claimType) {
+            continue;
+          }
+          if (
+            activeDecisionKeys.has(
+              claimPairVersionKey(
+                left.claimId,
+                left.version,
+                right.claimId,
+                right.version
+              )
+            )
+          ) {
+            continue;
+          }
+          const proposal = buildClaimMergeProposal(left, right);
+          if (proposal.result === 'proposal') {
+            proposals.push(proposal);
+          }
+        }
+      }
+
+      return proposals;
+    },
+
+    async recordClaimsDifferent(userId, input) {
+      const candidate = await requireCandidate(userId);
+      if (input.leftClaimId === input.rightClaimId) {
+        return { result: 'no_decision', reason: 'same_claim' };
+      }
+
+      const [left, right] = await Promise.all([
+        requireClaim(candidate.candidateId, input.leftClaimId),
+        requireClaim(candidate.candidateId, input.rightClaimId)
+      ]);
+      if (
+        left.version !== input.leftVersion ||
+        right.version !== input.rightVersion
+      ) {
+        throw new VersionConflictError('Claims', [left, right]);
+      }
+      if (left.supersededByClaimId !== null || right.supersededByClaimId !== null) {
+        return { result: 'no_decision', reason: 'superseded_claim' };
+      }
+
+      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
+      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      if (!leftCandidate || !rightCandidate) {
+        return { result: 'no_decision', reason: 'rejected_claim' };
+      }
+      const proposal = buildClaimMergeProposal(leftCandidate, rightCandidate);
+      if (proposal.result === 'no_proposal') {
+        return { result: 'no_decision', reason: proposal.reason };
+      }
+
+      const result = await repository.recordClaimsDifferent({
+        candidateId: candidate.candidateId,
+        left: {
+          claimId: input.leftClaimId,
+          expectedVersion: input.leftVersion
+        },
+        right: {
+          claimId: input.rightClaimId,
+          expectedVersion: input.rightVersion
+        }
+      });
+      switch (result.status) {
+        case 'saved':
+          return { result: 'recorded' };
+        case 'conflict':
+          throw new VersionConflictError('Claims', result.current);
+        case 'not_eligible':
+          return { result: 'not_eligible' };
+        case 'missing':
+          throw new RecordNotFoundError('Claim pair');
+      }
+    },
+
     async coalescePendingClaims(userId, leftClaimId, rightClaimId) {
       const candidate = await requireCandidate(userId);
       if (leftClaimId === rightClaimId) {
@@ -495,6 +688,124 @@ export function createCandidatesService({
         case 'missing':
           throw new RecordNotFoundError('Claim pair');
       }
+    },
+
+    async resolveClaimBatch(userId, actions) {
+      const seenClaimIds = new Set<string>();
+      const overlappingClaimIds = new Set<string>();
+      for (const action of actions) {
+        const claimIds =
+          action.action === 'accept_claim'
+            ? [action.claimId]
+            : [action.leftClaimId, action.rightClaimId];
+        for (const claimId of claimIds) {
+          if (seenClaimIds.has(claimId)) {
+            overlappingClaimIds.add(claimId);
+          }
+          seenClaimIds.add(claimId);
+        }
+      }
+      if (overlappingClaimIds.size > 0) {
+        throw new OverlappingBatchClaimsError([...overlappingClaimIds].sort());
+      }
+
+      async function executeAction(
+        action: ClaimBatchResolutionAction,
+        index: number
+      ): Promise<ClaimBatchResolutionItemResult> {
+        try {
+          if (action.action === 'accept_claim') {
+            const claim = await service.reviewClaim(
+              userId,
+              action.claimId,
+              { status: 'accepted' },
+              action.version
+            );
+            return {
+              index,
+              action: action.action,
+              status: 'accepted',
+              claim
+            };
+          }
+
+          const result = await service.mergeConfirmedClaims(userId, action);
+          if (result.result === 'merged') {
+            return {
+              index,
+              action: action.action,
+              status: 'accepted',
+              survivor: result.survivor,
+              duplicate: result.duplicate
+            };
+          }
+          return {
+            index,
+            action: action.action,
+            status: 'not_eligible',
+            reason:
+              'reason' in result
+                ? `${result.result}:${result.reason}`
+                : result.result
+          };
+        } catch (error) {
+          if (error instanceof VersionConflictError) {
+            const details = error.details;
+            const current =
+              typeof details === 'object' &&
+              details !== null &&
+              'current' in details
+                ? details.current
+                : undefined;
+            return {
+              index,
+              action: action.action,
+              status: 'conflict',
+              current
+            };
+          }
+          if (error instanceof ClaimNotReviewableError) {
+            return {
+              index,
+              action: action.action,
+              status: 'not_eligible',
+              reason: error.code
+            };
+          }
+          if (error instanceof AppError) {
+            return {
+              index,
+              action: action.action,
+              status: 'failed',
+              code: error.code,
+              message: error.message
+            };
+          }
+
+          logger.warn({ err: error, index }, 'Claim batch action failed');
+          return {
+            index,
+            action: action.action,
+            status: 'failed',
+            code: 'INTERNAL_ERROR',
+            message: 'Claim batch action failed'
+          };
+        }
+      }
+
+      const results: ClaimBatchResolutionItemResult[] = [];
+      const concurrency = 5;
+      for (let offset = 0; offset < actions.length; offset += concurrency) {
+        const chunk = actions.slice(offset, offset + concurrency);
+        results.push(
+          ...(await Promise.all(
+            chunk.map((action, chunkIndex) =>
+              executeAction(action, offset + chunkIndex)
+            )
+          ))
+        );
+      }
+      return results;
     },
 
     async updateClaim(userId, claimId, input, expectedVersion) {
@@ -637,4 +948,6 @@ export function createCandidatesService({
       return exported;
     }
   };
+
+  return service;
 }

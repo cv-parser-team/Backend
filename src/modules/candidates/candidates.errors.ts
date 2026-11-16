@@ -54,3 +54,12 @@ export class ClaimNotReviewableError extends AppError {
     super('Only pending extracted claims can be reviewed', { current });
   }
 }
+
+export class OverlappingBatchClaimsError extends AppError {
+  readonly statusCode = 400;
+  readonly code = 'OVERLAPPING_BATCH_CLAIMS';
+
+  constructor(claimIds: string[]) {
+    super('A claim can appear in only one batch action', { claimIds });
+  }
+}

@@ -7,6 +7,7 @@ import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-wor
 import {
   candidates,
   certificationDetails,
+  claimPairDecisions,
   type ClaimDatePrecision,
   ClaimExtractionMetadata,
   ClaimFieldValue,
@@ -24,6 +25,7 @@ import {
 } from './candidates.table.js';
 
 export type CandidateRecord = typeof candidates.$inferSelect;
+export type ClaimPairDecisionRecord = typeof claimPairDecisions.$inferSelect;
 export type ClaimSourceOccurrenceRecord = typeof sourceOccurrences.$inferSelect;
 export type CreateCandidateInput = Omit<
   typeof candidates.$inferInsert,
@@ -82,6 +84,17 @@ export interface MergeConfirmedClaimsInput {
 
 export type MergeConfirmedClaimsResult =
   | { status: 'saved'; survivor: ClaimRecord; duplicate: ClaimRecord }
+  | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
+  | { status: 'missing' };
+
+export interface RecordClaimsDifferentInput {
+  candidateId: string;
+  left: { claimId: string; expectedVersion: number };
+  right: { claimId: string; expectedVersion: number };
+}
+
+export type RecordClaimsDifferentResult =
+  | { status: 'saved' }
   | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
   | { status: 'missing' };
 
@@ -185,6 +198,10 @@ export interface CandidatesRepository {
   mergeConfirmedClaims(
     input: MergeConfirmedClaimsInput
   ): Promise<MergeConfirmedClaimsResult>;
+  recordClaimsDifferent(
+    input: RecordClaimsDifferentInput
+  ): Promise<RecordClaimsDifferentResult>;
+  listClaimPairDecisions(candidateId: string): Promise<ClaimPairDecisionRecord[]>;
   deletePendingExtractedClaims(
     candidateId: string,
     documentId: string,
@@ -1143,6 +1160,114 @@ export function createCandidatesRepository(
             }
           )
         )
+      );
+    },
+
+    async recordClaimsDifferent(input) {
+      if (input.left.claimId === input.right.claimId) {
+        return { status: 'not_eligible', current: [] };
+      }
+
+      const [leftInput, rightInput] = [input.left, input.right].sort(
+        (left, right) => left.claimId.localeCompare(right.claimId)
+      );
+      if (!leftInput || !rightInput) {
+        throw new Error('Claim pair could not be ordered');
+      }
+
+      return withTransientRetry(() =>
+        withDbErrors('Claim pair decision', () =>
+          database.db.transaction(
+            async (transaction): Promise<RecordClaimsDifferentResult> => {
+              const claimIds = [leftInput.claimId, rightInput.claimId];
+              const locked = await transaction
+                .select({ claimId: claims.claimId })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.candidateId, input.candidateId),
+                    inArray(claims.claimId, claimIds)
+                  )
+                )
+                .orderBy(asc(claims.claimId))
+                .for('update');
+              if (locked.length !== 2) {
+                return { status: 'missing' };
+              }
+
+              const current = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, input.candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const claimsById = new Map(
+                current.map((claim) => [claim.claimId, claim])
+              );
+              const left = claimsById.get(leftInput.claimId);
+              const right = claimsById.get(rightInput.claimId);
+              if (!left || !right) {
+                return { status: 'missing' };
+              }
+              if (
+                left.version !== leftInput.expectedVersion ||
+                right.version !== rightInput.expectedVersion
+              ) {
+                return { status: 'conflict', current };
+              }
+              const eligible =
+                left.claimType === right.claimType &&
+                left.status !== 'rejected' &&
+                right.status !== 'rejected' &&
+                left.supersededByClaimId === null &&
+                right.supersededByClaimId === null;
+              if (!eligible) {
+                return { status: 'not_eligible', current };
+              }
+
+              const updatedAt = new Date();
+              await transaction
+                .insert(claimPairDecisions)
+                .values({
+                  candidateId: input.candidateId,
+                  leftClaimId: left.claimId,
+                  rightClaimId: right.claimId,
+                  leftVersion: left.version,
+                  rightVersion: right.version,
+                  decision: 'different',
+                  updatedAt
+                })
+                .onConflictDoUpdate({
+                  target: [
+                    claimPairDecisions.candidateId,
+                    claimPairDecisions.leftClaimId,
+                    claimPairDecisions.rightClaimId
+                  ],
+                  set: {
+                    leftVersion: left.version,
+                    rightVersion: right.version,
+                    decision: 'different',
+                    updatedAt
+                  }
+                });
+              return { status: 'saved' };
+            }
+          )
+        )
+      );
+    },
+
+    async listClaimPairDecisions(candidateId) {
+      return withDbErrors('Claim pair decisions', () =>
+        database.db
+          .select()
+          .from(claimPairDecisions)
+          .where(eq(claimPairDecisions.candidateId, candidateId))
+          .orderBy(
+            asc(claimPairDecisions.leftClaimId),
+            asc(claimPairDecisions.rightClaimId)
+          )
       );
     },
 

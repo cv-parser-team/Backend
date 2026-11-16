@@ -1,5 +1,23 @@
 import { FromSchema } from 'json-schema-to-ts';
 
+export const EXTRACTION_REVIEW_ISSUE_CODES = [
+  'invalid_item',
+  'invalid_source',
+  'missing_value',
+  'invalid_value',
+  'invalid_date',
+  'invalid_date_order',
+  'missing_name',
+  'missing_employer',
+  'missing_job_title',
+  'missing_start_date',
+  'missing_institution',
+  'missing_degree',
+  'missing_title',
+  'missing_issuer',
+  'missing_issue_date'
+] as const;
+
 export const listExtractionReviewItemsQuerySchema = {
   type: 'object',
   properties: {
@@ -21,7 +39,7 @@ const reviewIssueSchema = {
   type: 'object',
   properties: {
     field: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-    code: { type: 'string' },
+    code: { type: 'string', enum: EXTRACTION_REVIEW_ISSUE_CODES },
     required: { type: 'boolean' }
   },
   required: ['field', 'code', 'required'],

@@ -11,8 +11,12 @@ tags:
     description: Registration and access-token lifecycle
   - name: Users
     description: User administration and lookup
-  - name: Candidates
-    description: Candidate profiles and claims
+  - name: Candidates - Profile
+    description: Candidate profile creation, maintenance, and export
+  - name: Candidates - Claims
+    description: Claim creation, lifecycle management, and extracted-claim review
+  - name: Candidates - Claim Review
+    description: Duplicate-claim discovery and resolution
   - name: Documents
     description: Candidate document management
   - name: Extraction
@@ -101,7 +105,7 @@ paths:
           $ref: "#/components/responses/AccountUnavailable"
   /api/candidates/me:
     post:
-      tags: [Candidates]
+      tags: [Candidates - Profile]
       summary: Create my candidate profile
       operationId: createMyCandidateProfile
       description: Creates a profile for the authenticated candidate.
@@ -120,7 +124,7 @@ paths:
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "409": { $ref: "#/components/responses/CandidateProfileConflict" }
     get:
-      tags: [Candidates]
+      tags: [Candidates - Profile]
       summary: Get my candidate profile
       operationId: getMyCandidateProfile
       description: Returns the authenticated candidate's profile.
@@ -132,7 +136,7 @@ paths:
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
-      tags: [Candidates]
+      tags: [Candidates - Profile]
       summary: Update my candidate profile
       operationId: updateMyCandidateProfile
       description: Updates fields on the authenticated candidate's profile.
@@ -155,7 +159,7 @@ paths:
         "409": { $ref: "#/components/responses/VersionConflict" }
   /api/candidates/me/profile:
     get:
-      tags: [Candidates]
+      tags: [Candidates - Profile]
       summary: Export my structured profile
       operationId: exportMyCandidateProfile
       description: Returns profile information and accepted claims only.
@@ -168,7 +172,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
   /api/candidates/me/claims:
     post:
-      tags: [Candidates]
+      tags: [Candidates - Claims]
       summary: Add a manual claim
       operationId: createMyClaim
       description: Adds an accepted claim to the authenticated candidate's profile.
@@ -187,7 +191,7 @@ paths:
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
     get:
-      tags: [Candidates]
+      tags: [Candidates - Claims]
       summary: List my claims
       operationId: listMyClaims
       description: Lists the candidate's claims with optional type and status filters.
@@ -209,12 +213,25 @@ paths:
         "401": { $ref: "#/components/responses/AuthenticationRequired" }
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /api/candidates/me/claims/merge-candidates:
+    get:
+      tags: [Candidates - Claim Review]
+      summary: List suspected duplicate claim pairs
+      operationId: listMyClaimMergeCandidates
+      description: Lists suspected duplicate pairs without changing or exporting claims.
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { $ref: "#/components/responses/ClaimMergeCandidateListSuccess" }
+        "401": { $ref: "#/components/responses/AuthenticationRequired" }
+        "403": { $ref: "#/components/responses/CandidateAccessRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/candidates/me/claims/merge-proposal:
     get:
-      tags: [Candidates]
+      tags: [Candidates - Claim Review]
       summary: Compare two claims and build a merge proposal
       operationId: getMyClaimMergeProposal
-      description: Read-only comparison that never changes or publishes either claim.
+      description: Compares two claims and proposes merged values without changing either claim.
       security:
         - bearerAuth: []
       parameters:
@@ -228,10 +245,10 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
   /api/candidates/me/claims/coalesce:
     post:
-      tags: [Candidates]
+      tags: [Candidates - Claim Review]
       summary: Safely coalesce pending extracted claims
       operationId: coalesceMyPendingClaims
-      description: Atomically combines only an automatically safe pair. The survivor remains pending and is not exported.
+      description: Safely combines compatible pending extracted claims while keeping the survivor pending.
       security:
         - bearerAuth: []
       requestBody:
@@ -247,12 +264,52 @@ paths:
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/VersionConflict" }
+  /api/candidates/me/claims/different:
+    post:
+      tags: [Candidates - Claim Review]
+      summary: Mark suspected duplicate claims as different
+      operationId: markMyClaimsDifferent
+      description: Suppresses an unchanged pair after the candidate confirms the claims are different.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordClaimsDifferentRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RecordClaimsDifferentSuccess" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/AuthenticationRequired" }
+        "403": { $ref: "#/components/responses/CandidateAccessRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+  /api/candidates/me/claims/resolve-batch:
+    post:
+      tags: [Candidates - Claim Review]
+      summary: Resolve selected claims and duplicate pairs
+      operationId: resolveMyClaimBatch
+      description: Concurrently accepts or merges independent reviewed claims and returns per-item results.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimBatchResolutionRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ClaimBatchResolutionSuccess" }
+        "400": { $ref: "#/components/responses/ClaimBatchInputError" }
+        "401": { $ref: "#/components/responses/AuthenticationRequired" }
+        "403": { $ref: "#/components/responses/CandidateAccessRequired" }
   /api/candidates/me/claims/merge:
     post:
-      tags: [Candidates]
+      tags: [Candidates - Claim Review]
       summary: Confirm and apply a claim merge
       operationId: mergeMyConfirmedClaims
-      description: Atomically applies candidate-confirmed values, accepts the survivor for profile export, and retires the duplicate.
+      description: Applies a confirmed merge, exports the accepted survivor, and retires the duplicate.
       security:
         - bearerAuth: []
       requestBody:
@@ -272,7 +329,7 @@ paths:
     parameters:
       - $ref: "#/components/parameters/ClaimId"
     get:
-      tags: [Candidates]
+      tags: [Candidates - Claims]
       summary: Get one of my claims
       operationId: getMyClaim
       description: Returns one claim owned by the authenticated candidate.
@@ -285,7 +342,7 @@ paths:
         "403": { $ref: "#/components/responses/CandidateAccessRequired" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
-      tags: [Candidates]
+      tags: [Candidates - Claims]
       summary: Update one of my claims
       operationId: updateMyClaim
       description: Updates the values of a candidate-owned claim.
@@ -307,7 +364,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/VersionConflict" }
     delete:
-      tags: [Candidates]
+      tags: [Candidates - Claims]
       summary: Delete one of my claims
       operationId: deleteMyClaim
       description: Deletes a claim owned by the authenticated candidate.
@@ -324,7 +381,7 @@ paths:
         "409": { $ref: "#/components/responses/VersionConflict" }
   /api/candidates/me/claims/{claimId}/review:
     patch:
-      tags: [Candidates]
+      tags: [Candidates - Claims]
       summary: Review an extracted claim
       operationId: reviewMyClaim
       description: Accepts or rejects a pending extracted claim.
@@ -722,12 +779,30 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ClaimMergeProposalResponse"
+    ClaimMergeCandidateListSuccess:
+      description: Read-only candidate duplicate proposals
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ClaimMergeCandidateListResponse"
     ClaimCoalesceSuccess:
       description: Safe pending-claim coalescing result
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ClaimCoalesceResponse"
+    RecordClaimsDifferentSuccess:
+      description: Candidate claim-pair decision result
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RecordClaimsDifferentResponse"
+    ClaimBatchResolutionSuccess:
+      description: Ordered per-item claim resolution outcomes
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ClaimBatchResolutionResponse"
     ConfirmedClaimMergeSuccess:
       description: Candidate-confirmed claim merge result
       content:
@@ -848,6 +923,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ClaimInputErrorResponse"
+    ClaimBatchInputError:
+      description: Batch data is invalid or claim IDs overlap between actions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ClaimBatchInputErrorResponse"
     ClaimUpdateError:
       description: Claim data, type, or If-Match header is invalid
       content:
@@ -963,6 +1044,10 @@ components:
       allOf:
         - $ref: "#/components/schemas/ErrorResponse"
         - $ref: "#/components/schemas/ClaimInputErrorCode"
+    ClaimBatchInputErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - $ref: "#/components/schemas/ClaimBatchInputErrorCode"
     ClaimUpdateErrorResponse:
       allOf:
         - $ref: "#/components/schemas/ErrorResponse"
@@ -1080,7 +1165,17 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, INVALID_CLAIM_DATES, INVALID_CLAIM_VALUES]
+              enum:
+                [VALIDATION_ERROR, INVALID_CLAIM_DATES, INVALID_CLAIM_VALUES]
+    ClaimBatchInputErrorCode:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_ERROR, OVERLAPPING_BATCH_CLAIMS]
     ClaimUpdateErrorCode:
       type: object
       properties:
@@ -1627,6 +1722,99 @@ components:
         rightClaimId:
           type: string
           format: uuid
+    RecordClaimsDifferentRequest:
+      type: object
+      required:
+        - leftClaimId
+        - rightClaimId
+        - leftVersion
+        - rightVersion
+      additionalProperties: false
+      properties:
+        leftClaimId:
+          type: string
+          format: uuid
+        rightClaimId:
+          type: string
+          format: uuid
+        leftVersion:
+          type: integer
+          minimum: 1
+        rightVersion:
+          type: integer
+          minimum: 1
+    ClaimBatchAcceptAction:
+      type: object
+      required:
+        - action
+        - claimId
+        - version
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [accept_claim]
+        claimId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+    ClaimBatchMergeAction:
+      type: object
+      required:
+        - action
+        - leftClaimId
+        - rightClaimId
+        - leftVersion
+        - rightVersion
+        - survivorClaimId
+        - values
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [merge_claims]
+        leftClaimId:
+          type: string
+          format: uuid
+        rightClaimId:
+          type: string
+          format: uuid
+        leftVersion:
+          type: integer
+          minimum: 1
+        rightVersion:
+          type: integer
+          minimum: 1
+        survivorClaimId:
+          type: string
+          format: uuid
+        values:
+          description: Final values validated against the stored claim type.
+          anyOf:
+            - $ref: "#/components/schemas/SkillClaimValues"
+            - $ref: "#/components/schemas/EmploymentClaimValues"
+            - $ref: "#/components/schemas/EducationClaimValues"
+            - $ref: "#/components/schemas/CertificationClaimValues"
+            - $ref: "#/components/schemas/LanguageClaimValues"
+            - $ref: "#/components/schemas/ProjectClaimValues"
+        current:
+          type: boolean
+    ClaimBatchResolutionRequest:
+      type: object
+      required:
+        - actions
+      additionalProperties: false
+      properties:
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/ClaimBatchAcceptAction"
+              - $ref: "#/components/schemas/ClaimBatchMergeAction"
     ConfirmedClaimMergeRequest:
       type: object
       required:
@@ -1768,6 +1956,17 @@ components:
               oneOf:
                 - $ref: "#/components/schemas/ClaimMergeNoProposal"
                 - $ref: "#/components/schemas/ClaimMergeProposal"
+    ClaimMergeCandidateListResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/ClaimMergeProposal"
     ClaimNoMergeResult:
       type: object
       required:
@@ -1822,6 +2021,150 @@ components:
                       type: string
                       enum: [candidate_review_required]
                 - $ref: "#/components/schemas/ClaimCoalescedResult"
+    RecordClaimsDifferentResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              oneOf:
+                - type: object
+                  required:
+                    - result
+                  additionalProperties: false
+                  properties:
+                    result:
+                      type: string
+                      enum: [recorded]
+                - type: object
+                  required:
+                    - result
+                    - reason
+                  additionalProperties: false
+                  properties:
+                    result:
+                      type: string
+                      enum: [no_decision]
+                    reason:
+                      type: string
+                      enum:
+                        - different_candidate
+                        - different_type
+                        - different_identity
+                        - unsupported_type
+                        - same_claim
+                        - rejected_claim
+                        - superseded_claim
+                - type: object
+                  required:
+                    - result
+                  additionalProperties: false
+                  properties:
+                    result:
+                      type: string
+                      enum: [not_eligible]
+    ClaimBatchAcceptedClaimResult:
+      type: object
+      required: [index, action, status, claim]
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+          enum: [accept_claim]
+        status:
+          type: string
+          enum: [accepted]
+        claim:
+          $ref: "#/components/schemas/ClaimRecord"
+    ClaimBatchAcceptedMergeResult:
+      type: object
+      required: [index, action, status, survivor, duplicate]
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+          enum: [merge_claims]
+        status:
+          type: string
+          enum: [accepted]
+        survivor:
+          $ref: "#/components/schemas/ClaimRecord"
+        duplicate:
+          $ref: "#/components/schemas/ClaimRecord"
+    ClaimBatchConflictResult:
+      type: object
+      required: [index, action, status, current]
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+          enum: [accept_claim, merge_claims]
+        status:
+          type: string
+          enum: [conflict]
+        current:
+          description: Current claim or claims to refresh before retrying.
+    ClaimBatchNotEligibleResult:
+      type: object
+      required: [index, action, status, reason]
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+          enum: [accept_claim, merge_claims]
+        status:
+          type: string
+          enum: [not_eligible]
+        reason:
+          type: string
+    ClaimBatchFailedResult:
+      type: object
+      required: [index, action, status, code, message]
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+          enum: [accept_claim, merge_claims]
+        status:
+          type: string
+          enum: [failed]
+        code:
+          type: string
+        message:
+          type: string
+    ClaimBatchResolutionResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required:
+            - data
+          properties:
+            data:
+              type: array
+              items:
+                oneOf:
+                  - $ref: "#/components/schemas/ClaimBatchAcceptedClaimResult"
+                  - $ref: "#/components/schemas/ClaimBatchAcceptedMergeResult"
+                  - $ref: "#/components/schemas/ClaimBatchConflictResult"
+                  - $ref: "#/components/schemas/ClaimBatchNotEligibleResult"
+                  - $ref: "#/components/schemas/ClaimBatchFailedResult"
     InvalidClaimMergeResolution:
       type: object
       required:
@@ -2497,7 +2840,7 @@ components:
                 type: string
                 nullable: true
               code:
-                type: string
+                $ref: "#/components/schemas/ExtractionReviewIssueCode"
               required:
                 type: boolean
         sources:
@@ -2570,6 +2913,25 @@ components:
         - pending
         - resolved
         - dismissed
+    ExtractionReviewIssueCode:
+      type: string
+      description: Machine-readable reason that an extracted claim requires review.
+      enum:
+        - invalid_item
+        - invalid_source
+        - missing_value
+        - invalid_value
+        - invalid_date
+        - invalid_date_order
+        - missing_name
+        - missing_employer
+        - missing_job_title
+        - missing_start_date
+        - missing_institution
+        - missing_degree
+        - missing_title
+        - missing_issuer
+        - missing_issue_date
     ResolveExtractionReviewItem:
       type: object
       required:

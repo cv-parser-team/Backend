@@ -228,6 +228,10 @@ accepted. The batch response reports `accepted`, `conflict`, and `failed`
 results per item so the UI can export successful resolutions immediately and
 refresh only unsuccessful ones.
 
+Independent batch actions run with a maximum concurrency of five. The service
+rejects overlapping claim IDs before starting any action and preserves request
+order in the per-item response.
+
 Declaring the claims different records that decision for the pair so unchanged
 claims are not repeatedly suggested. A material value or normalization change
 may cause detection to run again.
