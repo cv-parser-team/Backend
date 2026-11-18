@@ -3,6 +3,7 @@ import type {
   ClaimValues,
   CreateClaimInput
 } from './candidates.repository.js';
+import { compareNames, type NameSimilarity } from './candidates.name-similarity.js';
 
 type ClaimType = CreateClaimInput['claimType'];
 
@@ -12,6 +13,10 @@ export interface ComparableClaim {
   values: ClaimValues;
   current?: boolean;
   currentAsOf?: string;
+  // The canonical term ID linked to a field's value, by field name, such as
+  // the degree of an education claim. Values linked to the same term mean the
+  // same thing however they are written ("BSc" and "Bachelor of Science").
+  normalizedTerms?: Readonly<Record<string, string>>;
 }
 
 export interface MergeCandidateClaim extends ComparableClaim {
@@ -225,7 +230,8 @@ const CLAIM_TYPES_WITH_CURRENT = new Set<ClaimType>([
 
 export function toMergeCandidateClaim(
   candidateId: string,
-  claim: ClaimRecord
+  claim: ClaimRecord,
+  normalizedTerms?: Readonly<Record<string, string>>
 ): MergeCandidateClaim | null {
   if (claim.status === 'rejected') {
     return null;
@@ -240,8 +246,18 @@ export function toMergeCandidateClaim(
     origin: claim.origin,
     status: claim.status,
     candidateEdited: claim.candidateEdited,
-    createdAt: claim.createdAt
+    createdAt: claim.createdAt,
+    ...(normalizedTerms ? { normalizedTerms } : {})
   };
+}
+
+function haveSameNormalizedTerm(
+  left: ComparableClaim,
+  right: ComparableClaim,
+  field: string
+): boolean {
+  const leftTerm = left.normalizedTerms?.[field];
+  return leftTerm !== undefined && leftTerm === right.normalizedTerms?.[field];
 }
 
 interface ParsedClaimDate {
@@ -421,6 +437,36 @@ function requiredTextFieldsMatch(
       normalizedLeftValue === normalizeComparisonText(rightValue)
     );
   });
+}
+
+// Compares names that are not normalized to canonical terms, such as
+// employers and institutions. The weakest field decides: one different name
+// makes the claims different, and one merely similar name leaves the identity
+// for the candidate to confirm.
+function compareIdentityNames(
+  left: ComparableClaim,
+  right: ComparableClaim,
+  fields: string[]
+): NameSimilarity {
+  let result: NameSimilarity = 'same';
+  for (const field of fields) {
+    if (haveSameNormalizedTerm(left, right, field)) {
+      continue;
+    }
+    const leftValue = left.values[field];
+    const rightValue = right.values[field];
+    if (typeof leftValue !== 'string' || typeof rightValue !== 'string') {
+      return 'different';
+    }
+    const similarity = compareNames(leftValue, rightValue);
+    if (similarity === 'different') {
+      return 'different';
+    }
+    if (similarity === 'similar') {
+      result = 'similar';
+    }
+  }
+  return result;
 }
 
 function dateValue(
@@ -905,15 +951,30 @@ export function compareClaimIdentity(
   }
 
   if (left.claimType === 'employment') {
-    if (!requiredTextFieldsMatch(left.values, right.values, ['employer', 'jobTitle'])) {
+    const names = compareIdentityNames(left, right, ['employer', 'jobTitle']);
+    if (names === 'different') {
       return { result: 'different' };
     }
-    return compareDatedIdentity(left, right);
+    return names === 'similar'
+      ? { result: 'suspected_duplicate' }
+      : compareDatedIdentity(left, right);
   }
 
   if (left.claimType === 'education') {
-    if (!requiredTextFieldsMatch(left.values, right.values, ['institution', 'degree'])) {
+    // Degrees are not compared by spelling: "BSc" and "MSc" look alike but
+    // differ. Only the same text or the same canonical term matches.
+    if (
+      !haveSameNormalizedTerm(left, right, 'degree') &&
+      !requiredTextFieldsMatch(left.values, right.values, ['degree'])
+    ) {
       return { result: 'different' };
+    }
+    const institution = compareIdentityNames(left, right, ['institution']);
+    if (institution === 'different') {
+      return { result: 'different' };
+    }
+    if (institution === 'similar') {
+      return { result: 'suspected_duplicate' };
     }
 
     const leftField = left.values.fieldOfStudy;
@@ -921,7 +982,7 @@ export function compareClaimIdentity(
     if (
       typeof leftField === 'string' &&
       typeof rightField === 'string' &&
-      normalizeComparisonText(leftField) !== normalizeComparisonText(rightField)
+      compareNames(leftField, rightField) !== 'same'
     ) {
       return { result: 'suspected_duplicate' };
     }
@@ -956,6 +1017,9 @@ export function compareClaimIdentity(
   }
 
   for (const field of identityFields) {
+    if (haveSameNormalizedTerm(left, right, field)) {
+      continue;
+    }
     const leftValue = left.values[field];
     const rightValue = right.values[field];
     if (typeof leftValue !== 'string' || typeof rightValue !== 'string') {

@@ -20,6 +20,7 @@ import {
   buildConfirmedClaimMergePlan,
   type ClaimMergeProposalResult,
   type ConfirmedClaimMergePlanResult,
+  type MergeCandidateClaim,
   toMergeCandidateClaim
 } from './candidates.claim-comparison.js';
 import {
@@ -242,6 +243,9 @@ export interface CandidatesService {
 // module; only this call is needed here.
 export interface ClaimNormalizer {
   normalizeClaim(claim: ClaimRecord): Promise<unknown>;
+  // The canonical term linked to each claim's normalized field, by claim ID
+  // and field, so duplicate detection can compare values by meaning.
+  findNormalizedTerms(claims: ClaimRecord[]): Promise<Map<string, Record<string, string>>>;
 }
 
 export interface CandidatesServiceDependencies {
@@ -330,6 +334,24 @@ export function createCandidatesService({
     } catch (error) {
       logger.warn({ err: error, claimId: claim.claimId }, 'Claim normalization failed');
     }
+  }
+
+  // Every comparison of the same claims must see the same terms, or a merge
+  // listed as a proposal could be refused when it is confirmed. Without terms,
+  // claims are still compared by their written values.
+  async function toMergeCandidates(
+    candidateId: string,
+    claims: ClaimRecord[]
+  ): Promise<(MergeCandidateClaim | null)[]> {
+    let terms = new Map<string, Record<string, string>>();
+    try {
+      terms = await normalizer.findNormalizedTerms(claims);
+    } catch (error) {
+      logger.warn({ err: error }, 'Normalized terms could not be loaded for comparison');
+    }
+    return claims.map((claim) =>
+      toMergeCandidateClaim(candidateId, claim, terms.get(claim.claimId))
+    );
   }
 
   async function requireCandidate(userId: string): Promise<CandidateRecord> {
@@ -479,8 +501,10 @@ export function createCandidatesService({
         return { result: 'no_proposal', reason: 'superseded_claim' };
       }
 
-      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
-      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      const [leftCandidate, rightCandidate] = await toMergeCandidates(
+        candidate.candidateId,
+        [left, right]
+      );
       if (!leftCandidate || !rightCandidate) {
         return { result: 'no_proposal', reason: 'rejected_claim' };
       }
@@ -503,14 +527,17 @@ export function createCandidatesService({
           )
         )
       );
-      const activeClaims = claims
-        .filter(
-          (claim) =>
-            claim.status !== 'rejected' && claim.supersededByClaimId === null
+      const activeClaims = (
+        await toMergeCandidates(
+          candidate.candidateId,
+          claims
+            .filter(
+              (claim) =>
+                claim.status !== 'rejected' && claim.supersededByClaimId === null
+            )
+            .sort((left, right) => left.claimId.localeCompare(right.claimId))
         )
-        .sort((left, right) => left.claimId.localeCompare(right.claimId))
-        .map((claim) => toMergeCandidateClaim(candidate.candidateId, claim))
-        .filter((claim) => claim !== null);
+      ).filter((claim) => claim !== null);
       const proposals: ClaimMergeCandidate[] = [];
 
       for (let leftIndex = 0; leftIndex < activeClaims.length; leftIndex += 1) {
@@ -569,8 +596,10 @@ export function createCandidatesService({
         return { result: 'no_decision', reason: 'superseded_claim' };
       }
 
-      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
-      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      const [leftCandidate, rightCandidate] = await toMergeCandidates(
+        candidate.candidateId,
+        [left, right]
+      );
       if (!leftCandidate || !rightCandidate) {
         return { result: 'no_decision', reason: 'rejected_claim' };
       }
@@ -615,8 +644,10 @@ export function createCandidatesService({
       if (left.supersededByClaimId !== null || right.supersededByClaimId !== null) {
         return { result: 'no_merge', reason: 'superseded_claim' };
       }
-      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
-      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      const [leftCandidate, rightCandidate] = await toMergeCandidates(
+        candidate.candidateId,
+        [left, right]
+      );
       if (!leftCandidate || !rightCandidate) {
         return { result: 'no_merge', reason: 'rejected_claim' };
       }
@@ -669,8 +700,10 @@ export function createCandidatesService({
       }
 
       const values = prepareUnknownClaimValues(left.claimType, input.values);
-      const leftCandidate = toMergeCandidateClaim(candidate.candidateId, left);
-      const rightCandidate = toMergeCandidateClaim(candidate.candidateId, right);
+      const [leftCandidate, rightCandidate] = await toMergeCandidates(
+        candidate.candidateId,
+        [left, right]
+      );
       if (!leftCandidate || !rightCandidate) {
         return { result: 'no_merge', reason: 'rejected_claim' };
       }
@@ -751,8 +784,9 @@ export function createCandidatesService({
       }
 
       const values = prepareUnknownClaimValues(claimType, input.values);
-      const mergeCandidates = groupClaims.map((claim) =>
-        toMergeCandidateClaim(candidate.candidateId, claim)
+      const mergeCandidates = await toMergeCandidates(
+        candidate.candidateId,
+        groupClaims
       );
       if (mergeCandidates.some((claim) => claim === null)) {
         return { result: 'not_eligible', reason: 'ineligible_claim_group' };

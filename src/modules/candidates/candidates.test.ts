@@ -155,7 +155,10 @@ function createUsersServiceDouble(): Pick<UsersService, 'getUserById'> {
 }
 
 function createNormalizerDouble(): ClaimNormalizer {
-  return { normalizeClaim: vi.fn().mockResolvedValue(null) };
+  return {
+    normalizeClaim: vi.fn().mockResolvedValue(null),
+    findNormalizedTerms: vi.fn().mockResolvedValue(new Map())
+  };
 }
 
 function createService(
@@ -1037,6 +1040,65 @@ describe('claim merge candidate discovery service', () => {
       }
     ]);
     expect(repository.listClaims).toHaveBeenCalledWith(candidateId);
+  });
+
+  it('lists and merges skills linked to the same canonical term', async () => {
+    const otherClaimId = '44444444-4444-4444-8444-444444444444';
+    const repository = createRepositoryDouble();
+    const left = claimRecord({ values: { name: 'JS' } });
+    const right = claimRecord({
+      claimId: otherClaimId,
+      version: 4,
+      values: { name: 'JavaScript' }
+    });
+    vi.mocked(repository.listClaims).mockResolvedValue([left, right]);
+    vi.mocked(repository.findClaim).mockImplementation(async (_candidateId, id) =>
+      id === left.claimId ? left : right
+    );
+    vi.mocked(repository.mergeConfirmedClaims).mockResolvedValue({
+      status: 'saved',
+      survivor: { ...right, version: 5 },
+      duplicate: { ...left, supersededByClaimId: otherClaimId }
+    });
+    const normalizer = createNormalizerDouble();
+    vi.mocked(normalizer.findNormalizedTerms).mockResolvedValue(
+      new Map([
+        [left.claimId, { name: 't-js' }],
+        [otherClaimId, { name: 't-js' }]
+      ])
+    );
+    const service = createService(repository, normalizer);
+
+    await expect(service.listClaimMergeCandidates(userId)).resolves.toMatchObject([
+      { result: 'proposal', identity: 'equivalent', unresolvedFields: ['name'] }
+    ]);
+    await expect(
+      service.mergeConfirmedClaims(userId, {
+        leftClaimId: left.claimId,
+        rightClaimId: otherClaimId,
+        leftVersion: left.version,
+        rightVersion: 4,
+        survivorClaimId: otherClaimId,
+        values: { name: 'JavaScript' }
+      })
+    ).resolves.toMatchObject({ result: 'merged' });
+  });
+
+  it('compares written values when normalized terms cannot be loaded', async () => {
+    const otherClaimId = '44444444-4444-4444-8444-444444444444';
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.listClaims).mockResolvedValue([
+      claimRecord({ values: { name: 'TypeScript' } }),
+      claimRecord({ claimId: otherClaimId, values: { name: 'typescript' } })
+    ]);
+    const normalizer = createNormalizerDouble();
+    vi.mocked(normalizer.findNormalizedTerms).mockRejectedValue(new Error('offline'));
+    const logger = { warn: vi.fn() };
+
+    await expect(
+      createService(repository, normalizer, logger).listClaimMergeCandidates(userId)
+    ).resolves.toMatchObject([{ result: 'proposal', identity: 'equivalent' }]);
+    expect(logger.warn).toHaveBeenCalled();
   });
 
   it('returns no candidates when no pair has matching identity', async () => {

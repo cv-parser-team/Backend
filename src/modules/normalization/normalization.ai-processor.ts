@@ -38,7 +38,7 @@ export interface AiRequestProcessor {
 
 export interface AiRequestProcessorDependencies {
   dictionary: AiDictionary;
-  decisions: DecisionStore;
+  decisions: Pick<DecisionStore, 'saveDecision' | 'findLatestDecision'>;
   requests: Pick<AiRequestRepository, 'lockClaimed' | 'complete' | 'supersede' | 'retry' | 'fail'>;
   matcher: AiMatcher;
   unitOfWork: UnitOfWork;

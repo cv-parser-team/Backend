@@ -19,6 +19,12 @@ export interface NormalizationService {
   // Returns the claim's current decision, or null when its type has no
   // normalized value.
   normalizeClaim(claim: NormalizableClaim): Promise<NormalizationDecisionRecord | null>;
+  // The canonical term each claim's normalized value is linked to, by claim ID
+  // and then by field, so claims written differently can be compared by
+  // meaning. A decision made for an earlier value of the field is ignored.
+  findNormalizedTerms(
+    claims: NormalizableClaim[]
+  ): Promise<Map<string, Record<string, string>>>;
 }
 
 export interface NormalizationServiceDependencies {
@@ -103,6 +109,30 @@ export function createNormalizationService({
       }
 
       return decision;
+    },
+
+    async findNormalizedTerms(claims) {
+      const terms = new Map<string, Record<string, string>>();
+      const normalizable = claims.filter(
+        (claim) => NORMALIZED_VALUES[claim.claimType] !== undefined
+      );
+      const decisions = await repository.listLatestDecisions(
+        normalizable.map((claim) => claim.claimId)
+      );
+      const decisionByClaim = new Map(decisions.map((decision) => [decision.claimId, decision]));
+
+      for (const claim of normalizable) {
+        const target = NORMALIZED_VALUES[claim.claimType]!;
+        const decision = decisionByClaim.get(claim.claimId);
+        if (
+          decision?.status === 'matched' &&
+          decision.termId !== null &&
+          decision.originalValue === claim.values[target.field]
+        ) {
+          terms.set(claim.claimId, { [target.field]: decision.termId });
+        }
+      }
+      return terms;
     }
   };
 }

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import type { DatabaseExecutor } from '../../infrastructure/database/unit-of-work.js';
@@ -27,6 +27,8 @@ export interface DecisionStore {
     claimId: string,
     transaction?: DatabaseExecutor
   ): Promise<NormalizationDecisionRecord | null>;
+  // The current decision of each claim that has one.
+  listLatestDecisions(claimIds: string[]): Promise<NormalizationDecisionRecord[]>;
 }
 
 // The dictionary access that AI matching needs.
@@ -229,6 +231,19 @@ export function createNormalizationRepository(database: AppDatabase): Normalizat
           .limit(1);
         return decision ?? null;
       });
+    },
+
+    async listLatestDecisions(claimIds) {
+      if (claimIds.length === 0) {
+        return [];
+      }
+      return withDbErrors('Normalization decision', async () =>
+        database.db
+          .selectDistinctOn([normalizationDecisions.claimId])
+          .from(normalizationDecisions)
+          .where(inArray(normalizationDecisions.claimId, claimIds))
+          .orderBy(normalizationDecisions.claimId, desc(normalizationDecisions.createdAt))
+      );
     }
   };
 }

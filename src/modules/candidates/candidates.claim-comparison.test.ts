@@ -481,6 +481,172 @@ describe('claim identity comparison', () => {
       )
     ).toEqual({ result: 'different' });
   });
+
+  it('treats cosmetic differences in employer and title as the same identity', () => {
+    const base = { jobTitle: 'Backend Engineer', startDate: '2022-01' };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, employer: 'Northstar Labs' }),
+        claim({ ...base, employer: 'Northstar Labs, Inc.' })
+      )
+    ).toEqual({ result: 'equivalent' });
+    expect(
+      compareClaimIdentity(
+        claim({ employer: 'Northstar Labs', jobTitle: 'Sr. Backend Engineer', startDate: '2022' }),
+        claim({ employer: 'Northstar Labs', jobTitle: 'Senior Backend Engineer', startDate: '2022' })
+      )
+    ).toEqual({ result: 'equivalent' });
+  });
+
+  it.each([
+    ['Northstar Labs', 'Nortstar Labs'],
+    ['International Business Machines', 'IBM']
+  ])('asks the candidate to confirm employers %j and %j', (left, right) => {
+    const base = { jobTitle: 'Backend Engineer', startDate: '2022-01' };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, employer: left }),
+        claim({ ...base, employer: right })
+      )
+    ).toEqual({ result: 'suspected_duplicate' });
+  });
+
+  it.each([
+    ['UC Berkeley', 'University of California, Berkeley'],
+    ['Univeristy of Jordan', 'University of Jordan'],
+    ['MIT', 'Massachusetts Institute of Technology']
+  ])('asks the candidate to confirm institutions %j and %j', (left, right) => {
+    const base = { degree: 'Bachelor of Science', fieldOfStudy: 'Computer Science', endDate: '2020' };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, institution: left }, { claimType: 'education' }),
+        claim({ ...base, institution: right }, { claimType: 'education' })
+      )
+    ).toEqual({ result: 'suspected_duplicate' });
+  });
+
+  it('asks the candidate to confirm a shortened field of study', () => {
+    const base = { institution: 'University of Jordan', degree: 'Bachelor of Science', endDate: '2020' };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, fieldOfStudy: 'Comp. Science' }, { claimType: 'education' }),
+        claim({ ...base, fieldOfStudy: 'Computer Science' }, { claimType: 'education' })
+      )
+    ).toEqual({ result: 'suspected_duplicate' });
+  });
+
+  it('keeps a degree from a different institution or of another level distinct', () => {
+    const base = { degree: 'Bachelor of Science', fieldOfStudy: 'Computer Science', endDate: '2020' };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, institution: 'Jordan University' }, { claimType: 'education' }),
+        claim(
+          { ...base, institution: 'Jordan University of Science and Technology' },
+          { claimType: 'education' }
+        )
+      )
+    ).toEqual({ result: 'different' });
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, institution: 'University of Jordan' }, { claimType: 'education' }),
+        claim(
+          { ...base, institution: 'University of Jordan', degree: 'Master of Science' },
+          { claimType: 'education' }
+        )
+      )
+    ).toEqual({ result: 'different' });
+  });
+
+  it('matches values linked to the same canonical term however they are written', () => {
+    const education = {
+      institution: 'University of Jordan',
+      fieldOfStudy: 'Computer Science',
+      startDate: '2016',
+      endDate: '2020'
+    };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...education, degree: 'BSc' }, {
+          claimType: 'education',
+          normalizedTerms: { degree: 't-bsc' }
+        }),
+        claim({ ...education, degree: 'Bachelor of Science' }, {
+          claimType: 'education',
+          normalizedTerms: { degree: 't-bsc' }
+        })
+      )
+    ).toEqual({ result: 'equivalent' });
+    expect(
+      compareClaimIdentity(
+        claim({ name: 'JS' }, { claimType: 'skill', normalizedTerms: { name: 't-js' } }),
+        claim({ name: 'JavaScript' }, { claimType: 'skill', normalizedTerms: { name: 't-js' } })
+      )
+    ).toEqual({ result: 'equivalent' });
+    expect(
+      compareClaimIdentity(
+        claim(
+          { employer: 'Northstar Labs', jobTitle: 'SWE', startDate: '2022' },
+          { normalizedTerms: { jobTitle: 't-se' } }
+        ),
+        claim(
+          { employer: 'Northstar Labs', jobTitle: 'Software Engineer', startDate: '2022' },
+          { normalizedTerms: { jobTitle: 't-se' } }
+        )
+      )
+    ).toEqual({ result: 'equivalent' });
+  });
+
+  it('keeps values linked to different terms, or to a term on one side only, distinct', () => {
+    const education = { institution: 'University of Jordan', endDate: '2020' };
+
+    expect(
+      compareClaimIdentity(
+        claim({ ...education, degree: 'BSc' }, {
+          claimType: 'education',
+          normalizedTerms: { degree: 't-bsc' }
+        }),
+        claim({ ...education, degree: 'MSc' }, {
+          claimType: 'education',
+          normalizedTerms: { degree: 't-msc' }
+        })
+      )
+    ).toEqual({ result: 'different' });
+    expect(
+      compareClaimIdentity(
+        claim({ name: 'JS' }, { claimType: 'skill', normalizedTerms: { name: 't-js' } }),
+        claim({ name: 'JavaScript' }, { claimType: 'skill' })
+      )
+    ).toEqual({ result: 'different' });
+  });
+
+  it('proposes a merge that lets the candidate choose the institution spelling', () => {
+    const values = { degree: 'Bachelor of Science', fieldOfStudy: 'Computer Science', endDate: '2020-05' };
+    const proposal = buildClaimMergeProposal(
+      mergeCandidate({
+        claimType: 'education',
+        values: { ...values, institution: 'UC Berkeley' }
+      }),
+      mergeCandidate({
+        claimId: '22222222-2222-4222-8222-222222222222',
+        claimType: 'education',
+        values: { ...values, institution: 'University of California, Berkeley' }
+      })
+    );
+
+    expect(proposal).toMatchObject({
+      result: 'proposal',
+      identity: 'suspected_duplicate',
+      unresolvedFields: ['institution'],
+      requiresCandidateChoice: true,
+      recommendedAction: 'candidate_review'
+    });
+  });
 });
 
 describe('claim date comparison', () => {

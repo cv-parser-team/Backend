@@ -8,7 +8,11 @@ import {
 } from './normalization.repository.js';
 import { SEED_DICTIONARY } from './normalization.seed-data.js';
 import { DictionaryWriter, seedDictionary } from './normalization.seed.js';
-import { claimContext, createNormalizationService } from './normalization.service.js';
+import {
+  claimContext,
+  createNormalizationService,
+  type NormalizableClaim
+} from './normalization.service.js';
 import {
   CanonicalCategory,
   DictionaryLookup,
@@ -347,6 +351,11 @@ function repositoryWith(lookup: DictionaryLookup): DictionaryLookup &
     },
     async findLatestDecision(claimId) {
       return decisions.filter((decision) => decision.claimId === claimId).at(-1) ?? null;
+    },
+    async listLatestDecisions(claimIds: string[]) {
+      return claimIds
+        .map((claimId) => decisions.filter((decision) => decision.claimId === claimId).at(-1))
+        .filter((decision) => decision !== undefined);
     }
   };
 }
@@ -430,6 +439,59 @@ describe('AI requests', () => {
     expect(claimContext({ name: 'Go', description: 'x'.repeat(500) }, 'name')).toEqual({
       description: 'x'.repeat(300)
     });
+  });
+});
+
+describe('normalized terms for comparison', () => {
+  it('links claims written differently to the same canonical term', async () => {
+    const { service } = serviceWith();
+    const claims: NormalizableClaim[] = [
+      { claimId: 'c-1', claimType: 'education', values: { institution: 'A', degree: 'BSc' } },
+      {
+        claimId: 'c-2',
+        claimType: 'education',
+        values: { institution: 'A', degree: 'Bachelor of Science' }
+      },
+      { claimId: 'c-3', claimType: 'skill', values: { name: 'JS' } }
+    ];
+    for (const claim of claims) {
+      await service.normalizeClaim(claim);
+    }
+
+    const terms = await service.findNormalizedTerms(claims);
+
+    expect(terms).toEqual(
+      new Map([
+        ['c-1', { degree: 't-bsc' }],
+        ['c-2', { degree: 't-bsc' }],
+        ['c-3', { name: 't-js' }]
+      ])
+    );
+  });
+
+  it('ignores a decision made for an earlier value of the field', async () => {
+    const { service } = serviceWith();
+    await service.normalizeClaim({ claimId: 'c-1', claimType: 'skill', values: { name: 'JS' } });
+
+    const terms = await service.findNormalizedTerms([
+      { claimId: 'c-1', claimType: 'skill', values: { name: 'Kotlin' } }
+    ]);
+
+    expect(terms.size).toBe(0);
+  });
+
+  it('leaves out unmatched values, claims without decisions, and other types', async () => {
+    const { service } = serviceWith();
+    const unmatched = { claimId: 'c-1', claimType: 'skill', values: { name: 'Kotlin' } };
+    await service.normalizeClaim(unmatched);
+
+    const terms = await service.findNormalizedTerms([
+      unmatched,
+      { claimId: 'c-2', claimType: 'skill', values: { name: 'JavaScript' } },
+      { claimId: 'c-3', claimType: 'language', values: { name: 'English' } }
+    ]);
+
+    expect(terms.size).toBe(0);
   });
 });
 
