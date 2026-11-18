@@ -111,6 +111,17 @@ export type ConfirmClaimMergeResult =
   | { result: 'not_eligible' }
   | { result: 'merged'; survivor: ClaimRecord; duplicate: ClaimRecord };
 
+export interface ConfirmClaimGroupMergeInput {
+  claims: Array<{ claimId: string; version: number }>;
+  survivorClaimId: string;
+  values: unknown;
+  current?: boolean;
+}
+
+export type ConfirmClaimGroupMergeResult =
+  | { result: 'not_eligible'; reason: string }
+  | { result: 'merged'; survivor: ClaimRecord; duplicates: ClaimRecord[] };
+
 type ClaimMergeNoProposalReason = Extract<
   ClaimMergeProposalResult,
   { result: 'no_proposal' }
@@ -143,6 +154,13 @@ export type ClaimBatchResolutionItemResult =
       status: 'accepted';
       survivor: ClaimRecord;
       duplicate: ClaimRecord;
+    }
+  | {
+      index: number;
+      action: 'merge_claim_group';
+      status: 'accepted';
+      survivor: ClaimRecord;
+      duplicates: ClaimRecord[];
     }
   | {
       index: number;
@@ -196,6 +214,10 @@ export interface CandidatesService {
     userId: string,
     input: ConfirmClaimMergeInput
   ): Promise<ConfirmClaimMergeResult>;
+  mergeConfirmedClaimGroup(
+    userId: string,
+    input: ConfirmClaimGroupMergeInput
+  ): Promise<ConfirmClaimGroupMergeResult>;
   resolveClaimBatch(
     userId: string,
     actions: ClaimBatchResolutionAction[]
@@ -690,6 +712,141 @@ export function createCandidatesService({
       }
     },
 
+    async mergeConfirmedClaimGroup(userId, input) {
+      const claimIds = input.claims.map(({ claimId }) => claimId);
+      const uniqueClaimIds = new Set(claimIds);
+      if (
+        claimIds.length < 2 ||
+        uniqueClaimIds.size !== claimIds.length ||
+        !uniqueClaimIds.has(input.survivorClaimId)
+      ) {
+        return { result: 'not_eligible', reason: 'invalid_claim_group' };
+      }
+
+      const candidate = await requireCandidate(userId);
+      const groupClaims = await Promise.all(
+        claimIds.map((claimId) => requireClaim(candidate.candidateId, claimId))
+      );
+      const expectedVersions = new Map(
+        input.claims.map(({ claimId, version }) => [claimId, version])
+      );
+      if (
+        groupClaims.some(
+          (claim) => expectedVersions.get(claim.claimId) !== claim.version
+        )
+      ) {
+        throw new VersionConflictError('Claims', groupClaims);
+      }
+      const claimType = groupClaims[0]?.claimType;
+      if (
+        claimType === undefined ||
+        groupClaims.some(
+          (claim) =>
+            claim.claimType !== claimType ||
+            claim.status === 'rejected' ||
+            claim.supersededByClaimId !== null
+        )
+      ) {
+        return { result: 'not_eligible', reason: 'ineligible_claim_group' };
+      }
+
+      const values = prepareUnknownClaimValues(claimType, input.values);
+      const mergeCandidates = groupClaims.map((claim) =>
+        toMergeCandidateClaim(candidate.candidateId, claim)
+      );
+      if (mergeCandidates.some((claim) => claim === null)) {
+        return { result: 'not_eligible', reason: 'ineligible_claim_group' };
+      }
+
+      const adjacency = new Map<string, Set<string>>(
+        claimIds.map((claimId) => [claimId, new Set<string>()])
+      );
+      const unresolvedFields = new Set<string>();
+      for (let leftIndex = 0; leftIndex < mergeCandidates.length; leftIndex += 1) {
+        const left = mergeCandidates[leftIndex];
+        if (!left) {
+          continue;
+        }
+        for (
+          let rightIndex = leftIndex + 1;
+          rightIndex < mergeCandidates.length;
+          rightIndex += 1
+        ) {
+          const right = mergeCandidates[rightIndex];
+          if (!right) {
+            continue;
+          }
+          const proposal = buildClaimMergeProposal(left, right);
+          if (proposal.result !== 'proposal') {
+            continue;
+          }
+          adjacency.get(left.claimId)?.add(right.claimId);
+          adjacency.get(right.claimId)?.add(left.claimId);
+          proposal.unresolvedFields.forEach((field) => unresolvedFields.add(field));
+        }
+      }
+
+      const visited = new Set<string>();
+      const pending = [input.survivorClaimId];
+      while (pending.length > 0) {
+        const claimId = pending.pop();
+        if (!claimId || visited.has(claimId)) {
+          continue;
+        }
+        visited.add(claimId);
+        adjacency.get(claimId)?.forEach((neighbor) => pending.push(neighbor));
+      }
+      if (visited.size !== claimIds.length) {
+        return { result: 'not_eligible', reason: 'disconnected_claim_group' };
+      }
+
+      const hasEndDate = typeof values.endDate === 'string';
+      if (input.current === true && hasEndDate) {
+        return { result: 'not_eligible', reason: 'inconsistent_current' };
+      }
+      const missingFields = [...unresolvedFields].filter((field) => {
+        if (field === 'endDate') {
+          return (
+            input.current === undefined ||
+            (input.current === true ? hasEndDate : !hasEndDate)
+          );
+        }
+        return values[field] === undefined;
+      });
+      if (missingFields.length > 0) {
+        return {
+          result: 'not_eligible',
+          reason: `missing_field_choice:${missingFields.sort().join(',')}`
+        };
+      }
+
+      const result = await repository.mergeConfirmedClaimGroup({
+        candidateId: candidate.candidateId,
+        claims: input.claims.map(({ claimId, version }) => ({
+          claimId,
+          expectedVersion: version
+        })),
+        survivorClaimId: input.survivorClaimId,
+        values,
+        ...(input.current !== undefined ? { current: input.current } : {})
+      });
+      switch (result.status) {
+        case 'saved':
+          await normalize(result.survivor);
+          return {
+            result: 'merged',
+            survivor: result.survivor,
+            duplicates: result.duplicates
+          };
+        case 'conflict':
+          throw new VersionConflictError('Claims', result.current);
+        case 'not_eligible':
+          return { result: 'not_eligible', reason: 'ineligible_claim_group' };
+        case 'missing':
+          throw new RecordNotFoundError('Claim group');
+      }
+    },
+
     async resolveClaimBatch(userId, actions) {
       const seenClaimIds = new Set<string>();
       const overlappingClaimIds = new Set<string>();
@@ -697,7 +854,9 @@ export function createCandidatesService({
         const claimIds =
           action.action === 'accept_claim'
             ? [action.claimId]
-            : [action.leftClaimId, action.rightClaimId];
+            : action.action === 'merge_claims'
+              ? [action.leftClaimId, action.rightClaimId]
+              : action.claims.map(({ claimId }) => claimId);
         for (const claimId of claimIds) {
           if (seenClaimIds.has(claimId)) {
             overlappingClaimIds.add(claimId);
@@ -726,6 +885,25 @@ export function createCandidatesService({
               action: action.action,
               status: 'accepted',
               claim
+            };
+          }
+
+          if (action.action === 'merge_claim_group') {
+            const result = await service.mergeConfirmedClaimGroup(userId, action);
+            if (result.result === 'merged') {
+              return {
+                index,
+                action: action.action,
+                status: 'accepted',
+                survivor: result.survivor,
+                duplicates: result.duplicates
+              };
+            }
+            return {
+              index,
+              action: action.action,
+              status: 'not_eligible',
+              reason: result.reason
             };
           }
 

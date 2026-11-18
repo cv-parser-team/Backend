@@ -73,9 +73,11 @@ must not duplicate global error formatting.
 
 The auth plugin verifies 15-minute JWT access tokens, reloads current role and
 account status, and compares the token-version claim with PostgreSQL on every
-protected request. It exposes typed authentication and authorization guards to
-feature modules. Logout increments the stored version, invalidating all older
-tokens without storing JWTs.
+protected request. A separately scoped 30-day JWT is kept in an HttpOnly,
+SameSite cookie and can issue a new access token only while that same account
+and token version remain valid. It exposes typed authentication and
+authorization guards to feature modules. Logout increments the stored version,
+invalidating all older access and refresh tokens without storing JWTs.
 
 ## Transactions
 

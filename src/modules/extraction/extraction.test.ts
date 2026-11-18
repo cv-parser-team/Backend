@@ -257,10 +257,29 @@ describe('AI output mapping', () => {
 
     expect(result.unmapped).toEqual([]);
     expect(result.claims[0]).toMatchObject({
+      status: 'pending',
       values: { name: 'Spanish', proficiency: 'B2' },
       fieldConfidence: { name: 0.95, proficiency: 0.4 },
       confidence: 0.4
     });
+  });
+
+  it('accepts a fully sourced claim when every field has high confidence', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'skill',
+          fields: { name: field('TypeScript', ['L1'], undefined, 0.95) }
+        }
+      ]),
+      new Set(['L1'])
+    );
+
+    expect(result.claims[0]).toMatchObject({
+      status: 'accepted',
+      confidence: 0.95
+    });
+    expect(result.reviewItems).toEqual([]);
   });
 
   it('keeps year-only and mixed-precision dates without inventing months', () => {
@@ -393,6 +412,7 @@ describe('AI output mapping', () => {
     const result = mapAiOutput(output([{ type, fields }]));
 
     expect(result.claims).toHaveLength(1);
+    expect(result.claims[0]!.status).toBe('pending');
     expect(result.claims[0]!.values).not.toHaveProperty(fieldName);
     expect(result.claims[0]!.fieldConfidence).not.toHaveProperty(fieldName);
     expect(result.unmapped).toEqual([]);
@@ -405,20 +425,20 @@ describe('AI output mapping', () => {
     ]);
   });
 
-  it('leaves set-aside fields out of the claim confidence', () => {
+  it('leaves set-aside fields out of confidence but keeps the claim pending', () => {
     const result = mapAiOutput(
       output([
         {
           type: 'project',
           fields: {
-            name: field('Shop API', ['L1'], undefined, 0.9),
+            name: field('Shop API', ['L1'], undefined, 0.99),
             endDate: field('2024-13', ['L2'], undefined, 0.2)
           }
         }
       ])
     );
 
-    expect(result.claims[0]!.confidence).toBe(0.9);
+    expect(result.claims[0]).toMatchObject({ confidence: 0.99, status: 'pending' });
   });
 
   it('rejects a claim when a required field cites an unknown source', () => {
@@ -673,9 +693,13 @@ describe('AI output mapping', () => {
     expect(
       result.claims.every(
         (claim) =>
-          claim.origin === 'extracted' && claim.status === 'pending' && claim.sources.length > 0
+          claim.origin === 'extracted' &&
+          (claim.status === 'accepted' || claim.status === 'pending') &&
+          claim.sources.length > 0 &&
+          (claim.status !== 'accepted' || claim.confidence >= 0.95)
       )
     ).toBe(true);
+    expect(result.claims.some((claim) => claim.status === 'accepted')).toBe(true);
     expect(result.claims[0]).toMatchObject({ current: true, confidence: 0.75 });
     expect(result.reviewItems).toEqual([
       expect.objectContaining({

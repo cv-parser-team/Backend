@@ -220,5 +220,11 @@ describe('demo seeding', () => {
     expect(result.accounts.map((account) => account.email)).toEqual(
       DEMO_ACCOUNTS.map((account) => account.email)
     );
+    expect(result.accounts).toContainEqual({
+      email: 'omar@demo.luminacv.test',
+      role: 'candidate',
+      claims: 16,
+      reviewItems: 7
+    });
   });
 });

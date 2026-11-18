@@ -50,7 +50,7 @@ Every demo account uses the password `Demo-Password-2026!`.
 | Account | Role | What it shows |
 | --- | --- | --- |
 | `sara@demo.luminacv.test` | Candidate | A full profile with an accepted claim of every type, a rejected extracted skill, and an extracted job waiting for review; the export contains the accepted claims only |
-| `omar@demo.luminacv.test` | Candidate | Normalization: `JavaScript` (exact), `Postgres` (alias), `Pyhton` (spelling correction), `Server-side Engineer` and `Bachelors in Computer Science` (AI), `Prodject Manager` (ambiguous, then AI), and `Underwater Basket Weaving` (no term) |
+| `omar@demo.luminacv.test` | Candidate | Normalization examples plus duplicate candidates for every claim type, all merge field outcomes, and extraction review items covering every claim type and issue category |
 | `lina@demo.luminacv.test` | Candidate | A processed CV with three extracted claims and two review items waiting for review |
 | `reviewer@demo.luminacv.test` | Reviewer | |
 | `admin@demo.luminacv.test` | Admin | |
@@ -120,6 +120,7 @@ The authentication routes are:
 
 - `POST /api/auth/register`
 - `POST /api/auth/sign-in`
+- `POST /api/auth/refresh` (HttpOnly refresh-token cookie required)
 - `POST /api/auth/logout` (Bearer token required)
 
 The protected user routes are:
@@ -141,7 +142,7 @@ and always act on the authenticated user's own profile:
 - `POST /api/candidates/me/claims/coalesce` (safe pending duplicates remain staged)
 - `POST /api/candidates/me/claims/different` (suppress an unchanged reviewed pair)
 - `POST /api/candidates/me/claims/merge` (candidate confirmation accepts and exports the survivor)
-- `POST /api/candidates/me/claims/resolve-batch` (1–100 independent accept or merge actions)
+- `POST /api/candidates/me/claims/resolve-batch` (1–100 independent accept, pair-merge, or atomic group-merge actions)
 - `GET /api/candidates/me/claims/:claimId`
 - `PUT /api/candidates/me/claims/:claimId`
 - `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)
@@ -192,12 +193,17 @@ failing.
 
 Registration and sign-in return a signed JWT access token. Send it to protected
 routes with `Authorization: Bearer <token>`. Access tokens expire after 15
-minutes and are not refreshable; the user signs in again after expiry.
+minutes. Registration and sign-in also set a 30-day refresh token in an
+`HttpOnly`, `SameSite=Strict` cookie. `POST /api/auth/refresh` validates that
+cookie against the user's current account and token version, returns a new
+access token, and renews the refresh cookie. Refresh tokens are never returned
+in JSON or made available to browser JavaScript.
 
 Each JWT includes the user's token version. Logout increments the stored
-version and immediately invalidates all access tokens previously issued to that
-user. `JWT_SECRET` must contain at least 32 characters; configure the expected
-issuer and audience with `JWT_ISSUER` and `JWT_AUDIENCE`.
+version and immediately invalidates all access and refresh tokens previously
+issued to that user, then clears the refresh cookie. `JWT_SECRET` must contain
+at least 32 characters; configure the expected issuer and audience with
+`JWT_ISSUER` and `JWT_AUDIENCE`.
 
 ## Architecture
 

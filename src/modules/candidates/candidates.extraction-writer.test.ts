@@ -22,13 +22,15 @@ const candidate = { candidateId } as CandidateRecord;
 
 function dependencies(
   foundCandidate: CandidateRecord | null,
-  reviewedClaims: ClaimRecord[] = []
+  reviewedClaims: ClaimRecord[] = [],
+  activeClaims: ClaimRecord[] = []
 ) {
   const findCandidateByUserId = vi.fn().mockResolvedValue(foundCandidate);
   const deletePendingExtractedClaims = vi.fn().mockResolvedValue(0);
   const listReviewedExtractedClaims = vi
     .fn()
     .mockResolvedValue(reviewedClaims);
+  const listClaims = vi.fn().mockResolvedValue(activeClaims);
   const createClaims = vi
     .fn<CandidateExtractionWriterDependencies['repository']['createClaims']>()
     .mockImplementation(async (inputs) =>
@@ -72,6 +74,7 @@ function dependencies(
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
+    listClaims,
     createClaim,
     createClaims,
     createClaimSourceOccurrences
@@ -81,6 +84,7 @@ function dependencies(
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
+    listClaims,
     createClaim,
     createClaims,
     createClaimSourceOccurrences,
@@ -101,6 +105,7 @@ describe('candidate extraction writer', () => {
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'TypeScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },
@@ -123,6 +128,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'employment',
+        status: 'pending',
         values: {
           employer: 'Example Labs',
           jobTitle: 'Backend Engineer',
@@ -153,6 +159,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'employment',
+        status: 'accepted',
         values: {
           employer: '  EXAMPLE   LABS ',
           jobTitle: 'backend engineer',
@@ -255,6 +262,7 @@ describe('candidate extraction writer', () => {
       [
         expect.objectContaining({
           claimType: 'skill',
+          status: 'accepted',
           values: drafts[0]!.values
         }),
         {
@@ -335,6 +343,7 @@ describe('candidate extraction writer', () => {
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'employment',
+        status: 'accepted',
         values: {
           employer: 'Example Labs',
           jobTitle: 'Backend Engineer',
@@ -362,6 +371,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'typescript' },
         rawValues: {},
         fieldSources: {},
@@ -384,6 +394,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'employment',
+        status: 'pending',
         values: {
           employer: 'Example Labs',
           jobTitle: 'Backend Engineer',
@@ -397,6 +408,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
+        status: 'pending',
         values: { name: 'Node.js' },
         rawValues: {},
         fieldSources: { name: ['L12'] },
@@ -460,6 +472,93 @@ describe('candidate extraction writer', () => {
     );
   });
 
+  it('keeps an otherwise accepted draft pending when it conflicts with an active claim', async () => {
+    const activeClaim: ClaimRecord = {
+      claimId: randomUUID(),
+      supersededByClaimId: null,
+      claimType: 'language',
+      origin: 'manual',
+      status: 'accepted',
+      current: false,
+      candidateEdited: true,
+      values: { name: 'English', proficiency: 'Native' },
+      extraction: null,
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const { createClaims, listClaims, writer } = dependencies(
+      candidate,
+      [],
+      [activeClaim]
+    );
+    const drafts: ExtractedClaimDraftInput[] = [
+      {
+        type: 'language',
+        status: 'accepted',
+        values: { name: 'English', proficiency: 'C1' },
+        rawValues: {},
+        fieldSources: { name: ['L8'], proficiency: ['L8'] },
+        current: false,
+        sourceOccurrences: []
+      }
+    ];
+
+    await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      drafts,
+      transaction
+    );
+
+    expect(listClaims).toHaveBeenCalledWith(candidateId, {}, transaction);
+    expect(createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ status: 'pending' })],
+      transaction
+    );
+  });
+
+  it('keeps conflicting accepted drafts from the same extraction pending', async () => {
+    const { createClaims, writer } = dependencies(candidate);
+    const drafts: ExtractedClaimDraftInput[] = [
+      {
+        type: 'language',
+        status: 'accepted',
+        values: { name: 'English', proficiency: 'Native' },
+        rawValues: {},
+        fieldSources: {},
+        current: false,
+        sourceOccurrences: []
+      },
+      {
+        type: 'language',
+        status: 'accepted',
+        values: { name: 'English', proficiency: 'C1' },
+        rawValues: {},
+        fieldSources: {},
+        current: false,
+        sourceOccurrences: []
+      }
+    ];
+
+    await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      drafts,
+      transaction
+    );
+
+    expect(createClaims).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ status: 'pending' }),
+        expect.objectContaining({ status: 'pending' })
+      ],
+      transaction
+    );
+  });
+
   it('rejects conflicting physical anchors across non-equivalent drafts before writing', async () => {
     const {
       createClaims,
@@ -471,6 +570,7 @@ describe('candidate extraction writer', () => {
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'TypeScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },
@@ -493,6 +593,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'JavaScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },

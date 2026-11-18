@@ -142,6 +142,7 @@ describe('extraction persistence coordinator', () => {
       [
         {
           type: 'skill',
+          status: 'pending',
           values: { name: 'TypeScript' },
           rawValues: {},
           fieldSources: { name: ['L8'] },

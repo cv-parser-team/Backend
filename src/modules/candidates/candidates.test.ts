@@ -121,6 +121,7 @@ function createRepositoryDouble(
     }),
     coalescePendingClaims: vi.fn().mockResolvedValue({ status: 'missing' }),
     mergeConfirmedClaims: vi.fn().mockResolvedValue({ status: 'missing' }),
+    mergeConfirmedClaimGroup: vi.fn().mockResolvedValue({ status: 'missing' }),
     recordClaimsDifferent: vi.fn().mockResolvedValue({ status: 'missing' }),
     listClaimPairDecisions: vi.fn().mockResolvedValue([]),
     deletePendingExtractedClaims: vi.fn().mockResolvedValue(0),
@@ -1392,6 +1393,158 @@ describe('claim batch resolution service', () => {
   const fourthClaimId = '66666666-6666-4666-8666-666666666666';
   const fifthClaimId = '77777777-7777-4777-8777-777777777777';
 
+  it('merges a connected claim group through one repository operation', async () => {
+    const repository = createRepositoryDouble();
+    const groupClaims = [
+      claimRecord({
+        claimId,
+        claimType: 'language',
+        version: 2,
+        values: { name: 'English', proficiency: 'Native' }
+      }),
+      claimRecord({
+        claimId: secondClaimId,
+        claimType: 'language',
+        version: 4,
+        values: { name: 'English', proficiency: 'C1' }
+      }),
+      claimRecord({
+        claimId: thirdClaimId,
+        claimType: 'language',
+        version: 3,
+        values: { name: 'English', proficiency: 'Fluent' }
+      })
+    ];
+    vi.mocked(repository.findClaim).mockImplementation(
+      async (_candidateId, requestedClaimId) =>
+        groupClaims.find(({ claimId }) => claimId === requestedClaimId) ?? null
+    );
+    vi.mocked(repository.mergeConfirmedClaimGroup).mockResolvedValue({
+      status: 'saved',
+      survivor: claimRecord({
+        claimId,
+        claimType: 'language',
+        version: 3,
+        values: { name: 'English', proficiency: 'Native' }
+      }),
+      duplicates: [
+        claimRecord({ claimId: secondClaimId, supersededByClaimId: claimId }),
+        claimRecord({ claimId: thirdClaimId, supersededByClaimId: claimId })
+      ]
+    });
+
+    await expect(
+      createService(repository).mergeConfirmedClaimGroup(userId, {
+        claims: [
+          { claimId, version: 2 },
+          { claimId: secondClaimId, version: 4 },
+          { claimId: thirdClaimId, version: 3 }
+        ],
+        survivorClaimId: claimId,
+        values: { name: 'English', proficiency: 'Native' }
+      })
+    ).resolves.toMatchObject({
+      result: 'merged',
+      survivor: { claimId },
+      duplicates: [{ claimId: secondClaimId }, { claimId: thirdClaimId }]
+    });
+    expect(repository.mergeConfirmedClaimGroup).toHaveBeenCalledWith({
+      candidateId,
+      claims: [
+        { claimId, expectedVersion: 2 },
+        { claimId: secondClaimId, expectedVersion: 4 },
+        { claimId: thirdClaimId, expectedVersion: 3 }
+      ],
+      survivorClaimId: claimId,
+      values: { name: 'English', proficiency: 'Native' }
+    });
+  });
+
+  it('does not persist a disconnected claim group', async () => {
+    const repository = createRepositoryDouble();
+    const groupClaims = [
+      claimRecord({ claimId, values: { name: 'TypeScript' } }),
+      claimRecord({ claimId: secondClaimId, values: { name: 'TypeScript' } }),
+      claimRecord({ claimId: thirdClaimId, values: { name: 'Rust' } })
+    ];
+    vi.mocked(repository.findClaim).mockImplementation(
+      async (_candidateId, requestedClaimId) =>
+        groupClaims.find(({ claimId }) => claimId === requestedClaimId) ?? null
+    );
+
+    await expect(
+      createService(repository).mergeConfirmedClaimGroup(userId, {
+        claims: groupClaims.map(({ claimId, version }) => ({ claimId, version })),
+        survivorClaimId: claimId,
+        values: { name: 'TypeScript' }
+      })
+    ).resolves.toEqual({
+      result: 'not_eligible',
+      reason: 'disconnected_claim_group'
+    });
+    expect(repository.mergeConfirmedClaimGroup).not.toHaveBeenCalled();
+  });
+
+  it('reports a version conflict before persisting a claim group', async () => {
+    const repository = createRepositoryDouble();
+    const groupClaims = [
+      claimRecord({ claimId, version: 2, values: { name: 'TypeScript' } }),
+      claimRecord({
+        claimId: secondClaimId,
+        version: 5,
+        values: { name: 'typescript' }
+      })
+    ];
+    vi.mocked(repository.findClaim).mockImplementation(
+      async (_candidateId, requestedClaimId) =>
+        groupClaims.find(({ claimId }) => claimId === requestedClaimId) ?? null
+    );
+
+    await expect(
+      createService(repository).mergeConfirmedClaimGroup(userId, {
+        claims: [
+          { claimId, version: 2 },
+          { claimId: secondClaimId, version: 4 }
+        ],
+        survivorClaimId: claimId,
+        values: { name: 'TypeScript' }
+      })
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    expect(repository.mergeConfirmedClaimGroup).not.toHaveBeenCalled();
+  });
+
+  it('returns an accepted group result from batch resolution', async () => {
+    const service = createService(createRepositoryDouble());
+    vi.spyOn(service, 'mergeConfirmedClaimGroup').mockResolvedValue({
+      result: 'merged',
+      survivor: claimRecord({ claimId }),
+      duplicates: [
+        claimRecord({ claimId: secondClaimId, supersededByClaimId: claimId }),
+        claimRecord({ claimId: thirdClaimId, supersededByClaimId: claimId })
+      ]
+    });
+    const action = {
+      action: 'merge_claim_group' as const,
+      claims: [
+        { claimId, version: 1 },
+        { claimId: secondClaimId, version: 1 },
+        { claimId: thirdClaimId, version: 1 }
+      ],
+      survivorClaimId: claimId,
+      values: { name: 'TypeScript' }
+    };
+
+    await expect(service.resolveClaimBatch(userId, [action])).resolves.toMatchObject([
+      {
+        index: 0,
+        action: 'merge_claim_group',
+        status: 'accepted',
+        survivor: { claimId },
+        duplicates: [{ claimId: secondClaimId }, { claimId: thirdClaimId }]
+      }
+    ]);
+  });
+
   it('preserves input order across mixed independent outcomes', async () => {
     const service = createService(createRepositoryDouble());
     vi.spyOn(service, 'reviewClaim')
@@ -1463,6 +1616,33 @@ describe('claim batch resolution service', () => {
     expect(merge).not.toHaveBeenCalled();
   });
 
+  it('rejects a group that overlaps another batch action', async () => {
+    const service = createService(createRepositoryDouble());
+    const review = vi.spyOn(service, 'reviewClaim');
+    const mergeGroup = vi.spyOn(service, 'mergeConfirmedClaimGroup');
+
+    await expect(
+      service.resolveClaimBatch(userId, [
+        { action: 'accept_claim', claimId, version: 1 },
+        {
+          action: 'merge_claim_group',
+          claims: [
+            { claimId, version: 1 },
+            { claimId: secondClaimId, version: 1 },
+            { claimId: thirdClaimId, version: 1 }
+          ],
+          survivorClaimId: claimId,
+          values: { name: 'TypeScript' }
+        }
+      ])
+    ).rejects.toMatchObject({
+      code: 'OVERLAPPING_BATCH_CLAIMS',
+      details: { claimIds: [claimId] }
+    });
+    expect(review).not.toHaveBeenCalled();
+    expect(mergeGroup).not.toHaveBeenCalled();
+  });
+
   it('runs at most five independent actions concurrently', async () => {
     const service = createService(createRepositoryDouble());
     const releases: Array<() => void> = [];
@@ -1517,7 +1697,9 @@ function createAuthRepositoryDouble(role: UserRole): AuthRepository {
 function createJwtDouble(role: UserRole): JwtService {
   return {
     issueAccessToken: vi.fn().mockResolvedValue('access-token'),
-    verifyAccessToken: vi.fn().mockResolvedValue({ userId, role, tokenVersion: 0 })
+    verifyAccessToken: vi.fn().mockResolvedValue({ userId, role, tokenVersion: 0 }),
+    issueRefreshToken: vi.fn().mockResolvedValue('refresh-token'),
+    verifyRefreshToken: vi.fn().mockResolvedValue({ userId, role, tokenVersion: 0 })
   };
 }
 
@@ -1549,6 +1731,7 @@ function createServiceDouble(): CandidatesService {
     recordClaimsDifferent: vi.fn(),
     coalescePendingClaims: vi.fn(),
     mergeConfirmedClaims: vi.fn(),
+    mergeConfirmedClaimGroup: vi.fn(),
     resolveClaimBatch: vi.fn(),
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
     reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
@@ -2067,6 +2250,18 @@ describe('candidates routes', () => {
         action: 'merge_claims',
         status: 'conflict',
         current: []
+      },
+      {
+        index: 2,
+        action: 'merge_claim_group',
+        status: 'accepted',
+        survivor: claimRecord({ claimId: rightClaimId }),
+        duplicates: [
+          claimRecord({
+            claimId: '66666666-6666-4666-8666-666666666666',
+            supersededByClaimId: rightClaimId
+          })
+        ]
       }
     ]);
     app = await createCandidatesApp(service);
@@ -2078,6 +2273,18 @@ describe('candidates routes', () => {
         rightClaimId: '55555555-5555-4555-8555-555555555555',
         leftVersion: 2,
         rightVersion: 4,
+        survivorClaimId: rightClaimId,
+        values: { name: 'TypeScript' }
+      },
+      {
+        action: 'merge_claim_group' as const,
+        claims: [
+          { claimId: rightClaimId, version: 2 },
+          {
+            claimId: '66666666-6666-4666-8666-666666666666',
+            version: 1
+          }
+        ],
         survivorClaimId: rightClaimId,
         values: { name: 'TypeScript' }
       }
@@ -2095,7 +2302,8 @@ describe('candidates routes', () => {
       success: true,
       data: [
         { index: 0, action: 'accept_claim', status: 'accepted' },
-        { index: 1, action: 'merge_claims', status: 'conflict' }
+        { index: 1, action: 'merge_claims', status: 'conflict' },
+        { index: 2, action: 'merge_claim_group', status: 'accepted' }
       ]
     });
     expect(service.resolveClaimBatch).toHaveBeenCalledWith(userId, actions);
@@ -2119,6 +2327,26 @@ describe('candidates routes', () => {
         actions: [{ action: 'accept_claim', claimId }]
       }
     });
+    const incompleteGroup = await app.inject({
+      method: 'POST',
+      url: '/api/candidates/me/claims/resolve-batch',
+      headers: authorization,
+      payload: {
+        actions: [
+          {
+            action: 'merge_claim_group',
+            claims: [
+              { claimId, version: 1 },
+              {
+                claimId: '44444444-4444-4444-8444-444444444444',
+                version: 1
+              }
+            ],
+            survivorClaimId: claimId
+          }
+        ]
+      }
+    });
     const tooLarge = await app.inject({
       method: 'POST',
       url: '/api/candidates/me/claims/resolve-batch',
@@ -2134,6 +2362,7 @@ describe('candidates routes', () => {
 
     expect(empty.statusCode).toBe(400);
     expect(incomplete.statusCode).toBe(400);
+    expect(incompleteGroup.statusCode).toBe(400);
     expect(tooLarge.statusCode).toBe(400);
     expect(service.resolveClaimBatch).not.toHaveBeenCalled();
   });

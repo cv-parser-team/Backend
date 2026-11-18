@@ -281,8 +281,8 @@ Owned by the `users` module and defined in
 Owned by the `auth` module and defined in
 `src/modules/auth/auth.table.ts`.
 
-`auth_token_versions` stores one nonnegative version per user. Each 15-minute
-access JWT includes the version that was current when it was issued. Guards
+`auth_token_versions` stores one nonnegative version per user. Each access and
+refresh JWT includes the version that was current when it was issued. Guards
 compare the JWT claim with this table on every authenticated request. Logout,
 password changes, and security-sensitive account actions increment the stored
 version, invalidating every previously issued JWT. The row cascades on user

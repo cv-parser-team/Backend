@@ -295,13 +295,31 @@ export type ConfirmClaimMergeBody = FromSchema<
 const claimBatchActionSchema = {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['accept_claim', 'merge_claims'] },
+    action: {
+      type: 'string',
+      enum: ['accept_claim', 'merge_claims', 'merge_claim_group']
+    },
     claimId: { type: 'string', format: 'uuid' },
     version: { type: 'integer', minimum: 1 },
     leftClaimId: { type: 'string', format: 'uuid' },
     rightClaimId: { type: 'string', format: 'uuid' },
     leftVersion: { type: 'integer', minimum: 1 },
     rightVersion: { type: 'integer', minimum: 1 },
+    claims: {
+      type: 'array',
+      minItems: 2,
+      maxItems: 100,
+      uniqueItems: true,
+      items: {
+        type: 'object',
+        properties: {
+          claimId: { type: 'string', format: 'uuid' },
+          version: { type: 'integer', minimum: 1 }
+        },
+        required: ['claimId', 'version'],
+        additionalProperties: false
+      }
+    },
     survivorClaimId: { type: 'string', format: 'uuid' },
     values: { type: 'object', minProperties: 1 },
     current: { type: 'boolean' }
@@ -324,7 +342,8 @@ const claimBatchActionSchema = {
             { required: ['rightVersion'] },
             { required: ['survivorClaimId'] },
             { required: ['values'] },
-            { required: ['current'] }
+            { required: ['current'] },
+            { required: ['claims'] }
           ]
         }
       }
@@ -344,7 +363,30 @@ const claimBatchActionSchema = {
           'values'
         ],
         not: {
-          anyOf: [{ required: ['claimId'] }, { required: ['version'] }]
+          anyOf: [
+            { required: ['claimId'] },
+            { required: ['version'] },
+            { required: ['claims'] }
+          ]
+        }
+      }
+    },
+    {
+      if: {
+        properties: { action: { const: 'merge_claim_group' } },
+        required: ['action']
+      },
+      then: {
+        required: ['claims', 'survivorClaimId', 'values'],
+        not: {
+          anyOf: [
+            { required: ['claimId'] },
+            { required: ['version'] },
+            { required: ['leftClaimId'] },
+            { required: ['rightClaimId'] },
+            { required: ['leftVersion'] },
+            { required: ['rightVersion'] }
+          ]
         }
       }
     }
@@ -377,6 +419,13 @@ export type ClaimBatchResolutionAction =
       rightClaimId: string;
       leftVersion: number;
       rightVersion: number;
+      survivorClaimId: string;
+      values: unknown;
+      current?: boolean;
+    }
+  | {
+      action: 'merge_claim_group';
+      claims: Array<{ claimId: string; version: number }>;
       survivorClaimId: string;
       values: unknown;
       current?: boolean;

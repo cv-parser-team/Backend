@@ -12,6 +12,7 @@ import {
   ACCESS_TOKEN_TTL_SECONDS,
   createJwtService,
   JwtService,
+  REFRESH_TOKEN_TTL_SECONDS,
   UserRole
 } from './jwt-service.js';
 import { createPasswordHasher, PasswordHasher } from './password-hasher.js';
@@ -28,6 +29,7 @@ describe('auth foundation', () => {
 
   it('uses 15-minute access tokens', () => {
     expect(ACCESS_TOKEN_TTL_SECONDS).toBe(900);
+    expect(REFRESH_TOKEN_TTL_SECONDS).toBe(2_592_000);
   });
 
   it(
@@ -64,6 +66,16 @@ describe('auth foundation', () => {
 
     expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(900);
     await expect(jwtService.verifyAccessToken(token)).resolves.toEqual(claims);
+
+    const refreshToken = await jwtService.issueRefreshToken(claims);
+    const refreshPayload = decodeJwt(refreshToken);
+    expect((refreshPayload.exp ?? 0) - (refreshPayload.iat ?? 0)).toBe(
+      REFRESH_TOKEN_TTL_SECONDS
+    );
+    await expect(jwtService.verifyRefreshToken(refreshToken)).resolves.toEqual(
+      claims
+    );
+    await expect(jwtService.verifyAccessToken(refreshToken)).rejects.toThrow();
   });
 });
 
@@ -94,6 +106,12 @@ function createJwtDouble(tokenVersion = 2): JwtService {
   return {
     issueAccessToken: vi.fn().mockResolvedValue('access-token'),
     verifyAccessToken: vi.fn().mockResolvedValue({
+      userId: activeCandidate.userId,
+      role: 'admin',
+      tokenVersion
+    }),
+    issueRefreshToken: vi.fn().mockResolvedValue('refresh-token'),
+    verifyRefreshToken: vi.fn().mockResolvedValue({
       userId: activeCandidate.userId,
       role: 'admin',
       tokenVersion
@@ -176,6 +194,27 @@ describe('auth service', () => {
     expect(repository.incrementTokenVersion).toHaveBeenCalledWith(
       activeCandidate.userId
     );
+  });
+
+  it('refreshes a session only while its account and token version are current', async () => {
+    const repository = createRepositoryDouble();
+    const jwtService = createJwtDouble();
+    const service = createAuthService({
+      repository,
+      passwordHasher: createPasswordHasherDouble(),
+      jwtService,
+      dummyPasswordHash: 'dummy-hash'
+    });
+
+    await expect(service.refresh('old-refresh-token')).resolves.toEqual({
+      userId: activeCandidate.userId,
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token'
+    });
+    expect(jwtService.verifyRefreshToken).toHaveBeenCalledWith(
+      'old-refresh-token'
+    );
+    expect(repository.getAuthState).toHaveBeenCalledWith(activeCandidate.userId);
   });
 });
 
@@ -303,11 +342,18 @@ function createService(): AuthService {
   return {
     register: vi.fn().mockResolvedValue({
       userId: '11111111-1111-4111-8111-111111111111',
-      accessToken: 'access-token'
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token'
     }),
     signIn: vi.fn().mockResolvedValue({
       userId: '11111111-1111-4111-8111-111111111111',
-      accessToken: 'access-token'
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token'
+    }),
+    refresh: vi.fn().mockResolvedValue({
+      userId: '11111111-1111-4111-8111-111111111111',
+      accessToken: 'new-access-token',
+      refreshToken: 'new-refresh-token'
     }),
     logout: vi.fn().mockResolvedValue(undefined)
   };
@@ -378,6 +424,7 @@ describe('auth routes', () => {
       success: true,
       data: { accessToken: 'access-token' }
     });
+    expect(response.headers['set-cookie']).toContain('HttpOnly');
   });
 
   it('signs in with validated credentials', async () => {
@@ -423,6 +470,31 @@ describe('auth routes', () => {
     expect(service.logout).toHaveBeenCalledWith(
       '11111111-1111-4111-8111-111111111111'
     );
+    expect(response.headers['set-cookie']).toContain('Max-Age=0');
+  });
+
+  it('refreshes from the HttpOnly cookie without exposing it in the body', async () => {
+    const service = createService();
+    app = Fastify();
+    await app.register(authRoutes, {
+      prefix: '/api/auth',
+      service,
+      guards: createGuards()
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/refresh',
+      headers: { cookie: 'luminaCV_refresh=old-refresh-token' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(service.refresh).toHaveBeenCalledWith('old-refresh-token');
+    expect(response.json().data).toEqual({
+      userId: '11111111-1111-4111-8111-111111111111',
+      accessToken: 'new-access-token'
+    });
+    expect(response.headers['set-cookie']).toContain('new-refresh-token');
   });
 
   it('rejects registration with a short password', async () => {

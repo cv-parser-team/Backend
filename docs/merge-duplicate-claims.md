@@ -24,22 +24,23 @@ claim type. It supports:
 - accepted claim + accepted claim; and
 - manual or candidate-edited claim + extracted claim.
 
-The review UI may present many independent claim pairs and let the candidate
-resolve or approve a selected batch. Each selected pair is still evaluated and
-applied independently; the MVP does not merge three or more claims as one
-group.
+Discovery and proposal generation remain pairwise. The review UI may assemble
+connected proposals into a workspace and let the candidate explicitly select
+two or more claims for one group merge. A confirmed group is applied atomically
+to one survivor; unrelated selected actions remain independent.
 
-The MVP does not merge extraction review items, compare more than two claims
-in one operation, infer a claim type, or change the global normalization
-dictionary. A review item continues through its existing resolve or dismiss
-flow; once resolution creates a claim, a later claim-to-claim comparison may
-include it.
+The MVP does not merge extraction review items, infer a claim type, or change
+the global normalization dictionary. Group eligibility is derived from the
+existing pair comparisons rather than a separate multi-way comparison model.
+A review item continues through its existing resolve or dismiss flow; once
+resolution creates a claim, a later claim comparison may include it.
 
 ## 3. Invariants
 
-1. **Extraction is staged.** A claim created by document extraction starts as
-   `pending` and is excluded from profile export. Duplicate handling must not
-   make extracted information visible without candidate confirmation.
+1. **Uncertain extraction is staged.** Extracted claims that do not meet the
+   extraction module's automatic-acceptance criteria start as `pending` and are
+   excluded from profile export. Duplicate handling must not make those claims
+   visible without candidate confirmation.
 2. **Resolution is approval.** When the candidate explicitly confirms the
    final values of a duplicate or conflict, the surviving claim becomes
    `accepted` and is exported. A second approval step is not required.
@@ -221,16 +222,19 @@ claims and approve them with one action. Safe proposals may be preselected for
 convenience, but candidate action is still required. Proposals with unresolved
 conflicts are not eligible and must not be preselected.
 
-Atomicity is per claim or duplicate pair, not across the whole selected batch.
-Each pair preserves its own merge transaction and version checks. A conflict
-or stale version in one item does not prevent unrelated selections from being
-accepted. The batch response reports `accepted`, `conflict`, and `failed`
-results per item so the UI can export successful resolutions immediately and
-refresh only unsuccessful ones.
+Atomicity is per claim, duplicate pair, or explicitly selected duplicate
+group, not across the whole selected batch. Each action preserves its own
+transaction and version checks. A group locks all of its claims, updates its
+survivor once, transfers every duplicate's sources, and retires all duplicates
+together. A conflict or stale version in one action does not prevent unrelated
+selections from being accepted. The batch response reports `accepted`,
+`conflict`, and `failed` results per item so the UI can export successful
+resolutions immediately and refresh only unsuccessful ones.
 
 Independent batch actions run with a maximum concurrency of five. The service
 rejects overlapping claim IDs before starting any action and preserves request
-order in the per-item response.
+order in the per-item response. A group must contain distinct active claims of
+one type, include its survivor, and be connected by current pair proposals.
 
 Declaring the claims different records that decision for the pair so unchanged
 claims are not repeatedly suggested. A material value or normalization change

@@ -24,7 +24,8 @@ can change without affecting feature code.
 6. LLM invocation data is separate from processing jobs and feature results.
 7. One invocation row represents one actual provider request.
 8. Deterministic matching runs before contextual LLM matching.
-9. AI suggestions never bypass candidate or reviewer approval.
+9. Feature-owned deterministic rules may apply fully validated, high-confidence
+   extraction automatically; uncertain or invalid AI output requires review.
 
 ## Architecture
 

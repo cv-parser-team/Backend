@@ -61,6 +61,7 @@ export function createExtractionPersistenceCoordinator({
   ): Promise<PersistedExtractionClaims> {
     const drafts: ExtractedClaimDraftInput[] = result.claims.map((claim) => ({
       type: claim.type,
+      status: claim.status,
       values: claim.values,
       rawValues: claim.rawValues,
       fieldSources: claim.fieldSources,
