@@ -86,11 +86,14 @@ without a second approval action. A concurrent change returns
 `409 VERSION_CONFLICT` and writes nothing.
 
 `POST /api/candidates/me/claims/resolve-batch` accepts 1–100 independent
-`accept_claim` or `merge_claims` actions. It rejects overlapping claim IDs
-before execution, runs at most five actions concurrently, and preserves input
-order in the response. Each item reports `accepted`, `conflict`,
-`not_eligible`, or `failed`; one unsuccessful item does not roll back another
-item's transaction.
+`accept_claim`, `merge_claims`, or `merge_claim_group` actions. A group names
+two or more reviewed claims, one survivor, and the candidate-confirmed final
+values. The service verifies that the group is connected by duplicate
+proposals and merges it in one transaction. The endpoint rejects claim IDs
+that overlap between actions, runs at most five actions concurrently, and
+preserves input order in the response. Each item reports `accepted`,
+`conflict`, `not_eligible`, or `failed`; one unsuccessful item does not roll
+back another item's transaction.
 
 ## Editing a claim
 

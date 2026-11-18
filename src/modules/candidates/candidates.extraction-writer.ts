@@ -10,7 +10,12 @@ import type {
 } from './candidates.repository.js';
 import type { ClaimSourceAnchor } from './candidates.table.js';
 import { prepareUnknownClaimValues } from './candidates.claim-values.js';
-import { strictClaimComparisonKey } from './candidates.claim-comparison.js';
+import {
+  buildClaimMergeProposal,
+  type MergeCandidateClaim,
+  strictClaimComparisonKey,
+  toMergeCandidateClaim
+} from './candidates.claim-comparison.js';
 
 export interface ExtractedClaimSourceOccurrenceInput {
   anchorKey: string;
@@ -60,10 +65,66 @@ export interface CandidateExtractionWriterDependencies {
     | 'findCandidateByUserId'
     | 'deletePendingExtractedClaims'
     | 'listReviewedExtractedClaims'
+    | 'listClaims'
     | 'createClaim'
     | 'createClaims'
     | 'createClaimSourceOccurrences'
   >;
+}
+
+function toDraftMergeCandidate(
+  candidateId: string,
+  draft: ExtractedClaimDraftInput,
+  index: number
+): MergeCandidateClaim {
+  return {
+    candidateId,
+    claimId: `extraction-draft-${index}`,
+    claimType: draft.type,
+    origin: 'extracted',
+    status: draft.status,
+    candidateEdited: false,
+    values: draft.values,
+    current: draft.current,
+    version: 1,
+    createdAt: new Date(0)
+  };
+}
+
+function keepConflictingDraftsPending(
+  candidateId: string,
+  drafts: ExtractedClaimDraftInput[],
+  activeClaims: ClaimRecord[]
+): void {
+  const existingCandidates = activeClaims
+    .filter((claim) => claim.status !== 'rejected')
+    .map((claim) => toMergeCandidateClaim(candidateId, claim))
+    .filter((claim): claim is MergeCandidateClaim => claim !== null);
+  const draftCandidates = drafts.map((draft, index) =>
+    toDraftMergeCandidate(candidateId, draft, index)
+  );
+
+  drafts.forEach((draft, index) => {
+    if (draft.status !== 'accepted') {
+      return;
+    }
+    const candidate = draftCandidates[index];
+    if (!candidate) {
+      return;
+    }
+    const comparisons = [
+      ...existingCandidates,
+      ...draftCandidates.filter((_, otherIndex) => otherIndex !== index)
+    ];
+    const hasConflict = comparisons.some((other) => {
+      const proposal = buildClaimMergeProposal(candidate, other);
+      return proposal.result === 'proposal' && proposal.unresolvedFields.length > 0;
+    });
+    if (hasConflict) {
+      draft.status = 'pending';
+      candidate.status = 'pending';
+    }
+  });
 }
 
 export class ConflictingSourceOccurrenceError extends Error {
@@ -223,6 +284,16 @@ export function createCandidateExtractionWriter({
           !reviewedClaimKeys.has(
             strictClaimComparisonKey(draft.type, draft.values)
           )
+      );
+      const activeClaims = await repository.listClaims(
+        candidate.candidateId,
+        {},
+        transaction
+      );
+      keepConflictingDraftsPending(
+        candidate.candidateId,
+        draftsToCreate,
+        activeClaims
       );
       const inputs: CreateClaimInput[] = draftsToCreate.map((draft) => ({
         candidateId: candidate.candidateId,

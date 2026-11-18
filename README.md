@@ -141,7 +141,7 @@ and always act on the authenticated user's own profile:
 - `POST /api/candidates/me/claims/coalesce` (safe pending duplicates remain staged)
 - `POST /api/candidates/me/claims/different` (suppress an unchanged reviewed pair)
 - `POST /api/candidates/me/claims/merge` (candidate confirmation accepts and exports the survivor)
-- `POST /api/candidates/me/claims/resolve-batch` (1–100 independent accept or merge actions)
+- `POST /api/candidates/me/claims/resolve-batch` (1–100 independent accept, pair-merge, or atomic group-merge actions)
 - `GET /api/candidates/me/claims/:claimId`
 - `PUT /api/candidates/me/claims/:claimId`
 - `PATCH /api/candidates/me/claims/:claimId/review` (`accepted` or `rejected`)

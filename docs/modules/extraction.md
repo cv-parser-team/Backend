@@ -6,8 +6,10 @@ The AI reads the compact text that parsing builds from a CV and returns what it
 found as JSON. This module checks that JSON and turns every valid item into an
 extracted claim draft, keeping the original values, the lines they came from,
 and how confident the AI was about each value. Fully sourced claims whose
-fields all have confidence of at least `0.95` are accepted automatically.
-Claims below that threshold or with a field set aside remain pending.
+fields all have confidence of at least `0.95` are accepted automatically unless
+they conflict with an active claim or another claim in the same extraction.
+Conflicting claims, claims below that threshold, and claims with a field set
+aside remain pending.
 Recognized claims that are incomplete or invalid are retained as structured
 review items instead of being discarded or completed with invented values.
 
@@ -72,7 +74,9 @@ so changed and new drafts stay pending. Alias and broader semantic matching are
 deferred and never use parser-inferred headings.
 
 Formatting-equivalent drafts within one provider result are coalesced before
-insertion. The first draft supplies the persisted values and original wording;
+insertion. High-confidence drafts with the same identity but conflicting field
+values are kept pending for candidate review, including conflicts with active
+claims from earlier documents. The first draft supplies the persisted values and original wording;
 field references and physical occurrences are merged without duplication, and
 an explicit current marker is retained when any equivalent draft has it. This
 prevents duplicate pending claims without inventing semantic equivalence.

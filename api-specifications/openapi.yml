@@ -288,9 +288,9 @@ paths:
   /api/candidates/me/claims/resolve-batch:
     post:
       tags: [Candidates - Claim Review]
-      summary: Resolve selected claims and duplicate pairs
+      summary: Resolve selected claims and duplicate claim groups
       operationId: resolveMyClaimBatch
-      description: Concurrently accepts or merges independent reviewed claims and returns per-item results.
+      description: Concurrently resolves independent reviewed actions and atomically merges every explicit claim group.
       security:
         - bearerAuth: []
       requestBody:
@@ -1801,6 +1801,39 @@ components:
             - $ref: "#/components/schemas/ProjectClaimValues"
         current:
           type: boolean
+    ClaimBatchGroupMergeAction:
+      type: object
+      required:
+        - action
+        - claims
+        - survivorClaimId
+        - values
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [merge_claim_group]
+        claims:
+          type: array
+          minItems: 2
+          maxItems: 100
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ClaimVersionReference"
+        survivorClaimId:
+          type: string
+          format: uuid
+        values:
+          description: Candidate-confirmed final values validated against the stored claim type.
+          anyOf:
+            - $ref: "#/components/schemas/SkillClaimValues"
+            - $ref: "#/components/schemas/EmploymentClaimValues"
+            - $ref: "#/components/schemas/EducationClaimValues"
+            - $ref: "#/components/schemas/CertificationClaimValues"
+            - $ref: "#/components/schemas/LanguageClaimValues"
+            - $ref: "#/components/schemas/ProjectClaimValues"
+        current:
+          type: boolean
     ClaimBatchResolutionRequest:
       type: object
       required:
@@ -1815,6 +1848,7 @@ components:
             oneOf:
               - $ref: "#/components/schemas/ClaimBatchAcceptAction"
               - $ref: "#/components/schemas/ClaimBatchMergeAction"
+              - $ref: "#/components/schemas/ClaimBatchGroupMergeAction"
     ConfirmedClaimMergeRequest:
       type: object
       required:
@@ -2255,6 +2289,27 @@ components:
           $ref: "#/components/schemas/ClaimRecord"
         duplicate:
           $ref: "#/components/schemas/ClaimRecord"
+    ClaimBatchAcceptedGroupMergeResult:
+      type: object
+      required: [index, action, status, survivor, duplicates]
+      additionalProperties: false
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        action:
+          type: string
+          enum: [merge_claim_group]
+        status:
+          type: string
+          enum: [accepted]
+        survivor:
+          $ref: "#/components/schemas/ClaimRecord"
+        duplicates:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ClaimRecord"
     ClaimBatchConflictResult:
       type: object
       required: [index, action, status, current]
@@ -2265,7 +2320,7 @@ components:
           minimum: 0
         action:
           type: string
-          enum: [accept_claim, merge_claims]
+          enum: [accept_claim, merge_claims, merge_claim_group]
         status:
           type: string
           enum: [conflict]
@@ -2281,7 +2336,7 @@ components:
           minimum: 0
         action:
           type: string
-          enum: [accept_claim, merge_claims]
+          enum: [accept_claim, merge_claims, merge_claim_group]
         status:
           type: string
           enum: [not_eligible]
@@ -2297,7 +2352,7 @@ components:
           minimum: 0
         action:
           type: string
-          enum: [accept_claim, merge_claims]
+          enum: [accept_claim, merge_claims, merge_claim_group]
         status:
           type: string
           enum: [failed]
@@ -2318,6 +2373,7 @@ components:
                 oneOf:
                   - $ref: "#/components/schemas/ClaimBatchAcceptedClaimResult"
                   - $ref: "#/components/schemas/ClaimBatchAcceptedMergeResult"
+                  - $ref: "#/components/schemas/ClaimBatchAcceptedGroupMergeResult"
                   - $ref: "#/components/schemas/ClaimBatchConflictResult"
                   - $ref: "#/components/schemas/ClaimBatchNotEligibleResult"
                   - $ref: "#/components/schemas/ClaimBatchFailedResult"

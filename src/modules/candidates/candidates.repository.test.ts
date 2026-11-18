@@ -747,10 +747,12 @@ describe('atomic claim merging', () => {
     };
   }
 
-  function coalesceContext(reads: unknown[][]) {
+  function coalesceContext(
+    reads: unknown[][],
+    lockedClaimIds = [claimId, duplicateClaimId]
+  ) {
     const lock = vi.fn().mockResolvedValue([
-      { claimId },
-      { claimId: duplicateClaimId }
+      ...lockedClaimIds.map((lockedClaimId) => ({ claimId: lockedClaimId }))
     ]);
     const lockOrderBy = vi.fn(() => ({ for: lock }));
     const lockWhere = vi.fn(() => ({ orderBy: lockOrderBy }));
@@ -926,6 +928,59 @@ describe('atomic claim merging', () => {
     ).resolves.toMatchObject({ status: 'conflict' });
     expect(context.inserted).not.toHaveBeenCalled();
     expect(context.update).not.toHaveBeenCalled();
+  });
+
+  it('accepts one survivor and retires a claim group atomically', async () => {
+    const thirdClaimId = '44444444-4444-4444-8444-444444444444';
+    const before = [
+      pendingRow(claimId, 2, 'TypeScript'),
+      pendingRow(duplicateClaimId, 4, 'typescript'),
+      pendingRow(thirdClaimId, 3, 'TypeScript')
+    ];
+    const savedSurvivor = pendingRow(claimId, 3, 'TypeScript and Node.js');
+    const after = [
+      {
+        ...savedSurvivor,
+        claim: { ...savedSurvivor.claim, status: 'accepted' as const }
+      },
+      pendingRow(duplicateClaimId, 5, 'typescript', claimId),
+      pendingRow(thirdClaimId, 4, 'TypeScript', claimId)
+    ];
+    const context = coalesceContext(
+      [before, after],
+      [claimId, duplicateClaimId, thirdClaimId]
+    );
+
+    await expect(
+      context.repository.mergeConfirmedClaimGroup({
+        candidateId,
+        claims: [
+          { claimId, expectedVersion: 2 },
+          { claimId: duplicateClaimId, expectedVersion: 4 },
+          { claimId: thirdClaimId, expectedVersion: 3 }
+        ],
+        survivorClaimId: claimId,
+        values: { name: 'TypeScript and Node.js' }
+      })
+    ).resolves.toMatchObject({
+      status: 'saved',
+      survivor: { claimId, status: 'accepted', version: 3 },
+      duplicates: [
+        { claimId: duplicateClaimId, supersededByClaimId: claimId },
+        { claimId: thirdClaimId, supersededByClaimId: claimId }
+      ]
+    });
+
+    expect(context.lock).toHaveBeenCalledWith('update');
+    expect(context.inserted).toHaveBeenCalledWith({
+      claimId,
+      previousValues: { name: 'TypeScript' },
+      previousCurrent: false
+    });
+    expect(context.claimUpdates).toEqual([
+      expect.objectContaining({ status: 'accepted', current: false }),
+      expect.objectContaining({ supersededByClaimId: claimId })
+    ]);
   });
 
   it('records a different decision using canonical claim order', async () => {

@@ -400,9 +400,9 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
     {
       schema: {
         tags: ['Candidates'],
-        summary: 'Resolve selected claims and duplicate pairs',
+        summary: 'Resolve selected claims and duplicate claim groups',
         description:
-          'Runs up to five independent actions concurrently and returns ordered per-item outcomes. Atomicity remains per claim or pair.',
+          'Runs up to five independent actions concurrently and returns ordered per-item outcomes. A claim group is merged atomically.',
         security: candidateSecurity,
         body: resolveClaimBatchBodySchema,
         response: {

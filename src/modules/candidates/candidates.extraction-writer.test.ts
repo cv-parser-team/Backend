@@ -22,13 +22,15 @@ const candidate = { candidateId } as CandidateRecord;
 
 function dependencies(
   foundCandidate: CandidateRecord | null,
-  reviewedClaims: ClaimRecord[] = []
+  reviewedClaims: ClaimRecord[] = [],
+  activeClaims: ClaimRecord[] = []
 ) {
   const findCandidateByUserId = vi.fn().mockResolvedValue(foundCandidate);
   const deletePendingExtractedClaims = vi.fn().mockResolvedValue(0);
   const listReviewedExtractedClaims = vi
     .fn()
     .mockResolvedValue(reviewedClaims);
+  const listClaims = vi.fn().mockResolvedValue(activeClaims);
   const createClaims = vi
     .fn<CandidateExtractionWriterDependencies['repository']['createClaims']>()
     .mockImplementation(async (inputs) =>
@@ -72,6 +74,7 @@ function dependencies(
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
+    listClaims,
     createClaim,
     createClaims,
     createClaimSourceOccurrences
@@ -81,6 +84,7 @@ function dependencies(
     findCandidateByUserId,
     deletePendingExtractedClaims,
     listReviewedExtractedClaims,
+    listClaims,
     createClaim,
     createClaims,
     createClaimSourceOccurrences,
@@ -463,6 +467,93 @@ describe('candidate extraction writer', () => {
           sourceReferences: ['L12'],
           fieldNames: ['name']
         })
+      ],
+      transaction
+    );
+  });
+
+  it('keeps an otherwise accepted draft pending when it conflicts with an active claim', async () => {
+    const activeClaim: ClaimRecord = {
+      claimId: randomUUID(),
+      supersededByClaimId: null,
+      claimType: 'language',
+      origin: 'manual',
+      status: 'accepted',
+      current: false,
+      candidateEdited: true,
+      values: { name: 'English', proficiency: 'Native' },
+      extraction: null,
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const { createClaims, listClaims, writer } = dependencies(
+      candidate,
+      [],
+      [activeClaim]
+    );
+    const drafts: ExtractedClaimDraftInput[] = [
+      {
+        type: 'language',
+        status: 'accepted',
+        values: { name: 'English', proficiency: 'C1' },
+        rawValues: {},
+        fieldSources: { name: ['L8'], proficiency: ['L8'] },
+        current: false,
+        sourceOccurrences: []
+      }
+    ];
+
+    await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      drafts,
+      transaction
+    );
+
+    expect(listClaims).toHaveBeenCalledWith(candidateId, {}, transaction);
+    expect(createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ status: 'pending' })],
+      transaction
+    );
+  });
+
+  it('keeps conflicting accepted drafts from the same extraction pending', async () => {
+    const { createClaims, writer } = dependencies(candidate);
+    const drafts: ExtractedClaimDraftInput[] = [
+      {
+        type: 'language',
+        status: 'accepted',
+        values: { name: 'English', proficiency: 'Native' },
+        rawValues: {},
+        fieldSources: {},
+        current: false,
+        sourceOccurrences: []
+      },
+      {
+        type: 'language',
+        status: 'accepted',
+        values: { name: 'English', proficiency: 'C1' },
+        rawValues: {},
+        fieldSources: {},
+        current: false,
+        sourceOccurrences: []
+      }
+    ];
+
+    await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      drafts,
+      transaction
+    );
+
+    expect(createClaims).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ status: 'pending' }),
+        expect.objectContaining({ status: 'pending' })
       ],
       transaction
     );
