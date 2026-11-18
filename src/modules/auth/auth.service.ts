@@ -1,5 +1,6 @@
 import {
   AccountUnavailableError,
+  AuthenticationError,
   InvalidCredentialsError
 } from './auth.errors.js';
 import { AuthRepository, AuthState } from './auth.repository.js';
@@ -15,9 +16,14 @@ export interface AuthResult extends AuthToken {
   userId: string;
 }
 
+export interface AuthSession extends AuthResult {
+  refreshToken: string;
+}
+
 export interface AuthService {
-  register(input: RegisterBody): Promise<AuthResult>;
-  signIn(input: SignInBody): Promise<AuthResult>;
+  register(input: RegisterBody): Promise<AuthSession>;
+  signIn(input: SignInBody): Promise<AuthSession>;
+  refresh(refreshToken: string | undefined): Promise<AuthSession>;
   logout(userId: string): Promise<void>;
 }
 
@@ -31,14 +37,18 @@ export interface AuthServiceDependencies {
 async function issueResult(
   jwtService: JwtService,
   state: AuthState
-): Promise<AuthResult> {
-  const accessToken = await jwtService.issueAccessToken({
+): Promise<AuthSession> {
+  const claims = {
     userId: state.userId,
     role: state.role,
     tokenVersion: state.tokenVersion
-  });
+  };
+  const [accessToken, refreshToken] = await Promise.all([
+    jwtService.issueAccessToken(claims),
+    jwtService.issueRefreshToken(claims)
+  ]);
 
-  return { userId: state.userId, accessToken };
+  return { userId: state.userId, accessToken, refreshToken };
 }
 
 export function createAuthService({
@@ -76,6 +86,29 @@ export function createAuthService({
       }
 
       return issueResult(jwtService, credentials);
+    },
+
+    async refresh(refreshToken) {
+      if (!refreshToken) {
+        throw new AuthenticationError('Refresh token required');
+      }
+
+      let claims;
+      try {
+        claims = await jwtService.verifyRefreshToken(refreshToken);
+      } catch {
+        throw new AuthenticationError('Invalid or expired refresh token');
+      }
+
+      const state = await repository.getAuthState(claims.userId);
+      if (!state || state.tokenVersion !== claims.tokenVersion) {
+        throw new AuthenticationError('Invalid or expired refresh token');
+      }
+      if (state.accountStatus !== 'active') {
+        throw new AccountUnavailableError('Account is not active');
+      }
+
+      return issueResult(jwtService, state);
     },
 
     async logout(userId) {

@@ -103,6 +103,21 @@ paths:
           $ref: "#/components/responses/AuthenticationRequired"
         "403":
           $ref: "#/components/responses/AccountUnavailable"
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      operationId: refreshAccessToken
+      description: Uses the HttpOnly refresh-token cookie to return a new access token and renew the cookie.
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthSuccess"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "403":
+          $ref: "#/components/responses/AccountUnavailable"
   /api/candidates/me:
     post:
       tags: [Candidates - Profile]
@@ -691,6 +706,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: luminaCV_refresh
   parameters:
     ClaimId:
       name: claimId

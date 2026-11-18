@@ -120,6 +120,7 @@ The authentication routes are:
 
 - `POST /api/auth/register`
 - `POST /api/auth/sign-in`
+- `POST /api/auth/refresh` (HttpOnly refresh-token cookie required)
 - `POST /api/auth/logout` (Bearer token required)
 
 The protected user routes are:
@@ -192,12 +193,17 @@ failing.
 
 Registration and sign-in return a signed JWT access token. Send it to protected
 routes with `Authorization: Bearer <token>`. Access tokens expire after 15
-minutes and are not refreshable; the user signs in again after expiry.
+minutes. Registration and sign-in also set a 30-day refresh token in an
+`HttpOnly`, `SameSite=Strict` cookie. `POST /api/auth/refresh` validates that
+cookie against the user's current account and token version, returns a new
+access token, and renews the refresh cookie. Refresh tokens are never returned
+in JSON or made available to browser JavaScript.
 
 Each JWT includes the user's token version. Logout increments the stored
-version and immediately invalidates all access tokens previously issued to that
-user. `JWT_SECRET` must contain at least 32 characters; configure the expected
-issuer and audience with `JWT_ISSUER` and `JWT_AUDIENCE`.
+version and immediately invalidates all access and refresh tokens previously
+issued to that user, then clears the refresh cookie. `JWT_SECRET` must contain
+at least 32 characters; configure the expected issuer and audience with
+`JWT_ISSUER` and `JWT_AUDIENCE`.
 
 ## Architecture
 

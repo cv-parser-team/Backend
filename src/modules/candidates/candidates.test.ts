@@ -1697,7 +1697,9 @@ function createAuthRepositoryDouble(role: UserRole): AuthRepository {
 function createJwtDouble(role: UserRole): JwtService {
   return {
     issueAccessToken: vi.fn().mockResolvedValue('access-token'),
-    verifyAccessToken: vi.fn().mockResolvedValue({ userId, role, tokenVersion: 0 })
+    verifyAccessToken: vi.fn().mockResolvedValue({ userId, role, tokenVersion: 0 }),
+    issueRefreshToken: vi.fn().mockResolvedValue('refresh-token'),
+    verifyRefreshToken: vi.fn().mockResolvedValue({ userId, role, tokenVersion: 0 })
   };
 }
 
