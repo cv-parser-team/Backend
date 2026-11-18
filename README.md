@@ -50,7 +50,7 @@ Every demo account uses the password `Demo-Password-2026!`.
 | Account | Role | What it shows |
 | --- | --- | --- |
 | `sara@demo.luminacv.test` | Candidate | A full profile with an accepted claim of every type, a rejected extracted skill, and an extracted job waiting for review; the export contains the accepted claims only |
-| `omar@demo.luminacv.test` | Candidate | Normalization: `JavaScript` (exact), `Postgres` (alias), `Pyhton` (spelling correction), `Server-side Engineer` and `Bachelors in Computer Science` (AI), `Prodject Manager` (ambiguous, then AI), and `Underwater Basket Weaving` (no term) |
+| `omar@demo.luminacv.test` | Candidate | Normalization examples plus duplicate candidates for every claim type, all merge field outcomes, and extraction review items covering every claim type and issue category |
 | `lina@demo.luminacv.test` | Candidate | A processed CV with three extracted claims and two review items waiting for review |
 | `reviewer@demo.luminacv.test` | Reviewer | |
 | `admin@demo.luminacv.test` | Admin | |

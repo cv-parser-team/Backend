@@ -28,12 +28,14 @@ import {
 
 export type DraftValues = Record<string, string | string[]>;
 
-// A claim ready to be saved as extracted and pending review. Its values use
-// the same shape as manual claims.
+export const AUTO_ACCEPT_MIN_CONFIDENCE = 0.95;
+
+// A claim ready to be saved as extracted. Its values use the same shape as
+// manual claims.
 export interface ClaimDraft {
   type: ClaimType;
   origin: 'extracted';
-  status: 'pending';
+  status: 'accepted' | 'pending';
   // The lowest confidence among the kept fields: a claim is only as reliable
   // as its weakest value, and an average would hide one doubtful field.
   confidence: number;
@@ -374,6 +376,7 @@ function mapClaim(claim: ExtractedClaim, availableSources?: ReadonlySet<string>)
   const fieldConfidence = Object.fromEntries(
     keptFields.map(([fieldName, field]) => [fieldName, field.confidence])
   );
+  const confidence = Math.min(...Object.values(fieldConfidence));
   const rawValues: Record<string, string> = {};
   for (const [fieldName, field] of keptFields) {
     if (field.raw !== undefined) {
@@ -385,8 +388,11 @@ function mapClaim(claim: ExtractedClaim, availableSources?: ReadonlySet<string>)
     draft: {
       type: claim.type,
       origin: 'extracted',
-      status: 'pending',
-      confidence: Math.min(...Object.values(fieldConfidence)),
+      status:
+        issues.length === 0 && confidence >= AUTO_ACCEPT_MIN_CONFIDENCE
+          ? 'accepted'
+          : 'pending',
+      confidence,
       fieldConfidence,
       current,
       values,

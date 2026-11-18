@@ -37,9 +37,10 @@ include it.
 
 ## 3. Invariants
 
-1. **Extraction is staged.** A claim created by document extraction starts as
-   `pending` and is excluded from profile export. Duplicate handling must not
-   make extracted information visible without candidate confirmation.
+1. **Uncertain extraction is staged.** Extracted claims that do not meet the
+   extraction module's automatic-acceptance criteria start as `pending` and are
+   excluded from profile export. Duplicate handling must not make those claims
+   visible without candidate confirmation.
 2. **Resolution is approval.** When the candidate explicitly confirms the
    final values of a duplicate or conflict, the surviving claim becomes
    `accepted` and is exported. A second approval step is not required.

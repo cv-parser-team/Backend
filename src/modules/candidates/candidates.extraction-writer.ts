@@ -21,6 +21,7 @@ export interface ExtractedClaimSourceOccurrenceInput {
 
 export interface ExtractedClaimDraftInput {
   type: CreateClaimInput['claimType'];
+  status: Extract<CreateClaimInput['status'], 'accepted' | 'pending'>;
   values: ClaimValues;
   rawValues: Record<string, string>;
   fieldSources: Record<string, string[]>;
@@ -154,6 +155,9 @@ function coalesceDrafts(
     const key = strictClaimComparisonKey(draft.type, draft.values);
     const existing = merged.get(key);
     if (existing) {
+      if (draft.status === 'pending') {
+        existing.status = 'pending';
+      }
       existing.fieldSources = mergeFieldSources(
         existing.fieldSources,
         draft.fieldSources
@@ -224,7 +228,7 @@ export function createCandidateExtractionWriter({
         candidateId: candidate.candidateId,
         claimType: draft.type,
         origin: 'extracted',
-        status: 'pending',
+        status: draft.status,
         values: draft.values,
         extraction: {
           invocationId,

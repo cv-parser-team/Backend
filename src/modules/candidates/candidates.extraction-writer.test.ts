@@ -101,6 +101,7 @@ describe('candidate extraction writer', () => {
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'TypeScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },
@@ -123,6 +124,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'employment',
+        status: 'pending',
         values: {
           employer: 'Example Labs',
           jobTitle: 'Backend Engineer',
@@ -153,6 +155,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'employment',
+        status: 'accepted',
         values: {
           employer: '  EXAMPLE   LABS ',
           jobTitle: 'backend engineer',
@@ -255,6 +258,7 @@ describe('candidate extraction writer', () => {
       [
         expect.objectContaining({
           claimType: 'skill',
+          status: 'accepted',
           values: drafts[0]!.values
         }),
         {
@@ -335,6 +339,7 @@ describe('candidate extraction writer', () => {
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'employment',
+        status: 'accepted',
         values: {
           employer: 'Example Labs',
           jobTitle: 'Backend Engineer',
@@ -362,6 +367,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'typescript' },
         rawValues: {},
         fieldSources: {},
@@ -384,6 +390,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'employment',
+        status: 'pending',
         values: {
           employer: 'Example Labs',
           jobTitle: 'Backend Engineer',
@@ -397,6 +404,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
+        status: 'pending',
         values: { name: 'Node.js' },
         rawValues: {},
         fieldSources: { name: ['L12'] },
@@ -471,6 +479,7 @@ describe('candidate extraction writer', () => {
     const drafts: ExtractedClaimDraftInput[] = [
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'TypeScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },
@@ -493,6 +502,7 @@ describe('candidate extraction writer', () => {
       },
       {
         type: 'skill',
+        status: 'accepted',
         values: { name: 'JavaScript' },
         rawValues: {},
         fieldSources: { name: ['L9'] },

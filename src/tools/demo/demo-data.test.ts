@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  compareClaimFields,
+  compareClaimIdentity
+} from '../../modules/candidates/candidates.claim-comparison.js';
 import { prepareUnknownClaimValues } from '../../modules/candidates/candidates.claim-values.js';
 import { matchTerm, toMatchKey } from '../../modules/normalization/normalization.matching.js';
 import { SEED_DICTIONARY } from '../../modules/normalization/normalization.seed-data.js';
@@ -47,6 +51,95 @@ describe('demo data', () => {
     );
     expect(new Set(claims.map(({ status }) => status))).toEqual(
       new Set(['accepted', 'pending', 'rejected'])
+    );
+  });
+
+  it('gives Omar duplicate candidates of every claim type and every field outcome', () => {
+    const omar = DEMO_ACCOUNTS.find(
+      (account) => account.email === 'omar@demo.luminacv.test'
+    )!;
+    const claimTypes = [
+      'skill',
+      'employment',
+      'education',
+      'certification',
+      'language',
+      'project'
+    ] as const;
+    const fieldOutcomes = new Set<string>();
+
+    for (const claimType of claimTypes) {
+      const sameTypeClaims = (omar.claims ?? []).filter(
+        ({ claim }) => claim.type === claimType
+      );
+      let foundDuplicate = false;
+
+      for (let leftIndex = 0; leftIndex < sameTypeClaims.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < sameTypeClaims.length; rightIndex += 1) {
+          const left = sameTypeClaims[leftIndex]!.claim;
+          const right = sameTypeClaims[rightIndex]!.claim;
+          const leftComparable = {
+            candidateId: 'omar',
+            claimType,
+            values: left.values,
+            current: false
+          };
+          const rightComparable = {
+            candidateId: 'omar',
+            claimType,
+            values: right.values,
+            current: false
+          };
+          const identity = compareClaimIdentity(leftComparable, rightComparable);
+          if (identity.result !== 'equivalent' && identity.result !== 'suspected_duplicate') {
+            continue;
+          }
+
+          foundDuplicate = true;
+          const comparison = compareClaimFields(leftComparable, rightComparable);
+          if (comparison.result === 'compared') {
+            for (const outcome of Object.values(comparison.fields)) {
+              fieldOutcomes.add(outcome.kind);
+            }
+          }
+        }
+      }
+
+      expect(foundDuplicate, `missing ${claimType} duplicate`).toBe(true);
+    }
+
+    for (const outcome of [
+      'same',
+      'enrichment',
+      'precision_improvement',
+      'conflict'
+    ]) {
+      expect(fieldOutcomes).toContain(outcome);
+    }
+  });
+
+  it('gives Omar review items for every claim type and extraction issue category', () => {
+    const omar = DEMO_ACCOUNTS.find(
+      (account) => account.email === 'omar@demo.luminacv.test'
+    )!;
+    const reviewItems = omar.document?.reviewItems ?? [];
+
+    expect(new Set(reviewItems.map(({ claimType }) => claimType))).toEqual(
+      new Set(['skill', 'employment', 'education', 'certification', 'language', 'project'])
+    );
+    expect(
+      new Set(reviewItems.flatMap(({ issues }) => issues.map(({ code }) => code)))
+    ).toEqual(
+      new Set([
+        'invalid_item',
+        'invalid_source',
+        'missing_job_title',
+        'invalid_date',
+        'missing_issue_date',
+        'invalid_value',
+        'missing_value',
+        'invalid_date_order'
+      ])
     );
   });
 

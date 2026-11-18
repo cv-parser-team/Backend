@@ -90,7 +90,7 @@ describe('candidate extraction service', () => {
         {
           type: 'skill',
           origin: 'extracted',
-          status: 'pending',
+          status: 'accepted',
           confidence: 0.98,
           fieldConfidence: { name: 0.98 },
           current: false,

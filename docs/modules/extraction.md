@@ -3,16 +3,18 @@
 ## Goal
 
 The AI reads the compact text that parsing builds from a CV and returns what it
-found as JSON. This module checks that JSON and turns every valid item into a
-pending extracted claim draft, keeping the original values, the lines they
-came from, and how confident the AI was about each value. Recognized claims
-that are incomplete or invalid are retained as structured review items instead
-of being discarded or completed with invented values.
+found as JSON. This module checks that JSON and turns every valid item into an
+extracted claim draft, keeping the original values, the lines they came from,
+and how confident the AI was about each value. Fully sourced claims whose
+fields all have confidence of at least `0.95` are accepted automatically.
+Claims below that threshold or with a field set aside remain pending.
+Recognized claims that are incomplete or invalid are retained as structured
+review items instead of being discarded or completed with invented values.
 
 V1 sends compact parsing input through the tracked LLM service and maps the
 provider's structured output. Its persistence coordinator can atomically save
-pending claim drafts, review items, and the document's unmapped data. It does not yet persist
-profile drafts, normalize extracted values through the
+claim drafts, review items, and the document's unmapped data. It does not yet
+persist profile drafts, normalize extracted values through the
 [normalization module](normalization.md), or resolve conflicts. The
 document-processing worker invokes extraction after a successful or partial
 parse.
@@ -81,8 +83,9 @@ either location.
 
 Candidates review a pending claim through
 `PATCH /api/candidates/me/claims/:claimId/review`. Acceptance or rejection is a
-terminal, version-guarded decision; confidence remains advisory and never
-chooses the decision automatically.
+terminal, version-guarded decision. The extraction module automatically accepts
+a claim only when every retained field has confidence of at least `0.95` and no
+field produced a review issue.
 
 The extraction service owns the versioned prompt and output contract. Provider,
 model, timeout, and the LLM service are injected so the module does not create
@@ -192,7 +195,8 @@ creation but preserves the complete recognized claim as a review item.
 
 | Situation | Result |
 | --- | --- |
-| Valid item | A pending extracted claim draft |
+| Valid item with every field at or above `0.95` confidence | An accepted extracted claim draft |
+| Valid item below `0.95` confidence | A pending extracted claim draft |
 | Value with low confidence | Kept, with its confidence, so the candidate can review it |
 | Required field missing | No canonical claim; structured review item with `missing_<field>`, such as `missing_start_date` |
 | Required field invalid, such as a start date of `2021-13` or an empty name | No canonical claim; structured review item with `invalid_date` or `invalid_value` |
@@ -302,7 +306,9 @@ taken from its proficiency. A recognized incomplete claim looks like this:
 }
 ```
 
-- `claims` are drafts with `origin: extracted` and `status: pending`. Each has
+- `claims` are drafts with `origin: extracted` and either `status: accepted`
+  when all fields meet the automatic-acceptance criteria or `status: pending`.
+  Each has
   the confidence of every kept field, its overall `confidence`, all its
   `sources`, and the sources of each field.
 - `rawValues` keep the text as the CV wrote it for fields that had a `raw`
@@ -326,9 +332,9 @@ taken from its proficiency. A recognized incomplete claim looks like this:
    review; the confidence of each field is kept. Fields that were set aside are
    left out.
 3. **Confidence stays transient.** It is model-generated review guidance, not
-   a candidate fact. Extracted claims persist their invocation, original
-   wording, sources, source document, and explicit current status; confidence
-   can be added when a review or evaluation feature has a concrete use for it.
+   a candidate fact. The mapper uses it to choose the initial claim status, but
+   extracted claims persist only their invocation, original wording, sources,
+   source document, and explicit current status.
 
 ## Revisit later
 
