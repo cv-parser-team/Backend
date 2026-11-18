@@ -62,17 +62,66 @@ async function parserFor(filename: string): Promise<InspectionParser> {
   throw new Error(`Unsupported file extension '${extension || '(none)'}'; use PDF or DOCX`);
 }
 
+// Asks the AI about the PDF's uncertain layout decisions and returns the
+// rebuilt trace with a report section listing every decision.
+async function adjudicateLayout(
+  content: Uint8Array
+): Promise<{ trace: LayoutTrace; styles: string; content: string }> {
+  const [{ config }, { AppDatabase }, llm, ai, run, report] = await Promise.all([
+    import('../config/config.js'),
+    import('../infrastructure/database/database.js'),
+    import('../infrastructure/llm/index.js'),
+    import('../modules/parsing/parsing-adjudication.ai.js'),
+    import('../modules/parsing/parsing-adjudication.run.js'),
+    import('../modules/parsing/parsing-adjudication.report.js')
+  ]);
+  const database = new AppDatabase();
+  try {
+    const adjudicator = ai.createAiAdjudicator({
+      llmService: llm.createLlmService(
+        llm.createGeminiLlmClient({
+          apiKey: config.llm.apiKey,
+          maximumInputCharacters: config.llm.maximumInputCharacters
+        }),
+        llm.createLlmRepository(database)
+      ),
+      provider: config.llm.provider,
+      model: config.llm.model,
+      timeoutMs: config.llm.timeoutMs
+    });
+    const layout = await run.adjudicatePdfLayout(content, adjudicator, randomUUID());
+    const applied = layout.result.decisions.filter((decision) => decision.source === 'ai').length;
+    console.log(`Uncertain decisions: ${layout.cases.length}, AI choices applied: ${applied}`);
+    return {
+      trace: layout.adjudicated,
+      styles: report.ADJUDICATION_REPORT_STYLES,
+      content: report.buildAdjudicationReport(layout.initial, layout.cases, layout.result)
+    };
+  } finally {
+    await database.close();
+  }
+}
+
 export async function generateParsingInspection(
   input: string,
   output?: string,
-  includeLlm = false
+  includeLlm = false,
+  adjudicate = false
 ): Promise<void> {
   const inputPath = resolve(input);
   const outputPath = resolve(output ?? `${inputPath}.parsing.html`);
   const inspection = await parserFor(inputPath);
-  const result = await inspection.parser.parse(new Uint8Array(await readFile(inputPath)));
+  const content = new Uint8Array(await readFile(inputPath));
+  const result = await inspection.parser.parse(content);
   const aiInput = buildAiInput(result);
   let supplement: { styles: string; content: string } | undefined;
+  let layoutTrace = inspection.layoutTrace();
+
+  if (adjudicate && layoutTrace) {
+    const adjudicated = await adjudicateLayout(content);
+    layoutTrace = adjudicated.trace;
+    supplement = { styles: adjudicated.styles, content: adjudicated.content };
+  }
 
   if (includeLlm) {
     const [{ config }, { AppDatabase }, llm, extraction, report] = await Promise.all([
@@ -106,11 +155,11 @@ export async function generateParsingInspection(
         input: aiInput
       });
       supplement = {
-        styles: report.EMBEDDED_LLM_INSPECTION_STYLES,
-        content: report.buildEmbeddedLlmInspectionReport(
+        styles: `${supplement?.styles ?? ''}${report.EMBEDDED_LLM_INSPECTION_STYLES}`,
+        content: `${supplement?.content ?? ''}${report.buildEmbeddedLlmInspectionReport(
           extractionResult,
           providerOutput
-        )
+        )}`
       };
       console.log(`Claims: ${extractionResult.claims.length}`);
       console.log(`Unmapped: ${extractionResult.unmapped.length}`);
@@ -124,7 +173,7 @@ export async function generateParsingInspection(
     buildParsingInspectionReport(
       result,
       basename(inputPath),
-      inspection.layoutTrace(),
+      layoutTrace,
       supplement
     ),
     'utf8'
@@ -135,10 +184,16 @@ export async function generateParsingInspection(
 }
 
 async function main(): Promise<void> {
-  const argumentsWithoutFlags = process.argv.slice(2).filter((value) => value !== '--llm');
+  const flags = ['--llm', '--adjudicate'];
+  const argumentsWithoutFlags = process.argv.slice(2).filter((value) => !flags.includes(value));
   const [inputArgument, outputArgument] = argumentsWithoutFlags;
   const inputPath = await selectInputPath(inputArgument);
-  await generateParsingInspection(inputPath, outputArgument, process.argv.includes('--llm'));
+  await generateParsingInspection(
+    inputPath,
+    outputArgument,
+    process.argv.includes('--llm'),
+    process.argv.includes('--adjudicate')
+  );
 }
 
 const executedPath = process.argv[1];

@@ -22,12 +22,25 @@ export interface SectionScope {
   governingZoneCandidateIndexes: number[];
 }
 
+// Role decisions an AI made about uncertain heading candidates of one page,
+// by line index. They only change whether a line is a heading; scopes,
+// ownership, and order are still derived from geometry.
+export interface SectionAdjudications {
+  // Provisional headings confirmed as section headings.
+  confirmedHeadings?: ReadonlySet<number>;
+  // Same-row headings confirmed as independent, lane-local sections.
+  independentHeadings?: ReadonlySet<number>;
+  // Candidates that are a rail of metadata, not headings.
+  notHeadings?: ReadonlySet<number>;
+}
+
 export interface SectionScopeInput {
   lines: LayoutLine[];
   metrics: PageMetrics;
   boundaryCandidates: BoundaryCandidate[];
   nonTextBoundaryCandidates: NonTextBoundaryCandidate[];
   layoutZoneCandidates: LayoutZoneCandidate[];
+  adjudications?: SectionAdjudications;
 }
 
 interface ResolvedHeading {
@@ -439,6 +452,9 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
       return [];
     }
     const lineIndex = candidate.lineIndex;
+    if (input.adjudications?.notHeadings?.has(lineIndex)) {
+      return [];
+    }
     const line = input.lines[lineIndex]!;
     const peers = sameRowSectionPeers(lineIndex, input.lines, input.boundaryCandidates);
     const strongSameRowGroup = isStrongSameRowSectionGroup(
@@ -550,6 +566,20 @@ function resolveHeadings(input: SectionScopeInput): ResolvedHeading[] {
             ? 'same-row section peers remain unresolved'
             : 'section evidence remains below confirmation requirements'
       );
+    }
+
+    // An AI decision may settle a heading the evidence left provisional. The
+    // gutter rules below still apply to the confirmed heading.
+    if (status === 'provisional' && input.adjudications?.independentHeadings?.has(lineIndex)) {
+      status = 'confirmed';
+      mode = 'lane-local';
+      confidence += 0.1;
+      reasons.push('AI adjudication: independent sections across the gutter');
+    } else if (status === 'provisional' && input.adjudications?.confirmedHeadings?.has(lineIndex)) {
+      status = 'confirmed';
+      mode = peers.length > 0 ? 'lane-local' : 'cross-lane';
+      confidence += 0.1;
+      reasons.push('AI adjudication: section heading');
     }
 
     if (

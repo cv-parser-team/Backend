@@ -30,6 +30,8 @@ interface EntryResolutionInput {
   metrics: PageMetrics;
   boundaryCandidates: BoundaryCandidate[];
   sectionScopes: SectionScope[];
+  // Weak anchors an AI decided continue the entry above them.
+  continuingAnchors?: ReadonlySet<number>;
 }
 
 const METADATA = /(?:\b(?:19|20)\d{2}\b|\b(?:present|now)\b|@|https?:\/\/|www\.|\+?\d[\d ().-]{6,}\d)/iu;
@@ -282,7 +284,9 @@ export function resolveEntries(
   input: EntryResolutionInput
 ): EntryResolution {
   const confirmedScopes = input.sectionScopes.filter((scope) => scope.status === 'confirmed');
-  const anchors = confirmedScopes.flatMap((scope) => anchorsInScope(scope, input));
+  const anchors = confirmedScopes
+    .flatMap((scope) => anchorsInScope(scope, input))
+    .filter((anchor) => !input.continuingAnchors?.has(anchor.lineIndex));
   const groups: EntryGroup[] = [];
   for (const scope of confirmedScopes) {
     const scopeAnchors = anchors.filter(

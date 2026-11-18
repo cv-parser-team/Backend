@@ -16,6 +16,7 @@ import { hasTooMuchArabic, removeArabic } from './language.js';
 import {
   buildPages,
   buildPagesWithTrace,
+  type LayoutAdjudications,
   type LayoutTrace,
   PositionedPage,
   round,
@@ -437,6 +438,8 @@ function failedResult(
 
 export interface PdfParserOptions {
   onLayoutTrace?: (trace: LayoutTrace) => void;
+  // AI decisions about uncertain roles, applied when building the trace.
+  adjudications?: LayoutAdjudications;
 }
 
 export function createPdfParser(options: PdfParserOptions = {}): DocumentParser {
@@ -532,7 +535,7 @@ export function createPdfParser(options: PdfParserOptions = {}): DocumentParser 
         failures.sort((a, b) => (a.pageNumber ?? 0) - (b.pageNumber ?? 0));
         let pages;
         if (options.onLayoutTrace) {
-          const built = buildPagesWithTrace(keptPages);
+          const built = buildPagesWithTrace(keptPages, options.adjudications);
           options.onLayoutTrace(built.trace);
           pages = built.pages;
         } else {

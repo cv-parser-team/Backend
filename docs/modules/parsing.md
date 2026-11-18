@@ -211,6 +211,45 @@ contract change after fixture review. The shadow pipeline asserts unique
 ownership and makes the proposed replacement inspectable without silently
 changing stored extraction results.
 
+## AI adjudication of uncertain decisions
+
+Geometry and reading order stay deterministic. A low-token AI step may settle
+only the line roles the deterministic pipeline is unsure about; it runs on the
+shadow pipeline, for PDFs, and only in the inspection tool
+(`npm run parsing:inspect -- <pdf> [output] --adjudicate`).
+
+1. **Collect cases** (`parsing-adjudication.ts`) from the deterministic trace:
+   - `heading_role`: a provisional section heading (score at least 0.5, or
+     competing entry evidence): `section_heading`, `entry_headline`, or
+     `content`;
+   - `entry_boundary`: a demoted or mid-confidence entry anchor
+     (0.3 to 0.6): `starts_entry` or `continues_entry`;
+   - `gutter_meaning`: same-row provisional headings split by a gutter:
+     `shared_section`, `independent_sections`, or `metadata_rail`.
+
+   Each case carries line references (`p1-l12`), the target lines, and up to
+   three nearby lines. No line is asked about twice. High-confidence decisions
+   produce no case, and a PDF with no case makes no AI request.
+2. **Ask once per CV** (`parsing-adjudication.ai.ts`): every case goes in one
+   request through `LlmService` (task `parsing_adjudication`, prompt
+   `parsing-adjudication-v1`). The output
+   `{decisions: [{case, choice, confidence, reason}]}` is validated with Ajv.
+   The parser's decision is kept for a case with no answer, an option outside
+   the case's list, or confidence below 0.75, and for every case when the
+   request fails or returns invalid JSON.
+3. **Rebuild with role overrides** (`parsing-adjudication.run.ts`): only
+   choices that differ from the parser's decision become overrides, and the
+   PDF is parsed again with them. A confirmed heading becomes a confirmed
+   scope; independent sections become confirmed `lane-local` scopes; a
+   metadata rail is no longer a heading; a continuing anchor no longer starts
+   an entry. Line boxes, ownership, and reading order are recomputed by the
+   deterministic stages, so the AI cannot change coordinates or order, and
+   every line still has one owner.
+
+The array of decisions has no length limit in the schema because Gemini
+rejects such limits on this schema as too complex to serve; answers are
+matched to cases by number and extra answers are ignored.
+
 ## Heading and role scoring
 
 Heading detection identifies document titles, confirmed section headings,
@@ -378,6 +417,12 @@ The inspection report exposes:
 8. validated zones and constrained regions;
 9. final ownership and reading order;
 10. compact AI-input preview.
+
+With `--adjudicate`, the report adds an "AI adjudication" section listing each
+uncertain decision with its lines, options, the parser's decision, the AI's
+answer, confidence and reason, and what was applied, plus the invocation ID
+or the failure. The stages then show the layout rebuilt with the applied
+decisions.
 
 The trace is not persisted and is not part of the public extraction contract.
 Contributor commands, stage-to-file ownership, debugging steps, and heuristic

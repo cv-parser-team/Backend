@@ -81,6 +81,9 @@ Keep it visible there; do not introduce a second orchestration path.
 | Unique regions and reading order | `final-layout.ts` | `final-layout.test.ts` |
 | Compact model-facing text | `ai-input.ts` | `ai-input.test.ts` |
 | Visual trace | `inspection-report.ts` | `inspection-report.test.ts` |
+| Uncertain-decision cases and role overrides | `parsing-adjudication.ts` | `parsing-adjudication.test.ts` |
+| AI request, validation, and fallback | `parsing-adjudication.ai.ts` | `parsing-adjudication.ai.test.ts` |
+| Adjudicated rebuild and report section | `parsing-adjudication.run.ts`, `parsing-adjudication.report.ts` | `parsing-adjudication.run.test.ts`, `parsing-adjudication.report.test.ts` |
 
 ## Layout precedence rules
 
@@ -203,6 +206,17 @@ Start with the smallest stage whose output is wrong:
    npx vitest run src/modules/parsing
    npm run build
    ```
+
+To see which decisions the parser is unsure about and how the AI settles them
+(needs `LLM_API_KEY` and the database from `npm run infra:up`):
+
+```bash
+npm run parsing:inspect -- "testResumes/example.pdf" --adjudicate
+```
+
+The AI may change only line roles; if a rebuilt layout looks wrong, fix the
+case collection or the override in `section-scopes.ts`/`entry-groups.ts`, not
+the geometry stages.
 
 To regenerate every report in a directory:
 

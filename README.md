@@ -74,7 +74,7 @@ Every demo account uses the password `Demo-Password-2026!`.
 | `npm run dev` | Start the API in watch mode |
 | `npm run worker:dev` | Start the worker in watch mode: document processing and AI normalization requests |
 | `npm run worker` | Start the compiled worker: document processing and AI normalization requests |
-| `npm run parsing:inspect -- [file] [output] [--llm]` | Write a visual HTML parsing report; `--llm` embeds structured AI claims in the same report |
+| `npm run parsing:inspect -- [file] [output] [--llm] [--adjudicate]` | Write a visual HTML parsing report; `--llm` embeds structured AI claims in the same report; `--adjudicate` asks the AI about the PDF's uncertain layout decisions and shows each one |
 | `npm run parsing:inspect:all` | Regenerate parsing reports for every PDF and DOCX in `testResumes` |
 | `npm run llm:inspect -- [output.html]` | Run one tracked candidate-extraction request and write a formatted HTML claims report (defaults to `llm-inspection.html`) |
 | `npm run normalization:seed` | Load the starting normalization dictionary; adds only what is missing |
