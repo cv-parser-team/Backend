@@ -2,7 +2,8 @@ import { FastifyPluginAsync } from 'fastify';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
 import {
   createCandidateExtractionWriter as createWriter,
-  type CandidateExtractionWriter
+  type CandidateExtractionWriter,
+  type ExtractionTermLookup
 } from './candidates.extraction-writer.js';
 import { createCandidatesRepository } from './candidates.repository.js';
 import { candidatesRoutes } from './candidates.routes.js';
@@ -26,9 +27,13 @@ export const candidatesModule: FastifyPluginAsync = async (fastify) => {
 // Public composition boundary for background extraction. The repository stays
 // private to this module.
 export function createCandidateExtractionWriter(
-  database: AppDatabase
+  database: AppDatabase,
+  termLookup?: ExtractionTermLookup
 ): CandidateExtractionWriter {
-  return createWriter({ repository: createCandidatesRepository(database) });
+  return createWriter({
+    repository: createCandidatesRepository(database),
+    ...(termLookup ? { termLookup } : {})
+  });
 }
 
 export type {

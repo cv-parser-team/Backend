@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { buffer } from 'node:stream/consumers';
+import type { FastifyBaseLogger } from 'fastify';
 import type {
   DatabaseExecutor,
   UnitOfWork
@@ -10,7 +11,8 @@ import {
   SourceReferenceResolutionError,
   type CandidateExtractionResult,
   type CandidateExtractionService,
-  type ExtractionPersistenceCoordinator
+  type ExtractionPersistenceCoordinator,
+  type PersistedExtractionClaims
 } from '../extraction/index.js';
 import { buildAiInput, type ParsingService } from '../parsing/index.js';
 import type { ExtractionResult } from '../parsing/parsing.types.js';
@@ -53,6 +55,13 @@ export interface ParseDocumentHandlerDependencies {
     DocumentProcessingService,
     'claim' | 'lockClaim' | 'complete' | 'fail' | 'retry'
   >;
+  // Links the saved claims' values to canonical terms. It runs after the
+  // attempt's transaction, because it may queue AI requests and the claims
+  // must exist for its decisions.
+  claimNormalizer: {
+    normalizeClaim(claim: PersistedExtractionClaims[number]): Promise<unknown>;
+  };
+  logger: Pick<FastifyBaseLogger, 'warn'>;
   unitOfWork: UnitOfWork;
 }
 
@@ -86,8 +95,25 @@ export function createParseDocumentHandler({
   candidateExtractionService,
   extractionPersistenceCoordinator,
   processingService,
+  claimNormalizer,
+  logger,
   unitOfWork
 }: ParseDocumentHandlerDependencies): ParseDocumentHandler {
+  // The document is already ready. A claim whose normalization fails stays
+  // without a decision and is treated as unmatched, as for manual claims.
+  async function normalizeClaims(claims: PersistedExtractionClaims): Promise<void> {
+    for (const claim of claims) {
+      try {
+        await claimNormalizer.normalizeClaim(claim);
+      } catch (error) {
+        logger.warn(
+          { err: error, claimId: claim.claimId },
+          'Extracted claim normalization failed'
+        );
+      }
+    }
+  }
+
   // Runs after the job is locked. The document is locked as well, so a delete
   // waits for this attempt; a document that is gone or being deleted ends the
   // job for good instead of letting it be retried forever.
@@ -144,7 +170,8 @@ export function createParseDocumentHandler({
     candidateExtraction: CandidateExtractionResult,
     ownerUserId: string
   ): Promise<ParseDocumentHandlerResult> {
-    return unitOfWork.run(async (transaction) => {
+    let persistedClaims: PersistedExtractionClaims = [];
+    const result = await unitOfWork.run(async (transaction) => {
       if (!(await processingService.lockClaim(processingJob, transaction))) {
         return STALE;
       }
@@ -159,7 +186,7 @@ export function createParseDocumentHandler({
         extraction,
         transaction
       );
-      await extractionPersistenceCoordinator.persist(
+      persistedClaims = await extractionPersistenceCoordinator.persist(
         {
           documentId: processingJob.documentId,
           ownerUserId,
@@ -189,8 +216,13 @@ export function createParseDocumentHandler({
         );
       }
 
-      return { outcome: 'processed', processingJob: completedJob };
+      return { outcome: 'processed', processingJob: completedJob } as const;
     });
+
+    if (result.outcome === 'processed') {
+      await normalizeClaims(persistedClaims);
+    }
+    return result;
   }
 
   // Ends the job and the document as failed for good, in the caller's

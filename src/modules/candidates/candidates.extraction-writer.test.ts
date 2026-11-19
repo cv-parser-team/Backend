@@ -23,7 +23,8 @@ const candidate = { candidateId } as CandidateRecord;
 function dependencies(
   foundCandidate: CandidateRecord | null,
   reviewedClaims: ClaimRecord[] = [],
-  activeClaims: ClaimRecord[] = []
+  activeClaims: ClaimRecord[] = [],
+  termLookup?: CandidateExtractionWriterDependencies['termLookup']
 ) {
   const findCandidateByUserId = vi.fn().mockResolvedValue(foundCandidate);
   const deletePendingExtractedClaims = vi.fn().mockResolvedValue(0);
@@ -88,9 +89,207 @@ function dependencies(
     createClaim,
     createClaims,
     createClaimSourceOccurrences,
-    writer: createCandidateExtractionWriter({ repository })
+    writer: createCandidateExtractionWriter({
+      repository,
+      ...(termLookup ? { termLookup } : {})
+    })
   };
 }
+
+function savedClaim(
+  claimType: ClaimRecord['claimType'],
+  values: ClaimRecord['values'],
+  overrides: Partial<ClaimRecord> = {}
+): ClaimRecord {
+  return {
+    claimId: randomUUID(),
+    supersededByClaimId: null,
+    claimType,
+    origin: 'extracted',
+    status: 'accepted',
+    current: false,
+    candidateEdited: false,
+    values,
+    extraction: null,
+    version: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    ...overrides
+  } as ClaimRecord;
+}
+
+function skillDraft(name: string, anchorKey = `anchor-${name}`): ExtractedClaimDraftInput {
+  return {
+    type: 'skill',
+    status: 'accepted',
+    values: { name },
+    rawValues: {},
+    fieldSources: { name: ['L20'] },
+    current: false,
+    sourceOccurrences: [
+      {
+        anchorKey,
+        references: ['L20'],
+        fields: ['name'],
+        anchor: { page: 1, lineIds: ['L20'] } as unknown as ExtractedClaimDraftInput['sourceOccurrences'][number]['anchor']
+      }
+    ]
+  };
+}
+
+describe('drafts that repeat an existing claim', () => {
+  it('adds the new document as a source of the same claim instead of a duplicate', async () => {
+    const python = savedClaim('skill', { name: 'Python' });
+    const { createClaims, createClaimSourceOccurrences, writer } = dependencies(
+      candidate,
+      [],
+      [python]
+    );
+
+    const created = await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      [skillDraft('Python'), skillDraft('Kotlin')],
+      transaction
+    );
+
+    expect(created.map((claim) => claim.values)).toEqual([{ name: 'Kotlin' }]);
+    expect(createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ values: { name: 'Kotlin' } })],
+      transaction
+    );
+    expect(createClaimSourceOccurrences).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          claimId: python.claimId,
+          documentId,
+          anchorKey: 'anchor-Python'
+        })
+      ]),
+      transaction
+    );
+  });
+
+  it('treats spellings of one canonical term as the same claim', async () => {
+    const postgresql = savedClaim('skill', { name: 'PostgreSQL' });
+    const termLookup = {
+      findDictionaryTerms: vi.fn().mockResolvedValue([{ name: 't-pg' }]),
+      findNormalizedTerms: vi
+        .fn()
+        .mockResolvedValue(new Map([[postgresql.claimId, { name: 't-pg' }]]))
+    };
+    const withTerms = dependencies(candidate, [], [postgresql], termLookup);
+    const withoutTerms = dependencies(candidate, [], [postgresql]);
+
+    await withTerms.writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      [skillDraft('Postgres')],
+      transaction
+    );
+    await withoutTerms.writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      [skillDraft('Postgres')],
+      transaction
+    );
+
+    expect(termLookup.findDictionaryTerms).toHaveBeenCalledWith([
+      { claimType: 'skill', values: { name: 'Postgres' } }
+    ]);
+    expect(withTerms.createClaims).toHaveBeenCalledWith([], transaction);
+    expect(withTerms.createClaimSourceOccurrences).toHaveBeenCalledWith(
+      [expect.objectContaining({ claimId: postgresql.claimId })],
+      transaction
+    );
+    expect(withoutTerms.createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ values: { name: 'Postgres' } })],
+      transaction
+    );
+  });
+
+  it('saves a draft that adds a value as its own claim', async () => {
+    const job = savedClaim('employment', {
+      employer: 'Northstar Labs',
+      jobTitle: 'Backend Engineer',
+      startDate: '2022-01'
+    });
+    const { createClaims, writer } = dependencies(candidate, [], [job]);
+
+    await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      [
+        {
+          type: 'employment',
+          status: 'accepted',
+          values: { ...job.values, location: 'Austin, TX' },
+          rawValues: {},
+          fieldSources: {},
+          current: false,
+          sourceOccurrences: []
+        }
+      ],
+      transaction
+    );
+
+    expect(createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ values: expect.objectContaining({ location: 'Austin, TX' }) })],
+      transaction
+    );
+  });
+
+  it('compares values as written when the dictionary cannot be read', async () => {
+    const termLookup = {
+      findDictionaryTerms: vi.fn().mockRejectedValue(new Error('offline')),
+      findNormalizedTerms: vi.fn().mockResolvedValue(new Map())
+    };
+    const { createClaims, writer } = dependencies(
+      candidate,
+      [],
+      [savedClaim('skill', { name: 'PostgreSQL' })],
+      termLookup
+    );
+
+    await expect(
+      writer.saveExtractedClaims(
+        userId,
+        documentId,
+        invocationId,
+        [skillDraft('Postgres')],
+        transaction
+      )
+    ).resolves.toHaveLength(1);
+    expect(createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ values: { name: 'Postgres' } })],
+      transaction
+    );
+  });
+
+  it('does not add sources to rejected or merged claims', async () => {
+    const { createClaims, writer } = dependencies(candidate, [], [
+      savedClaim('skill', { name: 'Python' }, { status: 'rejected' }),
+      savedClaim('skill', { name: 'Python' }, { supersededByClaimId: randomUUID() })
+    ]);
+
+    await writer.saveExtractedClaims(
+      userId,
+      documentId,
+      invocationId,
+      [skillDraft('Python')],
+      transaction
+    );
+
+    expect(createClaims).toHaveBeenCalledWith(
+      [expect.objectContaining({ values: { name: 'Python' } })],
+      transaction
+    );
+  });
+});
 
 describe('candidate extraction writer', () => {
   it('replaces same-document pending claims before saving new drafts', async () => {

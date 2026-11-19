@@ -627,7 +627,9 @@ describe('creating claims in a batch', () => {
 
 describe('creating claim source occurrences', () => {
   it('bulk-inserts physical evidence through the caller transaction', async () => {
-    const values = vi.fn().mockResolvedValue(undefined);
+    const returning = vi.fn().mockResolvedValue([{ occurrenceId: 'occurrence-1' }]);
+    const onConflictDoNothing = vi.fn(() => ({ returning }));
+    const values = vi.fn(() => ({ onConflictDoNothing }));
     const insert = vi.fn((table: unknown) => {
       expect(table).toBe(sourceOccurrences);
       return { values };
@@ -656,6 +658,7 @@ describe('creating claim source occurrences', () => {
       repository.createClaimSourceOccurrences(inputs, transaction)
     ).resolves.toBe(1);
     expect(values).toHaveBeenCalledWith(inputs);
+    expect(onConflictDoNothing).toHaveBeenCalled();
   });
 });
 

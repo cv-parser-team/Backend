@@ -59,6 +59,16 @@ export interface ResolvedExtractionClaimInput {
   current: boolean;
 }
 
+// Canonical terms let values written differently ("Postgres" and
+// "PostgreSQL") compare as one value. Drafts are not saved yet, so their terms
+// come from the dictionary; saved claims use their normalization decisions.
+export interface ExtractionTermLookup {
+  findDictionaryTerms(
+    claims: { claimType: string; values: ClaimValues }[]
+  ): Promise<(Record<string, string> | undefined)[]>;
+  findNormalizedTerms(claims: ClaimRecord[]): Promise<Map<string, Record<string, string>>>;
+}
+
 export interface CandidateExtractionWriterDependencies {
   repository: Pick<
     CandidatesRepository,
@@ -70,12 +80,15 @@ export interface CandidateExtractionWriterDependencies {
     | 'createClaims'
     | 'createClaimSourceOccurrences'
   >;
+  // Without it, values are compared as written.
+  termLookup?: ExtractionTermLookup;
 }
 
 function toDraftMergeCandidate(
   candidateId: string,
   draft: ExtractedClaimDraftInput,
-  index: number
+  index: number,
+  normalizedTerms?: Record<string, string>
 ): MergeCandidateClaim {
   return {
     candidateId,
@@ -87,23 +100,35 @@ function toDraftMergeCandidate(
     values: draft.values,
     current: draft.current,
     version: 1,
-    createdAt: new Date(0)
+    createdAt: new Date(0),
+    ...(normalizedTerms ? { normalizedTerms } : {})
   };
 }
 
-function keepConflictingDraftsPending(
-  candidateId: string,
-  drafts: ExtractedClaimDraftInput[],
-  activeClaims: ClaimRecord[]
-): void {
-  const existingCandidates = activeClaims
-    .filter((claim) => claim.status !== 'rejected')
-    .map((claim) => toMergeCandidateClaim(candidateId, claim))
-    .filter((claim): claim is MergeCandidateClaim => claim !== null);
-  const draftCandidates = drafts.map((draft, index) =>
-    toDraftMergeCandidate(candidateId, draft, index)
-  );
+// An existing claim that states exactly what the draft states: the same
+// identity and every field the same, counting spellings of one canonical term
+// as the same. The draft adds only a source, so it is kept as a source of that
+// claim rather than as a duplicate (FR-AN-07). A draft that adds or changes
+// any value is not matched, so nothing the candidate reviewed is overwritten.
+function findSameExistingClaim(
+  draft: MergeCandidateClaim,
+  existingClaims: MergeCandidateClaim[]
+): MergeCandidateClaim | undefined {
+  return existingClaims.find((existing) => {
+    const proposal = buildClaimMergeProposal(draft, existing);
+    return (
+      proposal.result === 'proposal' &&
+      proposal.identity === 'equivalent' &&
+      Object.values(proposal.fields).every((field) => field.kind === 'same')
+    );
+  });
+}
 
+function keepConflictingDraftsPending(
+  drafts: ExtractedClaimDraftInput[],
+  draftCandidates: MergeCandidateClaim[],
+  existingCandidates: MergeCandidateClaim[]
+): void {
   drafts.forEach((draft, index) => {
     if (draft.status !== 'accepted') {
       return;
@@ -243,8 +268,34 @@ function coalesceDrafts(
 }
 
 export function createCandidateExtractionWriter({
-  repository
+  repository,
+  termLookup
 }: CandidateExtractionWriterDependencies): CandidateExtractionWriter {
+  async function loadTerms(
+    drafts: ExtractedClaimDraftInput[],
+    activeClaims: ClaimRecord[]
+  ): Promise<{
+    draftTerms: (Record<string, string> | undefined)[];
+    claimTerms: Map<string, Record<string, string>>;
+  }> {
+    if (!termLookup) {
+      return { draftTerms: [], claimTerms: new Map() };
+    }
+    try {
+      const [draftTerms, claimTerms] = await Promise.all([
+        termLookup.findDictionaryTerms(
+          drafts.map((draft) => ({ claimType: draft.type, values: draft.values }))
+        ),
+        termLookup.findNormalizedTerms(activeClaims)
+      ]);
+      return { draftTerms, claimTerms };
+    } catch {
+      // Terms only refine the comparison; saving the extraction must not fail
+      // because the dictionary could not be read.
+      return { draftTerms: [], claimTerms: new Map() };
+    }
+  }
+
   return {
     async saveExtractedClaims(
       userId,
@@ -285,17 +336,48 @@ export function createCandidateExtractionWriter({
             strictClaimComparisonKey(draft.type, draft.values)
           )
       );
-      const activeClaims = await repository.listClaims(
-        candidate.candidateId,
-        {},
-        transaction
+      const activeClaims = (
+        await repository.listClaims(candidate.candidateId, {}, transaction)
+      ).filter(
+        (claim) => claim.status !== 'rejected' && claim.supersededByClaimId === null
       );
-      keepConflictingDraftsPending(
-        candidate.candidateId,
-        draftsToCreate,
-        activeClaims
-      );
-      const inputs: CreateClaimInput[] = draftsToCreate.map((draft) => ({
+      const { draftTerms, claimTerms } = await loadTerms(draftsToCreate, activeClaims);
+      const existingCandidates = activeClaims
+        .map((claim) =>
+          toMergeCandidateClaim(candidate.candidateId, claim, claimTerms.get(claim.claimId))
+        )
+        .filter((claim): claim is MergeCandidateClaim => claim !== null);
+
+      const newDrafts: ExtractedClaimDraftInput[] = [];
+      const newDraftCandidates: MergeCandidateClaim[] = [];
+      const sourcesOfExistingClaims: CreateClaimSourceOccurrenceInput[] = [];
+      draftsToCreate.forEach((draft, index) => {
+        const draftCandidate = toDraftMergeCandidate(
+          candidate.candidateId,
+          draft,
+          index,
+          draftTerms[index]
+        );
+        const sameClaim = findSameExistingClaim(draftCandidate, existingCandidates);
+        if (!sameClaim) {
+          newDrafts.push(draft);
+          newDraftCandidates.push(draftCandidate);
+          return;
+        }
+        for (const occurrence of draft.sourceOccurrences) {
+          sourcesOfExistingClaims.push({
+            claimId: sameClaim.claimId,
+            documentId,
+            anchorKey: occurrence.anchorKey,
+            sourceReferences: occurrence.references,
+            fieldNames: occurrence.fields,
+            anchor: occurrence.anchor
+          });
+        }
+      });
+
+      keepConflictingDraftsPending(newDrafts, newDraftCandidates, existingCandidates);
+      const inputs: CreateClaimInput[] = newDrafts.map((draft) => ({
         candidateId: candidate.candidateId,
         claimType: draft.type,
         origin: 'extracted',
@@ -311,13 +393,13 @@ export function createCandidateExtractionWriter({
       }));
 
       const createdClaims = await repository.createClaims(inputs, transaction);
-      if (createdClaims.length !== draftsToCreate.length) {
+      if (createdClaims.length !== newDrafts.length) {
         throw new Error('Created claims did not match extraction drafts');
       }
 
       const occurrenceInputs: CreateClaimSourceOccurrenceInput[] =
         createdClaims.flatMap((claim, index) =>
-          draftsToCreate[index]!.sourceOccurrences.map((occurrence) => ({
+          newDrafts[index]!.sourceOccurrences.map((occurrence) => ({
             claimId: claim.claimId,
             documentId,
             anchorKey: occurrence.anchorKey,
@@ -327,10 +409,11 @@ export function createCandidateExtractionWriter({
           }))
         );
       await repository.createClaimSourceOccurrences(
-        occurrenceInputs,
+        [...occurrenceInputs, ...sourcesOfExistingClaims],
         transaction
       );
 
+      // Claims that only gained a source are already saved and normalized.
       return createdClaims;
     },
     async saveResolvedClaim(userId, input, transaction) {

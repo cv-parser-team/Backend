@@ -542,6 +542,13 @@ export function compareClaimFields(
 
   const fields: Record<string, ClaimFieldComparison> = {};
   for (const field of [...fieldNames].sort()) {
+    // Values linked to the same canonical term are one value written two ways
+    // ("Postgres" and "PostgreSQL"), not a conflict for the candidate.
+    const leftValue = left.values[field];
+    if (typeof leftValue === 'string' && haveSameNormalizedTerm(left, right, field)) {
+      fields[field] = { kind: 'same', value: leftValue };
+      continue;
+    }
     if (!isClaimDateField(field)) {
       fields[field] = compareClaimFieldValues(
         left.values[field],

@@ -1,7 +1,7 @@
 import type { AiRequestRepository } from './normalization-ai-requests.repository.js';
 import {
-  CanonicalCategory,
-  DictionaryLookup,
+  type CanonicalCategory,
+  type DictionaryLookup,
   MATCHING_RULE_VERSION,
   matchTerm
 } from './normalization.matching.js';
@@ -25,6 +25,11 @@ export interface NormalizationService {
   findNormalizedTerms(
     claims: NormalizableClaim[]
   ): Promise<Map<string, Record<string, string>>>;
+  // The dictionary term each value would be linked to, in input order, for
+  // values that are not saved yet. It saves nothing and never asks the AI.
+  findDictionaryTerms(
+    claims: Pick<NormalizableClaim, 'claimType' | 'values'>[]
+  ): Promise<(Record<string, string> | undefined)[]>;
 }
 
 export interface NormalizationServiceDependencies {
@@ -131,6 +136,42 @@ export function createNormalizationService({
         ) {
           terms.set(claim.claimId, { [target.field]: decision.termId });
         }
+      }
+      return terms;
+    },
+
+    async findDictionaryTerms(claims) {
+      // Spelling correction lists a whole category; one listing serves every
+      // value of that category.
+      const entries = new Map<CanonicalCategory, ReturnType<DictionaryLookup['listDictionaryEntries']>>();
+      const lookup: DictionaryLookup = {
+        findTermByMatchKey: (category, matchKey) =>
+          repository.findTermByMatchKey(category, matchKey),
+        findTermsByApprovedAlias: (category, matchKey) =>
+          repository.findTermsByApprovedAlias(category, matchKey),
+        findTermById: (termId) => repository.findTermById(termId),
+        listDictionaryEntries(category) {
+          let listed = entries.get(category);
+          if (!listed) {
+            listed = repository.listDictionaryEntries(category);
+            entries.set(category, listed);
+          }
+          return listed;
+        }
+      };
+
+      const terms: (Record<string, string> | undefined)[] = [];
+      for (const claim of claims) {
+        const target = NORMALIZED_VALUES[claim.claimType];
+        const value = target ? claim.values[target.field] : undefined;
+        if (!target || typeof value !== 'string') {
+          terms.push(undefined);
+          continue;
+        }
+        const match = await matchTerm(lookup, target.category, value);
+        terms.push(
+          match.status === 'matched' ? { [target.field]: match.term.termId } : undefined
+        );
       }
       return terms;
     }

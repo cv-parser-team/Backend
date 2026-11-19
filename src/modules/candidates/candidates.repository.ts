@@ -902,9 +902,15 @@ export function createCandidatesRepository(
       if (inputs.length === 0) {
         return 0;
       }
+      // A document processed again adds the same sources to claims it was
+      // already a source of; those are kept once.
       return withDbErrors('Claim source occurrences', async () => {
-        await transaction.insert(sourceOccurrences).values(inputs);
-        return inputs.length;
+        const inserted = await transaction
+          .insert(sourceOccurrences)
+          .values(inputs)
+          .onConflictDoNothing()
+          .returning({ occurrenceId: sourceOccurrences.occurrenceId });
+        return inserted.length;
       });
     },
 

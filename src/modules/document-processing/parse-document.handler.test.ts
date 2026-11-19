@@ -11,7 +11,8 @@ import {
   SourceReferenceResolutionError,
   type CandidateExtractionResult,
   type CandidateExtractionService,
-  type ExtractionPersistenceCoordinator
+  type ExtractionPersistenceCoordinator,
+  type PersistedExtractionClaims
 } from '../extraction/index.js';
 import type { ParsingService } from '../parsing/index.js';
 import type { ExtractionRecord } from '../parsing/parsing.repository.js';
@@ -186,21 +187,24 @@ function failingParser(error = new Error('parser failed')): ParsingDouble {
   return parsingThat(vi.fn().mockRejectedValue(error));
 }
 
+type OptionalHandlerDependency =
+  | 'candidateExtractionService'
+  | 'extractionPersistenceCoordinator'
+  | 'claimNormalizer'
+  | 'logger';
+
 type HandlerDependencies = Omit<
   ParseDocumentHandlerDependencies,
-  'candidateExtractionService' | 'extractionPersistenceCoordinator'
+  OptionalHandlerDependency
 > &
-  Partial<
-    Pick<
-      ParseDocumentHandlerDependencies,
-      'candidateExtractionService' | 'extractionPersistenceCoordinator'
-    >
-  >;
+  Partial<Pick<ParseDocumentHandlerDependencies, OptionalHandlerDependency>>;
 
 function createParseDocumentHandler(
   dependencies: HandlerDependencies
 ) {
   const {
+    claimNormalizer = { normalizeClaim: vi.fn().mockResolvedValue(null) },
+    logger = { warn: vi.fn() },
     candidateExtractionService = {
       extract: vi
         .fn<CandidateExtractionService['extract']>()
@@ -217,7 +221,9 @@ function createParseDocumentHandler(
   return createHandlerImplementation({
     ...handlerDependencies,
     candidateExtractionService,
-    extractionPersistenceCoordinator
+    extractionPersistenceCoordinator,
+    claimNormalizer,
+    logger
   });
 }
 
@@ -327,6 +333,73 @@ describe('parse document handler', () => {
     );
     expect(processingService.retry).not.toHaveBeenCalled();
     expect(processingService.fail).not.toHaveBeenCalled();
+  });
+
+  it('normalizes each saved claim after the transaction commits', async () => {
+    const operations: string[] = [];
+    const claims = [
+      { claimId: 'claim-1', claimType: 'skill', values: { name: 'Postgres' } },
+      { claimId: 'claim-2', claimType: 'skill', values: { name: 'AWS' } }
+    ] as unknown as PersistedExtractionClaims;
+    const normalizeClaim = vi.fn(async (claim: { claimId: string }) => {
+      operations.push(`normalize:${claim.claimId}`);
+      return null;
+    });
+    const handler = createParseDocumentHandler({
+      documentsService: createDocumentsService(),
+      parsingService: createParsingService(),
+      extractionPersistenceCoordinator: { persist: vi.fn().mockResolvedValue(claims) },
+      processingService: createProcessingService(),
+      claimNormalizer: { normalizeClaim },
+      unitOfWork: createUnitOfWork(operations)
+    });
+
+    await expect(handler.handle(job)).resolves.toMatchObject({ outcome: 'processed' });
+    expect(operations).toEqual(['begin', 'commit', 'normalize:claim-1', 'normalize:claim-2']);
+  });
+
+  it('keeps the document processed when a claim cannot be normalized', async () => {
+    const claims = [
+      { claimId: 'claim-1', claimType: 'skill', values: { name: 'Postgres' } },
+      { claimId: 'claim-2', claimType: 'skill', values: { name: 'AWS' } }
+    ] as unknown as PersistedExtractionClaims;
+    const normalizeClaim = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('dictionary offline'))
+      .mockResolvedValueOnce(null);
+    const logger = { warn: vi.fn() };
+    const handler = createParseDocumentHandler({
+      documentsService: createDocumentsService(),
+      parsingService: createParsingService(),
+      extractionPersistenceCoordinator: { persist: vi.fn().mockResolvedValue(claims) },
+      processingService: createProcessingService(),
+      claimNormalizer: { normalizeClaim },
+      logger,
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).resolves.toMatchObject({ outcome: 'processed' });
+    expect(normalizeClaim).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ claimId: 'claim-1' }),
+      'Extracted claim normalization failed'
+    );
+  });
+
+  it('normalizes nothing when another attempt owns the job', async () => {
+    const processingService = createProcessingService();
+    processingService.lockClaim = vi.fn().mockResolvedValue(null);
+    const normalizeClaim = vi.fn();
+    const handler = createParseDocumentHandler({
+      documentsService: createDocumentsService(),
+      parsingService: createParsingService(),
+      processingService,
+      claimNormalizer: { normalizeClaim },
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({ outcome: 'stale' });
+    expect(normalizeClaim).not.toHaveBeenCalled();
   });
 
   it('retries without completion writes when candidate extraction fails', async () => {

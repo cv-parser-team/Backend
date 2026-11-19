@@ -602,6 +602,26 @@ describe('claim identity comparison', () => {
     ).toEqual({ result: 'equivalent' });
   });
 
+  it('does not ask the candidate to choose between spellings of one canonical term', () => {
+    const proposal = buildClaimMergeProposal(
+      mergeCandidate({ values: { name: 'Postgres' }, normalizedTerms: { name: 't-pg' } }),
+      mergeCandidate({
+        claimId: '22222222-2222-4222-8222-222222222222',
+        values: { name: 'PostgreSQL' },
+        normalizedTerms: { name: 't-pg' }
+      })
+    );
+
+    expect(proposal).toMatchObject({
+      result: 'proposal',
+      identity: 'equivalent',
+      fields: { name: { kind: 'same', value: 'Postgres' } },
+      unresolvedFields: [],
+      requiresCandidateChoice: false,
+      recommendedAction: 'automatic_coalesce'
+    });
+  });
+
   it('keeps values linked to different terms, or to a term on one side only, distinct', () => {
     const education = { institution: 'University of Jordan', endDate: '2020' };
 

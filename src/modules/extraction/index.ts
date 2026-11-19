@@ -67,7 +67,10 @@ const registerExtractionReview: FastifyPluginAsync = async (fastify) => {
   const service = createExtractionReviewService({
     repository: createExtractionReviewRepository(fastify.database),
     documentsService: fastify.candidateDocumentsService,
-    candidateWriter: createCandidateExtractionWriter(fastify.database),
+    candidateWriter: createCandidateExtractionWriter(
+      fastify.database,
+      fastify.normalizationService
+    ),
     unitOfWork: createUnitOfWork(fastify.database),
     normalizer: fastify.normalizationService,
     logger: fastify.log

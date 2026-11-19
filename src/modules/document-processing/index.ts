@@ -58,7 +58,10 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
   };
   const extractionPersistenceCoordinator =
     createExtractionPersistenceCoordinator({
-      candidateWriter: createCandidateExtractionWriter(fastify.database),
+      candidateWriter: createCandidateExtractionWriter(
+        fastify.database,
+        fastify.normalizationService
+      ),
       reviewRepository: createExtractionReviewRepository(fastify.database),
       parsingService: fastify.parsingService,
       unitOfWork
@@ -73,6 +76,8 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
       candidateExtractionService: lazyCandidateExtractionService,
       extractionPersistenceCoordinator,
       processingService: service,
+      claimNormalizer: fastify.normalizationService,
+      logger: fastify.log,
       unitOfWork
     })
   );
@@ -82,7 +87,7 @@ export const documentProcessingModule = fastifyPlugin(
   registerDocumentProcessing,
   {
     name: 'document-processing',
-    dependencies: ['database', 'messaging', 'documents', 'parsing']
+    dependencies: ['database', 'messaging', 'documents', 'parsing', 'normalization']
   }
 );
 

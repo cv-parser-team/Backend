@@ -469,6 +469,32 @@ describe('normalized terms for comparison', () => {
     );
   });
 
+  it('finds dictionary terms for unsaved values without saving decisions', async () => {
+    const { repository, service } = serviceWith();
+    const listDictionaryEntries = vi.spyOn(repository, 'listDictionaryEntries');
+
+    const terms = await service.findDictionaryTerms([
+      { claimType: 'skill', values: { name: 'JS' } },
+      { claimType: 'skill', values: { name: 'Javscript' } },
+      { claimType: 'skill', values: { name: 'Kotlin' } },
+      { claimType: 'education', values: { institution: 'A', degree: 'BSc' } },
+      { claimType: 'language', values: { name: 'English' } }
+    ]);
+
+    expect(terms).toEqual([
+      { name: 't-js' },
+      { name: 't-js' },
+      undefined,
+      { degree: 't-bsc' },
+      undefined
+    ]);
+    expect(repository.decisions).toHaveLength(0);
+    // One listing of a category serves every spelling correction in it.
+    expect(
+      listDictionaryEntries.mock.calls.filter(([category]) => category === 'skill')
+    ).toHaveLength(1);
+  });
+
   it('ignores a decision made for an earlier value of the field', async () => {
     const { service } = serviceWith();
     await service.normalizeClaim({ claimId: 'c-1', claimType: 'skill', values: { name: 'JS' } });

@@ -1070,7 +1070,7 @@ describe('claim merge candidate discovery service', () => {
     const service = createService(repository, normalizer);
 
     await expect(service.listClaimMergeCandidates(userId)).resolves.toMatchObject([
-      { result: 'proposal', identity: 'equivalent', unresolvedFields: ['name'] }
+      { result: 'proposal', identity: 'equivalent', unresolvedFields: [] }
     ]);
     await expect(
       service.mergeConfirmedClaims(userId, {
