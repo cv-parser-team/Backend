@@ -5,6 +5,10 @@ import {
   type CandidateExtractionWriter,
   type ExtractionTermLookup
 } from './candidates.extraction-writer.js';
+import {
+  createCandidateEntityMatcher as createMatcher,
+  type CandidateEntityMatcher
+} from './candidates.entity-matcher.js';
 import { createCandidatesRepository } from './candidates.repository.js';
 import { candidatesRoutes } from './candidates.routes.js';
 import { createCandidatesService } from './candidates.service.js';
@@ -36,6 +40,23 @@ export function createCandidateExtractionWriter(
   });
 }
 
+// Public boundary for finding which claims an unsaved fact, such as an
+// extracted value awaiting review, may state again.
+export function createCandidateEntityMatcher(
+  database: AppDatabase,
+  termLookup?: ExtractionTermLookup
+): CandidateEntityMatcher {
+  return createMatcher({
+    repository: createCandidatesRepository(database),
+    ...(termLookup ? { termLookup } : {})
+  });
+}
+
+export type {
+  CandidateEntityMatcher,
+  SameEntityMatches,
+  UnsavedEntityInput
+} from './candidates.entity-matcher.js';
 export type {
   CandidateExtractionWriter,
   ExtractedClaimDraftInput,

@@ -4,7 +4,10 @@ import { RecordNotFoundError } from '../../shared/errors/app.error.js';
 import type { AuthGuards } from '../auth/auth.guards.js';
 import type { DocumentRecord } from '../documents/documents.repository.js';
 import type { DocumentsService } from '../documents/documents.service.js';
-import type { CandidateExtractionWriter } from '../candidates/index.js';
+import type {
+  CandidateEntityMatcher,
+  CandidateExtractionWriter
+} from '../candidates/index.js';
 import type { ClaimRecord } from '../candidates/candidates.repository.js';
 import type { DatabaseExecutor, UnitOfWork } from '../../infrastructure/database/unit-of-work.js';
 import type {
@@ -64,7 +67,10 @@ function reviewRecord(
   };
 }
 
-function dependencies(records: ExtractionReviewItemRecord[] = [reviewRecord()]) {
+function dependencies(
+  records: ExtractionReviewItemRecord[] = [reviewRecord()],
+  entityMatcher?: CandidateEntityMatcher
+) {
   const listForDocuments = vi
     .fn<ExtractionReviewRepository['listForDocuments']>()
     .mockResolvedValue(records);
@@ -133,6 +139,7 @@ function dependencies(records: ExtractionReviewItemRecord[] = [reviewRecord()]) 
     candidateWriter: { saveResolvedClaim },
     unitOfWork,
     normalizer: { normalizeClaim },
+    ...(entityMatcher ? { entityMatcher } : {}),
     logger: { warn }
   });
 
@@ -193,6 +200,65 @@ describe('extraction review service', () => {
       [documentId, otherDocumentId],
       'pending'
     );
+  });
+
+  it('lists the claims and items a pending item may state again', async () => {
+    const otherItemId = '77777777-7777-4777-8777-777777777777';
+    const findSameEntities = vi.fn<CandidateEntityMatcher['findSameEntities']>().mockResolvedValue(
+      new Map([[reviewItemId, { claimIds: [claimId], keys: [otherItemId] }]])
+    );
+    const { service } = dependencies(
+      [
+        {
+          ...reviewRecord(),
+          fields: {
+            employer: { value: ' Example Corp ', confidence: 0.6, sources: ['L1'] },
+            jobTitle: { value: 'Engineer', confidence: 0.6, sources: ['L1'] },
+            current: { value: true, confidence: 0.6, sources: ['L2'] },
+            skills: { value: ['Go', 3], confidence: 0.6, sources: ['L3'] },
+            location: { value: '', confidence: 0.6, sources: [] }
+          }
+        }
+      ],
+      { findSameEntities }
+    );
+
+    await expect(service.list(ownerUserId)).resolves.toEqual([
+      expect.objectContaining({
+        reviewItemId,
+        possibleDuplicates: { claimIds: [claimId], reviewItemIds: [otherItemId] }
+      })
+    ]);
+    expect(findSameEntities).toHaveBeenCalledWith(ownerUserId, [
+      {
+        key: reviewItemId,
+        claimType: 'employment',
+        values: { employer: 'Example Corp', jobTitle: 'Engineer', skills: ['Go'] },
+        current: true
+      }
+    ]);
+  });
+
+  it('lists pending items without duplicates when they cannot be found', async () => {
+    const findSameEntities = vi
+      .fn<CandidateEntityMatcher['findSameEntities']>()
+      .mockRejectedValue(new Error('offline'));
+    const { service, warn } = dependencies([reviewRecord()], { findSameEntities });
+
+    const items = await service.list(ownerUserId);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).not.toHaveProperty('possibleDuplicates');
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('does not look for duplicates of resolved history', async () => {
+    const findSameEntities = vi.fn<CandidateEntityMatcher['findSameEntities']>();
+    const { service } = dependencies([reviewRecord('resolved')], { findSameEntities });
+
+    await service.list(ownerUserId, undefined, 'resolved');
+
+    expect(findSameEntities).not.toHaveBeenCalled();
   });
 
   it('lists resolved history through the same ownership check', async () => {

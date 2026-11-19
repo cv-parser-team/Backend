@@ -81,6 +81,15 @@ const extractionReviewItemSchema = {
     status: {
       type: 'string',
       enum: ['pending', 'resolved', 'dismissed']
+    },
+    possibleDuplicates: {
+      type: 'object',
+      properties: {
+        claimIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+        reviewItemIds: { type: 'array', items: { type: 'string', format: 'uuid' } }
+      },
+      required: ['claimIds', 'reviewItemIds'],
+      additionalProperties: false
     }
   },
   required: extractionReviewItemRequired,

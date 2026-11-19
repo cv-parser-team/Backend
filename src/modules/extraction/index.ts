@@ -2,7 +2,10 @@ import type { FastifyPluginAsync } from 'fastify';
 import fastifyPlugin from 'fastify-plugin';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
 import { createUnitOfWork } from '../../infrastructure/database/unit-of-work.js';
-import { createCandidateExtractionWriter } from '../candidates/index.js';
+import {
+  createCandidateEntityMatcher,
+  createCandidateExtractionWriter
+} from '../candidates/index.js';
 import type { ParsingService } from '../parsing/index.js';
 import {
   createExtractionPersistenceCoordinator as createPersistenceCoordinator
@@ -73,6 +76,10 @@ const registerExtractionReview: FastifyPluginAsync = async (fastify) => {
     ),
     unitOfWork: createUnitOfWork(fastify.database),
     normalizer: fastify.normalizationService,
+    entityMatcher: createCandidateEntityMatcher(
+      fastify.database,
+      fastify.normalizationService
+    ),
     logger: fastify.log
   });
 

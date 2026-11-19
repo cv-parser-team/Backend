@@ -1,5 +1,6 @@
 import type { DocumentsService } from '../documents/index.js';
 import type {
+  CandidateEntityMatcher,
   CandidateExtractionWriter,
   ResolvedExtractionClaimInput
 } from '../candidates/index.js';
@@ -28,6 +29,10 @@ export interface ExtractionReviewItem {
   status: ExtractionReviewItemRecord['status'];
   resolvedClaimId: string | null;
   version: number;
+  // Saved claims and other pending items that may state the same fact, by the
+  // rules that find duplicate claims. Listed only for pending items with a
+  // match.
+  possibleDuplicates?: { claimIds: string[]; reviewItemIds: string[] };
 }
 
 export interface ResolvedExtractionReviewItem {
@@ -66,7 +71,37 @@ export interface ExtractionReviewServiceDependencies {
   candidateWriter: Pick<CandidateExtractionWriter, 'saveResolvedClaim'>;
   unitOfWork: UnitOfWork;
   normalizer: { normalizeClaim(claim: ClaimRecord): Promise<unknown> };
+  // Without it, pending items are listed without possible duplicates.
+  entityMatcher?: CandidateEntityMatcher;
   logger: Pick<FastifyBaseLogger, 'warn'>;
+}
+
+// The values a pending item states, in the shape of claim values, so it can be
+// compared with claims. Empty and non-text values are left out.
+function statedValues(
+  item: ExtractionReviewItemRecord
+): { values: Record<string, string | string[]>; current: boolean } {
+  const values: Record<string, string | string[]> = {};
+  let current = false;
+  for (const [fieldName, field] of Object.entries(item.fields)) {
+    if (!isRecord(field)) {
+      continue;
+    }
+    if (fieldName === 'current') {
+      current ||= field.value === true;
+      continue;
+    }
+    current ||= field.current === true;
+    if (typeof field.value === 'string' && field.value.trim()) {
+      values[fieldName] = field.value.trim();
+    } else if (Array.isArray(field.value)) {
+      const list = strings(field.value);
+      if (list.length > 0) {
+        values[fieldName] = list;
+      }
+    }
+  }
+  return { values, current };
 }
 
 function toReviewItem(record: ExtractionReviewItemRecord): ExtractionReviewItem {
@@ -132,8 +167,44 @@ export function createExtractionReviewService({
   candidateWriter,
   unitOfWork,
   normalizer,
+  entityMatcher,
   logger
 }: ExtractionReviewServiceDependencies): ExtractionReviewService {
+  // Finding duplicates only helps the candidate review; the items are still
+  // listed when it fails.
+  async function withPossibleDuplicates(
+    ownerUserId: string,
+    items: ExtractionReviewItemRecord[]
+  ): Promise<ExtractionReviewItem[]> {
+    const reviewItems = items.map(toReviewItem);
+    const pending = items.filter((item) => item.status === 'pending');
+    if (!entityMatcher || pending.length === 0) {
+      return reviewItems;
+    }
+    try {
+      const matches = await entityMatcher.findSameEntities(
+        ownerUserId,
+        pending.map((item) => ({
+          key: item.reviewItemId,
+          claimType: item.claimType,
+          ...statedValues(item)
+        }))
+      );
+      return reviewItems.map((item) => {
+        const match = matches.get(item.reviewItemId);
+        return match
+          ? {
+              ...item,
+              possibleDuplicates: { claimIds: match.claimIds, reviewItemIds: match.keys }
+            }
+          : item;
+      });
+    } catch (error) {
+      logger.warn({ err: error }, 'Possible duplicates of review items could not be found');
+      return reviewItems;
+    }
+  }
+
   return {
     async list(ownerUserId, documentId, status = 'pending') {
       const documentIds = documentId
@@ -146,7 +217,7 @@ export function createExtractionReviewService({
       if (items.some((item) => item.status !== status)) {
         throw new Error('Review query returned an item with the wrong status');
       }
-      return items.map(toReviewItem);
+      return withPossibleDuplicates(ownerUserId, items);
     },
     async dismiss(ownerUserId, reviewItemId, expectedVersion) {
       const current = await repository.findById(reviewItemId);
