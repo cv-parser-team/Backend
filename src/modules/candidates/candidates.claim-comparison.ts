@@ -77,7 +77,8 @@ export type ClaimDateComparisonResult =
   | 'invalid';
 
 export type ClaimDateFieldDifference =
-  | { kind: 'same' }
+  // The shared date, so a merge can keep it; absent when both are missing.
+  | { kind: 'same'; value?: ComparableClaimDate }
   | {
       kind: 'enrichment';
       value: ComparableClaimDate;
@@ -142,6 +143,8 @@ export type ClaimMergeProposalResult =
     }
   | {
       result: 'proposal';
+      // Both claims have this type, so clients can label the proposal.
+      claimType: ClaimType;
       identity: 'equivalent' | 'suspected_duplicate';
       left: { claimId: string; version: number };
       right: { claimId: string; version: number };
@@ -400,7 +403,7 @@ export function compareClaimDateFieldValues(
 
   const comparison = compareClaimDates(left, right);
   if (comparison === 'same') {
-    return { kind: 'same' };
+    return { kind: 'same', value: left };
   }
   if (
     comparison === 'precision_improvement' &&
@@ -772,6 +775,7 @@ export function buildClaimMergeProposal(
 
   return {
     result: 'proposal',
+    claimType: left.claimType,
     identity: identity.result,
     left: { claimId: left.claimId, version: left.version },
     right: { claimId: right.claimId, version: right.version },

@@ -2,6 +2,7 @@ import type { AiRequestRepository } from './normalization-ai-requests.repository
 import {
   type CanonicalCategory,
   type DictionaryLookup,
+  type DictionaryTerm,
   MATCHING_RULE_VERSION,
   matchTerm
 } from './normalization.matching.js';
@@ -25,12 +26,28 @@ export interface NormalizationService {
   findNormalizedTerms(
     claims: NormalizableClaim[]
   ): Promise<Map<string, Record<string, string>>>;
+  // The canonical name each claim's normalized value is shown as, by claim ID
+  // and then by field, when it is written differently from the claim's own
+  // value. The claim keeps its original value.
+  describeNormalizedValues(
+    claims: NormalizableClaim[]
+  ): Promise<Map<string, Record<string, NormalizedValue>>>;
   // The dictionary term each value would be linked to, in input order, for
   // values that are not saved yet. It saves nothing and never asks the AI.
   findDictionaryTerms(
     claims: Pick<NormalizableClaim, 'claimType' | 'values'>[]
   ): Promise<(Record<string, string> | undefined)[]>;
 }
+
+export interface NormalizedValue {
+  value: string;
+  original: string;
+  method: NonNullable<NormalizationDecisionRecord['method']>;
+  confidence: number | null;
+}
+
+// A merge chain longer than this is treated as broken.
+const MAXIMUM_MERGE_DEPTH = 10;
 
 export interface NormalizationServiceDependencies {
   repository: DictionaryLookup & DecisionStore;
@@ -74,6 +91,57 @@ export function createNormalizationService({
   repository,
   aiRequests
 }: NormalizationServiceDependencies): NormalizationService {
+  // The current decision of each claim, when it links the claim's present
+  // value to a term. A decision made for an earlier value is ignored.
+  async function currentMatches(
+    claims: NormalizableClaim[]
+  ): Promise<{ claim: NormalizableClaim; field: string; decision: NormalizationDecisionRecord & { termId: string } }[]> {
+    const normalizable = claims.filter(
+      (claim) => NORMALIZED_VALUES[claim.claimType] !== undefined
+    );
+    const decisions = await repository.listLatestDecisions(
+      normalizable.map((claim) => claim.claimId)
+    );
+    const decisionByClaim = new Map(decisions.map((decision) => [decision.claimId, decision]));
+
+    return normalizable.flatMap((claim) => {
+      const field = NORMALIZED_VALUES[claim.claimType]!.field;
+      const decision = decisionByClaim.get(claim.claimId);
+      return decision?.status === 'matched' &&
+        decision.termId !== null &&
+        decision.originalValue === claim.values[field]
+        ? [{ claim, field, decision: { ...decision, termId: decision.termId } }]
+        : [];
+    });
+  }
+
+  // Follows merged terms to the active term they were merged into. A broken
+  // or circular chain has no active term.
+  async function activeTermNames(termIds: string[]): Promise<Map<string, string>> {
+    const known = new Map<string, DictionaryTerm>();
+    let missing = [...new Set(termIds)];
+    for (let depth = 0; missing.length > 0 && depth <= MAXIMUM_MERGE_DEPTH; depth += 1) {
+      for (const term of await repository.listTermsByIds(missing)) {
+        known.set(term.termId, term);
+      }
+      missing = [...known.values()]
+        .map((term) => term.mergedIntoId)
+        .filter((id): id is string => id !== null && !known.has(id));
+    }
+
+    const names = new Map<string, string>();
+    for (const termId of termIds) {
+      let term = known.get(termId);
+      for (let depth = 0; term?.status === 'merged' && depth < MAXIMUM_MERGE_DEPTH; depth += 1) {
+        term = term.mergedIntoId ? known.get(term.mergedIntoId) : undefined;
+      }
+      if (term?.status === 'active') {
+        names.set(termId, term.canonicalName);
+      }
+    }
+    return names;
+  }
+
   return {
     async normalizeClaim(claim) {
       const target = NORMALIZED_VALUES[claim.claimType];
@@ -118,26 +186,32 @@ export function createNormalizationService({
 
     async findNormalizedTerms(claims) {
       const terms = new Map<string, Record<string, string>>();
-      const normalizable = claims.filter(
-        (claim) => NORMALIZED_VALUES[claim.claimType] !== undefined
-      );
-      const decisions = await repository.listLatestDecisions(
-        normalizable.map((claim) => claim.claimId)
-      );
-      const decisionByClaim = new Map(decisions.map((decision) => [decision.claimId, decision]));
-
-      for (const claim of normalizable) {
-        const target = NORMALIZED_VALUES[claim.claimType]!;
-        const decision = decisionByClaim.get(claim.claimId);
-        if (
-          decision?.status === 'matched' &&
-          decision.termId !== null &&
-          decision.originalValue === claim.values[target.field]
-        ) {
-          terms.set(claim.claimId, { [target.field]: decision.termId });
-        }
+      for (const { claim, field, decision } of await currentMatches(claims)) {
+        terms.set(claim.claimId, { [field]: decision.termId });
       }
       return terms;
+    },
+
+    async describeNormalizedValues(claims) {
+      const matches = await currentMatches(claims);
+      const names = await activeTermNames(matches.map(({ decision }) => decision.termId));
+      const described = new Map<string, Record<string, NormalizedValue>>();
+
+      for (const { claim, field, decision } of matches) {
+        const name = names.get(decision.termId);
+        if (name === undefined || name === decision.originalValue || decision.method === null) {
+          continue;
+        }
+        described.set(claim.claimId, {
+          [field]: {
+            value: name,
+            original: decision.originalValue,
+            method: decision.method,
+            confidence: decision.confidenceScore
+          }
+        });
+      }
+      return described;
     },
 
     async findDictionaryTerms(claims) {

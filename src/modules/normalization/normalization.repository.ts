@@ -29,6 +29,8 @@ export interface DecisionStore {
   ): Promise<NormalizationDecisionRecord | null>;
   // The current decision of each claim that has one.
   listLatestDecisions(claimIds: string[]): Promise<NormalizationDecisionRecord[]>;
+  // The terms with these IDs, in any order; unknown IDs are left out.
+  listTermsByIds(termIds: string[]): Promise<DictionaryTerm[]>;
 }
 
 // The dictionary access that AI matching needs.
@@ -243,6 +245,18 @@ export function createNormalizationRepository(database: AppDatabase): Normalizat
           .from(normalizationDecisions)
           .where(inArray(normalizationDecisions.claimId, claimIds))
           .orderBy(normalizationDecisions.claimId, desc(normalizationDecisions.createdAt))
+      );
+    },
+
+    async listTermsByIds(termIds) {
+      if (termIds.length === 0) {
+        return [];
+      }
+      return withDbErrors('Canonical term', async () =>
+        database.db
+          .select(termColumns)
+          .from(canonicalTerms)
+          .where(inArray(canonicalTerms.termId, termIds))
       );
     }
   };

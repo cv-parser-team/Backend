@@ -227,6 +227,8 @@ describe('document processing pipeline', () => {
       candidateExtractionService,
       extractionPersistenceCoordinator,
       processingService,
+      claimNormalizer: { normalizeClaim: vi.fn().mockResolvedValue(null) },
+      logger: { warn: vi.fn() },
       unitOfWork: { run: (work) => work(transaction) }
     });
     const log = { info: vi.fn(), warn: vi.fn() };

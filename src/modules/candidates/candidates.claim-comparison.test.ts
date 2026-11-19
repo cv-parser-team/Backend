@@ -645,6 +645,35 @@ describe('claim identity comparison', () => {
     ).toEqual({ result: 'different' });
   });
 
+  it('keeps shared dates and the claim type in a proposal so a merge can use them', () => {
+    const values = {
+      degree: 'Bachelor of Science',
+      startDate: '2016-05',
+      endDate: '2020-05'
+    };
+    const proposal = buildClaimMergeProposal(
+      mergeCandidate({
+        claimType: 'education',
+        values: { ...values, institution: 'UC Berkeley' }
+      }),
+      mergeCandidate({
+        claimId: '22222222-2222-4222-8222-222222222222',
+        claimType: 'education',
+        values: { ...values, institution: 'University of California, Berkeley' }
+      })
+    );
+
+    expect(proposal).toMatchObject({
+      result: 'proposal',
+      claimType: 'education',
+      fields: {
+        startDate: { kind: 'same', value: { kind: 'date', value: '2016-05' } },
+        endDate: { kind: 'same', value: { kind: 'date', value: '2020-05' } }
+      },
+      proposedValues: { startDate: '2016-05', endDate: '2020-05' }
+    });
+  });
+
   it('proposes a merge that lets the candidate choose the institution spelling', () => {
     const values = { degree: 'Bachelor of Science', fieldOfStudy: 'Computer Science', endDate: '2020-05' };
     const proposal = buildClaimMergeProposal(

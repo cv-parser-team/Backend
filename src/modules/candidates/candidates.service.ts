@@ -194,7 +194,7 @@ export interface CandidatesService {
     expectedVersion?: number
   ): Promise<CandidateProfile>;
   createClaim(userId: string, input: ClaimBody): Promise<ClaimRecord>;
-  listClaims(userId: string, query: ListClaimsQuery): Promise<ClaimRecord[]>;
+  listClaims(userId: string, query: ListClaimsQuery): Promise<ListedClaim[]>;
   getClaim(userId: string, claimId: string): Promise<ClaimRecord>;
   getClaimMergeProposal(
     userId: string,
@@ -241,8 +241,26 @@ export interface CandidatesService {
 
 // Links claim values to canonical terms. Implemented by the normalization
 // module; only this call is needed here.
+// How a claim's normalized value is shown: the canonical name of its term,
+// with the value the candidate's document or edit wrote.
+export interface NormalizedClaimValue {
+  value: string;
+  original: string;
+  method: string;
+  confidence: number | null;
+}
+
+// A claim as listed to its candidate: its own values, plus the canonical name
+// its normalized field is shown as when that differs. Values never change.
+export type ListedClaim = ClaimRecord & {
+  normalized?: Record<string, NormalizedClaimValue>;
+};
+
 export interface ClaimNormalizer {
   normalizeClaim(claim: ClaimRecord): Promise<unknown>;
+  describeNormalizedValues(
+    claims: ClaimRecord[]
+  ): Promise<Map<string, Record<string, NormalizedClaimValue>>>;
   // The canonical term linked to each claim's normalized field, by claim ID
   // and field, so duplicate detection can compare values by meaning.
   findNormalizedTerms(claims: ClaimRecord[]): Promise<Map<string, Record<string, string>>>;
@@ -476,9 +494,21 @@ export function createCandidatesService({
 
     async listClaims(userId, query) {
       const candidate = await requireCandidate(userId);
-      return repository.listClaims(candidate.candidateId, {
+      const claims = await repository.listClaims(candidate.candidateId, {
         claimType: query.type,
         status: query.status
+      });
+      // Canonical names only improve how values are shown; the list is still
+      // returned with the values as written when they cannot be loaded.
+      let described = new Map<string, Record<string, NormalizedClaimValue>>();
+      try {
+        described = await normalizer.describeNormalizedValues(claims);
+      } catch (error) {
+        logger.warn({ err: error }, 'Normalized values could not be loaded');
+      }
+      return claims.map((claim) => {
+        const normalized = described.get(claim.claimId);
+        return normalized ? { ...claim, normalized } : claim;
       });
     },
 

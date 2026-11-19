@@ -157,7 +157,8 @@ function createUsersServiceDouble(): Pick<UsersService, 'getUserById'> {
 function createNormalizerDouble(): ClaimNormalizer {
   return {
     normalizeClaim: vi.fn().mockResolvedValue(null),
-    findNormalizedTerms: vi.fn().mockResolvedValue(new Map())
+    findNormalizedTerms: vi.fn().mockResolvedValue(new Map()),
+    describeNormalizedValues: vi.fn().mockResolvedValue(new Map())
   };
 }
 
@@ -1040,6 +1041,41 @@ describe('claim merge candidate discovery service', () => {
       }
     ]);
     expect(repository.listClaims).toHaveBeenCalledWith(candidateId);
+  });
+
+  it('lists claims with the canonical name their value is shown as', async () => {
+    const repository = createRepositoryDouble();
+    const pyton = claimRecord({ values: { name: 'Pyton' } });
+    const kotlin = claimRecord({
+      claimId: '44444444-4444-4444-8444-444444444444',
+      values: { name: 'Kotlin' }
+    });
+    vi.mocked(repository.listClaims).mockResolvedValue([pyton, kotlin]);
+    const normalizer = createNormalizerDouble();
+    const normalized = {
+      name: { value: 'Python', original: 'Pyton', method: 'fuzzy', confidence: 0.83 }
+    };
+    vi.mocked(normalizer.describeNormalizedValues).mockResolvedValue(
+      new Map([[pyton.claimId, normalized]])
+    );
+
+    await expect(
+      createService(repository, normalizer).listClaims(userId, {})
+    ).resolves.toEqual([{ ...pyton, normalized }, kotlin]);
+  });
+
+  it('lists claims as written when canonical names cannot be loaded', async () => {
+    const repository = createRepositoryDouble();
+    const pyton = claimRecord({ values: { name: 'Pyton' } });
+    vi.mocked(repository.listClaims).mockResolvedValue([pyton]);
+    const normalizer = createNormalizerDouble();
+    vi.mocked(normalizer.describeNormalizedValues).mockRejectedValue(new Error('offline'));
+    const logger = { warn: vi.fn() };
+
+    await expect(
+      createService(repository, normalizer, logger).listClaims(userId, {})
+    ).resolves.toEqual([pyton]);
+    expect(logger.warn).toHaveBeenCalled();
   });
 
   it('lists and merges skills linked to the same canonical term', async () => {
@@ -2145,6 +2181,7 @@ describe('candidates routes', () => {
     vi.mocked(service.listClaimMergeCandidates).mockResolvedValue([
       {
         result: 'proposal',
+        claimType: 'skill',
         identity: 'equivalent',
         left: { claimId, version: 2 },
         right: { claimId: rightClaimId, version: 4 },

@@ -356,6 +356,10 @@ function repositoryWith(lookup: DictionaryLookup): DictionaryLookup &
       return claimIds
         .map((claimId) => decisions.filter((decision) => decision.claimId === claimId).at(-1))
         .filter((decision) => decision !== undefined);
+    },
+    async listTermsByIds(termIds: string[]) {
+      const terms = await Promise.all(termIds.map((termId) => lookup.findTermById(termId)));
+      return terms.filter((term) => term !== null);
     }
   };
 }
@@ -493,6 +497,73 @@ describe('normalized terms for comparison', () => {
     expect(
       listDictionaryEntries.mock.calls.filter(([category]) => category === 'skill')
     ).toHaveLength(1);
+  });
+
+  it('describes the canonical name a value is shown as, keeping the original', async () => {
+    const { service } = serviceWith();
+    const claims: NormalizableClaim[] = [
+      { claimId: 'c-1', claimType: 'skill', values: { name: 'JS' } },
+      { claimId: 'c-2', claimType: 'skill', values: { name: 'Javscript' } },
+      { claimId: 'c-3', claimType: 'skill', values: { name: 'JavaScript' } },
+      { claimId: 'c-4', claimType: 'skill', values: { name: 'Kotlin' } }
+    ];
+    for (const claim of claims) {
+      await service.normalizeClaim(claim);
+    }
+
+    const described = await service.describeNormalizedValues(claims);
+
+    expect([...described.keys()]).toEqual(['c-1', 'c-2']);
+    expect(described.get('c-1')).toEqual({
+      name: { value: 'JavaScript', original: 'JS', method: 'alias', confidence: 1 }
+    });
+    expect(described.get('c-2')).toEqual({
+      name: {
+        value: 'JavaScript',
+        original: 'Javscript',
+        method: 'fuzzy',
+        confidence: expect.any(Number)
+      }
+    });
+  });
+
+  it('describes nothing for a value edited after its decision', async () => {
+    const { service } = serviceWith();
+    await service.normalizeClaim({ claimId: 'c-1', claimType: 'skill', values: { name: 'JS' } });
+
+    const described = await service.describeNormalizedValues([
+      { claimId: 'c-1', claimType: 'skill', values: { name: 'TypeScript' } }
+    ]);
+
+    expect(described.size).toBe(0);
+  });
+
+  it('shows the active term a merged term was merged into', async () => {
+    const repository = repositoryWith(
+      dictionary([
+        term('t-old', 'skill', 'ReactJS', 't-react'),
+        term('t-react', 'skill', 'React')
+      ])
+    );
+    const service = createNormalizationService({ repository });
+    await repository.saveDecision({
+      claimId: 'c-1',
+      termId: 't-old',
+      originalValue: 'React.js',
+      method: 'alias',
+      confidenceScore: 1,
+      actorType: 'system',
+      ruleVersion: 'fuzzy-v1',
+      status: 'matched'
+    });
+
+    const described = await service.describeNormalizedValues([
+      { claimId: 'c-1', claimType: 'skill', values: { name: 'React.js' } }
+    ]);
+
+    expect(described.get('c-1')).toMatchObject({
+      name: { value: 'React', original: 'React.js' }
+    });
   });
 
   it('ignores a decision made for an earlier value of the field', async () => {
