@@ -23,7 +23,10 @@ export interface MergeCandidateClaim extends ComparableClaim {
   claimId: string;
   version: number;
   origin: CreateClaimInput['origin'];
-  status: Extract<CreateClaimInput['status'], 'pending' | 'accepted'>;
+  status: Extract<
+    CreateClaimInput['status'],
+    'pending' | 'accepted' | 'auto_accepted'
+  >;
   candidateEdited: boolean;
   createdAt: Date;
 }
@@ -175,6 +178,7 @@ export type AutomaticCoalescePlanResult =
       duplicate: { claimId: string; expectedVersion: number };
       values: ClaimValues;
       current?: boolean;
+      messages: string[];
     };
 
 export interface ConfirmedClaimMergeInput {
@@ -592,7 +596,7 @@ function claimAuthority(claim: MergeCandidateClaim): number {
   if (isCandidateAuthoritative(claim)) {
     return 2;
   }
-  return claim.status === 'accepted' ? 1 : 0;
+  return claim.status === 'accepted' || claim.status === 'auto_accepted' ? 1 : 0;
 }
 
 export function selectClaimSurvivor(
@@ -721,6 +725,50 @@ function buildProposedCurrent(
     : false;
 }
 
+// Human-readable, short descriptions of what an automatic merge changed. Only
+// enrichment- and precision_improvement-fields produce messages: conflicts,
+// warnings, and compatible fields block an auto-merge entirely, so they are
+// never reported here. Pure function, easy to test in isolation.
+const FIELD_LABELS: Record<string, string> = {
+  name: 'name',
+  employer: 'employer',
+  jobTitle: 'job title',
+  institution: 'institution',
+  degree: 'degree',
+  fieldOfStudy: 'field of study',
+  title: 'title',
+  issuer: 'issuer',
+  credentialId: 'credential ID',
+  proficiency: 'proficiency',
+  startDate: 'start date',
+  endDate: 'end date',
+  issueDate: 'issue date',
+  expiryDate: 'expiry date',
+  description: 'description',
+  location: 'location',
+  skills: 'skills',
+  url: 'url'
+};
+
+export function buildMergeMessages(
+  fields: Record<string, ClaimFieldComparison>
+): string[] {
+  const messages: string[] = [];
+  for (const [field, difference] of Object.entries(fields)) {
+    const label = FIELD_LABELS[field] ?? field;
+    if (difference.kind === 'enrichment' && difference.from === 'both') {
+      messages.push(`Combined ${label} from both sources`);
+    } else if (difference.kind === 'enrichment') {
+      messages.push(`Added ${label}`);
+    } else if (difference.kind === 'precision_improvement') {
+      messages.push(`More precise ${label}`);
+    }
+  }
+  // Exact duplicates do not change a claim field, but merging their evidence
+  // is still meaningful and every notice must give the candidate useful copy.
+  return messages.length > 0 ? messages : ['Combined sources'];
+}
+
 export function buildClaimMergeProposal(
   left: MergeCandidateClaim,
   right: MergeCandidateClaim
@@ -839,7 +887,8 @@ export function buildAutomaticCoalescePlan(
     values: proposal.proposedValues,
     ...(typeof proposal.proposedCurrent === 'boolean'
       ? { current: proposal.proposedCurrent }
-      : {})
+      : {}),
+    messages: buildMergeMessages(proposal.fields)
   };
 }
 
@@ -916,6 +965,120 @@ export function buildConfirmedClaimMergePlan(
     values: input.values,
     ...(current !== undefined ? { current } : {}),
     status: 'accepted'
+  };
+}
+
+export type AutoAcceptMergePlanResult =
+  | { result: 'no_merge'; reason: NoMergeProposalReason | 'same_claim' }
+  | { result: 'candidate_review_required' }
+  | {
+      result: 'ready';
+      survivor: { claimId: string; expectedVersion: number };
+      duplicate: { claimId: string; expectedVersion: number };
+      values: ClaimValues;
+      current?: boolean;
+      messages: string[];
+      // Published like `accepted`, but produced by an automatic merge and still
+      // awaiting the candidate's acknowledgment.
+      status: 'auto_accepted';
+    };
+
+// High-confidence auto-merge eligibility, extended to accepted + pending safe
+// enrichments on top of today's pending + pending automatic_coalesce gate:
+//
+//   * identity `equivalent` (not `suspected_duplicate`)
+//   * no unresolved fields (conflict / warning / compatible)
+//   * survivor selectable without a candidate choice
+//   * pending + pending: both extracted, neither candidate-edited
+//   * accepted / auto_accepted + pending: the accepted side survives and the
+//     pending side is not candidate-edited (it cannot take authority away)
+export function buildAutoAcceptMergePlan(
+  left: MergeCandidateClaim,
+  right: MergeCandidateClaim
+): AutoAcceptMergePlanResult {
+  if (left.claimId === right.claimId) {
+    return { result: 'no_merge', reason: 'same_claim' };
+  }
+
+  const proposal = buildClaimMergeProposal(left, right);
+  if (proposal.result === 'no_proposal') {
+    return { result: 'no_merge', reason: proposal.reason };
+  }
+
+  const {
+    identity,
+    unresolvedFields,
+    requiresCandidateChoice,
+    survivorClaimId,
+    fields
+  } = proposal;
+
+  if (
+    identity !== 'equivalent' ||
+    unresolvedFields.length > 0 ||
+    requiresCandidateChoice ||
+    survivorClaimId === null
+  ) {
+    return { result: 'candidate_review_required' };
+  }
+
+  const leftStatus = left.status;
+  const rightStatus = right.status;
+  const bothPending = leftStatus === 'pending' && rightStatus === 'pending';
+  const isAcceptedStatus = (
+    status: MergeCandidateClaim['status']
+  ): status is 'accepted' | 'auto_accepted' =>
+    status === 'accepted' || status === 'auto_accepted';
+  const acceptedPlusPending =
+    !bothPending &&
+    ((isAcceptedStatus(leftStatus) && rightStatus === 'pending') ||
+      (isAcceptedStatus(rightStatus) && leftStatus === 'pending'));
+
+  if (!bothPending && !acceptedPlusPending) {
+    return { result: 'candidate_review_required' };
+  }
+
+  if (bothPending) {
+    // Same bar as today's automatic_coalesce.
+    if (left.origin !== 'extracted' || right.origin !== 'extracted') {
+      return { result: 'candidate_review_required' };
+    }
+    if (left.candidateEdited || right.candidateEdited) {
+      return { result: 'candidate_review_required' };
+    }
+  } else {
+    const acceptedSide = isAcceptedStatus(leftStatus) ? left : right;
+    const pendingSide = isAcceptedStatus(leftStatus) ? right : left;
+    // The accepted side must be the survivor so it keeps its authority.
+    if (survivorClaimId !== acceptedSide.claimId) {
+      return { result: 'candidate_review_required' };
+    }
+    // The pending side cannot override the survivor's authority.
+    if (pendingSide.candidateEdited) {
+      return { result: 'candidate_review_required' };
+    }
+  }
+
+  const messages = buildMergeMessages(fields);
+  const survivorIsLeft = survivorClaimId === left.claimId;
+  const survivor = survivorIsLeft ? left : right;
+  const duplicate = survivorIsLeft ? right : left;
+  return {
+    result: 'ready',
+    survivor: {
+      claimId: survivor.claimId,
+      expectedVersion: survivor.version
+    },
+    duplicate: {
+      claimId: duplicate.claimId,
+      expectedVersion: duplicate.version
+    },
+    values: proposal.proposedValues,
+    ...(typeof proposal.proposedCurrent === 'boolean'
+      ? { current: proposal.proposedCurrent }
+      : {}),
+    messages,
+    status: 'auto_accepted'
   };
 }
 

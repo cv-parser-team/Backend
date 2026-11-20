@@ -816,7 +816,13 @@ describe('atomic claim merging', () => {
       pendingRow(duplicateClaimId, 4, 'typescript')
     ];
     const after = [
-      pendingRow(claimId, 3, 'TypeScript and Node.js'),
+      {
+        ...pendingRow(claimId, 3, 'TypeScript and Node.js'),
+        claim: {
+          ...pendingRow(claimId, 3, 'TypeScript and Node.js').claim,
+          status: 'auto_accepted' as const
+        }
+      },
       pendingRow(duplicateClaimId, 5, 'typescript', claimId)
     ];
     const context = coalesceContext([before, after]);
@@ -827,11 +833,12 @@ describe('atomic claim merging', () => {
         survivor: { claimId, expectedVersion: 2 },
         duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
         values: { name: 'TypeScript and Node.js' },
-        current: false
+        current: false,
+        messages: []
       })
     ).resolves.toMatchObject({
       status: 'saved',
-      survivor: { claimId, status: 'pending', version: 3 },
+      survivor: { claimId, status: 'auto_accepted', version: 3 },
       duplicate: { supersededByClaimId: claimId, version: 5 }
     });
 
@@ -863,7 +870,8 @@ describe('atomic claim merging', () => {
         candidateId,
         survivor: { claimId, expectedVersion: 2 },
         duplicate: { claimId: duplicateClaimId, expectedVersion: 4 },
-        values: { name: 'TypeScript' }
+        values: { name: 'TypeScript' },
+        messages: []
       })
     ).resolves.toMatchObject({ status: 'conflict' });
     expect(context.inserted).not.toHaveBeenCalled();
@@ -1082,12 +1090,13 @@ describe('reading claim source occurrences', () => {
 
     const query = toSql(where.mock.calls[0]?.[0]);
     expect(query?.sql).toContain('"claims"."candidate_id" = $1');
-    expect(query?.sql).toContain('"claims"."status" = $2');
+    expect(query?.sql).toContain('"claims"."status" in ($2, $3)');
     expect(query?.sql).toContain('"claims"."superseded_by_claim_id" is null');
-    expect(query?.sql).toContain('"claims"."claim_id" in ($3, $4)');
+    expect(query?.sql).toContain('"claims"."claim_id" in ($4, $5)');
     expect(query?.params).toEqual([
       candidateId,
       'accepted',
+      'auto_accepted',
       claimId,
       otherClaimId
     ]);

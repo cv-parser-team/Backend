@@ -9,9 +9,11 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
 1. **One profile per user, always `/me`.** The user comes from the access
    token, never from the URL. Another candidate's claims return 404.
 2. **Every piece of profile information is a claim** with a type, an origin
-   (`manual` or `extracted`), and a status (`pending`, `accepted`, or
-   `rejected`). Manual claims are accepted immediately.
-3. **The export contains accepted claims only.**
+   (`manual` or `extracted`), and a status (`pending`, `accepted`,
+   `auto_accepted`, or `rejected`). Manual claims are accepted immediately.
+3. **The export contains accepted and auto-accepted claims.** `auto_accepted`
+   means a safe automatic duplicate merge published the claim and the
+   candidate has not yet acknowledged its merge notice.
 4. **One details table per claim type.** Real columns let profile search query
    claims directly, such as finding candidates with a given skill.
 5. **Edits archive the previous values** in `claim_revisions`, so the original
@@ -49,9 +51,12 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     ownership and the optional `If-Match` version in one update. Accepted
     claims are normalized; rejected claims remain available for audit but are
     excluded from export.
-13. **Duplicate merging is candidate-controlled.** The MVP design compares
-    claim pairs only, keeps extracted enrichment staged, gives candidate
-    values precedence, and preserves source provenance. See
+13. **Duplicate merging is candidate-controlled unless it is unambiguous.**
+    Equivalent duplicate pairs with no unresolved fields can be auto-merged:
+    two unedited pending extracted claims, or a safe pending enrichment of an
+    accepted claim. The survivor becomes `auto_accepted` and gets an
+    acknowledgment notice; all uncertain work remains staged for candidate
+    review. Candidate-confirmed merges preserve source provenance. See
     [Merge duplicate claims and resolve related conflicts](../merge-duplicate-claims.md).
 
 `GET /api/candidates/me/claims/:claimId` reads one ownership-scoped claim and
@@ -68,8 +73,11 @@ compares two active ownership-scoped claims and returns a read-only merge
 proposal. It does not approve, retire, or otherwise change either claim.
 
 `POST /api/candidates/me/claims/coalesce` atomically combines only safe,
-equivalent pending extracted claims. The survivor remains `pending`, so this
-operation does not publish extracted information to the profile.
+equivalent pending extracted claims. The survivor becomes `auto_accepted`, is
+included in profile export, and includes an open merge notice when it is read.
+`POST /api/candidates/me/claims/:claimId/acknowledge-auto-merge` acknowledges
+all open notices on the claim; when none remain, it changes the claim to
+`accepted`.
 
 `POST /api/candidates/me/claims/different` records that the candidate reviewed
 two suspected duplicates and considers them different facts. The request
@@ -135,10 +143,12 @@ stateDiagram-v2
     [*] --> accepted: Candidate adds the claim
     [*] --> pending: Extracted from a document
     pending --> accepted: Candidate accepts
+    pending --> auto_accepted: Safe automatic duplicate merge
+    auto_accepted --> accepted: Candidate acknowledges merge notice
     pending --> rejected: Candidate rejects
     accepted --> Exported: GET /api/candidates/me/profile
     note right of Exported
-        Only accepted claims appear
+        Accepted and auto-accepted claims appear
         in the exported JSON profile.
     end note
 ```

@@ -228,6 +228,12 @@ describe('document processing pipeline', () => {
       extractionPersistenceCoordinator,
       processingService,
       claimNormalizer: { normalizeClaim: vi.fn().mockResolvedValue(null) },
+      autoMergeRunner: {
+        autoAcceptHighConfidenceDuplicates: vi.fn().mockResolvedValue({
+          applied: 0,
+          skipped: 0
+        })
+      },
       logger: { warn: vi.fn() },
       unitOfWork: { run: (work) => work(transaction) }
     });

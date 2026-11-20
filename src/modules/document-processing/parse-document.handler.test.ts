@@ -191,6 +191,7 @@ type OptionalHandlerDependency =
   | 'candidateExtractionService'
   | 'extractionPersistenceCoordinator'
   | 'claimNormalizer'
+  | 'autoMergeRunner'
   | 'logger';
 
 type HandlerDependencies = Omit<
@@ -204,6 +205,12 @@ function createParseDocumentHandler(
 ) {
   const {
     claimNormalizer = { normalizeClaim: vi.fn().mockResolvedValue(null) },
+    autoMergeRunner = {
+      autoAcceptHighConfidenceDuplicates: vi.fn().mockResolvedValue({
+        applied: 0,
+        skipped: 0
+      })
+    },
     logger = { warn: vi.fn() },
     candidateExtractionService = {
       extract: vi
@@ -223,6 +230,7 @@ function createParseDocumentHandler(
     candidateExtractionService,
     extractionPersistenceCoordinator,
     claimNormalizer,
+    autoMergeRunner,
     logger
   });
 }
@@ -356,6 +364,27 @@ describe('parse document handler', () => {
 
     await expect(handler.handle(job)).resolves.toMatchObject({ outcome: 'processed' });
     expect(operations).toEqual(['begin', 'commit', 'normalize:claim-1', 'normalize:claim-2']);
+  });
+
+  it('scans for safe duplicate merges after the extraction transaction commits', async () => {
+    const operations: string[] = [];
+    const autoAcceptHighConfidenceDuplicates = vi.fn(async () => {
+      operations.push('auto-merge');
+      return { applied: 1, skipped: 0 };
+    });
+    const handler = createParseDocumentHandler({
+      documentsService: createDocumentsService(),
+      parsingService: createParsingService(),
+      processingService: createProcessingService(),
+      autoMergeRunner: { autoAcceptHighConfidenceDuplicates },
+      unitOfWork: createUnitOfWork(operations)
+    });
+
+    await expect(handler.handle(job)).resolves.toMatchObject({ outcome: 'processed' });
+    expect(operations).toEqual(['begin', 'commit', 'auto-merge']);
+    expect(autoAcceptHighConfidenceDuplicates).toHaveBeenCalledWith(
+      createDocument('processing').ownerUserId
+    );
   });
 
   it('keeps the document processed when a claim cannot be normalized', async () => {

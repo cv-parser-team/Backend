@@ -61,6 +61,9 @@ export interface ParseDocumentHandlerDependencies {
   claimNormalizer: {
     normalizeClaim(claim: PersistedExtractionClaims[number]): Promise<unknown>;
   };
+  autoMergeRunner: {
+    autoAcceptHighConfidenceDuplicates(userId: string): Promise<unknown>;
+  };
   logger: Pick<FastifyBaseLogger, 'warn'>;
   unitOfWork: UnitOfWork;
 }
@@ -96,6 +99,7 @@ export function createParseDocumentHandler({
   extractionPersistenceCoordinator,
   processingService,
   claimNormalizer,
+  autoMergeRunner,
   logger,
   unitOfWork
 }: ParseDocumentHandlerDependencies): ParseDocumentHandler {
@@ -221,6 +225,14 @@ export function createParseDocumentHandler({
 
     if (result.outcome === 'processed') {
       await normalizeClaims(persistedClaims);
+      try {
+        await autoMergeRunner.autoAcceptHighConfidenceDuplicates(ownerUserId);
+      } catch (error) {
+        // Extraction has already committed successfully. An auto-merge race or
+        // transient failure must leave the pair for the Issues UI, not retry
+        // the completed document-processing job.
+        logger.warn({ err: error }, 'Automatic duplicate merge after extraction failed');
+      }
     }
     return result;
   }

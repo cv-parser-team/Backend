@@ -16,6 +16,7 @@ import {
 import {
   type AutomaticCoalescePlanResult,
   buildAutomaticCoalescePlan,
+  buildAutoAcceptMergePlan,
   buildClaimMergeProposal,
   buildConfirmedClaimMergePlan,
   type ClaimMergeProposalResult,
@@ -39,7 +40,7 @@ import {
   ReviewClaimBody,
   UpdateCandidateBody
 } from './candidates.schemas.js';
-import { ClaimSourceAnchor, ProfileLink } from './candidates.table.js';
+import { ClaimAutoMergeNoticeRecord, ClaimSourceAnchor, ProfileLink } from './candidates.table.js';
 
 export interface CandidateProfile {
   candidateId: string;
@@ -88,6 +89,16 @@ export type AutomaticClaimCoalesceResult =
   | Extract<AutomaticCoalescePlanResult, { result: 'no_merge' }>
   | Extract<AutomaticCoalescePlanResult, { result: 'candidate_review_required' }>
   | { result: 'coalesced'; survivor: ClaimRecord; duplicate: ClaimRecord };
+
+export type AutoAcceptMergeResult =
+  | { result: 'no_merge'; reason: string }
+  | { result: 'candidate_review_required' }
+  | {
+      result: 'auto_accepted';
+      survivor: ClaimRecord;
+      duplicate: ClaimRecord;
+      noticeId: string;
+    };
 
 export type ClaimMergeCandidate = Extract<
   ClaimMergeProposalResult,
@@ -195,7 +206,7 @@ export interface CandidatesService {
   ): Promise<CandidateProfile>;
   createClaim(userId: string, input: ClaimBody): Promise<ClaimRecord>;
   listClaims(userId: string, query: ListClaimsQuery): Promise<ListedClaim[]>;
-  getClaim(userId: string, claimId: string): Promise<ClaimRecord>;
+  getClaim(userId: string, claimId: string): Promise<ListedClaim>;
   getClaimMergeProposal(
     userId: string,
     leftClaimId: string,
@@ -211,6 +222,25 @@ export interface CandidatesService {
     leftClaimId: string,
     rightClaimId: string
   ): Promise<AutomaticClaimCoalesceResult>;
+  autoAcceptMergeClaims(
+    userId: string,
+    leftClaimId: string,
+    rightClaimId: string
+  ): Promise<AutoAcceptMergeResult>;
+  // After a successful extraction save, safely auto-accepts high-confidence
+  // duplicate pairs across the candidate's active claims.
+  autoAcceptHighConfidenceDuplicates(userId: string): Promise<{
+    applied: number;
+    skipped: number;
+  }>;
+  acknowledgeAutoMerge(
+    userId: string,
+    claimId: string,
+    expectedVersion?: number
+  ): Promise<{
+    status: ClaimRecord['status'];
+    acknowledged: number;
+  }>;
   mergeConfirmedClaims(
     userId: string,
     input: ConfirmClaimMergeInput
@@ -254,6 +284,7 @@ export interface NormalizedClaimValue {
 // its normalized field is shown as when that differs. Values never change.
 export type ListedClaim = ClaimRecord & {
   normalized?: Record<string, NormalizedClaimValue>;
+  openMergeNotices?: ClaimAutoMergeNoticeRecord[];
 };
 
 export interface ClaimNormalizer {
@@ -506,15 +537,52 @@ export function createCandidatesService({
       } catch (error) {
         logger.warn({ err: error }, 'Normalized values could not be loaded');
       }
+      let openNoticesByClaim = new Map<string, ClaimAutoMergeNoticeRecord[]>();
+      try {
+        const notices = await repository.listOpenAutoMergeNotices(
+          candidate.candidateId,
+          claims.map((claim) => claim.claimId)
+        );
+        for (const notice of notices) {
+          const list = openNoticesByClaim.get(notice.survivorClaimId) ?? [];
+          list.push(notice);
+          openNoticesByClaim.set(notice.survivorClaimId, list);
+        }
+      } catch (error) {
+        logger.warn({ err: error }, 'Open auto-merge notices could not be loaded');
+      }
       return claims.map((claim) => {
         const normalized = described.get(claim.claimId);
-        return normalized ? { ...claim, normalized } : claim;
+        const openMergeNotices = openNoticesByClaim.get(claim.claimId);
+        return {
+          ...claim,
+          ...(normalized ? { normalized } : {}),
+          ...(openMergeNotices && openMergeNotices.length > 0
+            ? { openMergeNotices }
+            : {})
+        };
       });
     },
 
     async getClaim(userId, claimId) {
       const candidate = await requireCandidate(userId);
-      return requireClaim(candidate.candidateId, claimId);
+      const claim = await requireClaim(candidate.candidateId, claimId);
+      let openMergeNotices: ClaimAutoMergeNoticeRecord[] | undefined;
+      try {
+        const notices = await repository.listOpenAutoMergeNotices(
+          candidate.candidateId,
+          [claimId]
+        );
+        if (notices.length > 0) {
+          openMergeNotices = notices;
+        }
+      } catch (error) {
+        logger.warn({ err: error, claimId }, 'Open auto-merge notices could not be loaded');
+      }
+      return {
+        ...claim,
+        ...(openMergeNotices ? { openMergeNotices } : {})
+      };
     },
 
     async getClaimMergeProposal(userId, leftClaimId, rightClaimId) {
@@ -684,14 +752,15 @@ export function createCandidatesService({
 
       const plan = buildAutomaticCoalescePlan(leftCandidate, rightCandidate);
       if (plan.result !== 'ready') {
-        return plan;
+        return plan as AutomaticClaimCoalesceResult;
       }
       const result = await repository.coalescePendingClaims({
         candidateId: candidate.candidateId,
         survivor: plan.survivor,
         duplicate: plan.duplicate,
         values: plan.values,
-        ...(plan.current !== undefined ? { current: plan.current } : {})
+        ...(plan.current !== undefined ? { current: plan.current } : {}),
+        messages: plan.messages
       });
       switch (result.status) {
         case 'saved':
@@ -707,6 +776,150 @@ export function createCandidatesService({
         case 'missing':
           throw new RecordNotFoundError('Claim pair');
       }
+    },
+
+    async autoAcceptMergeClaims(userId, leftClaimId, rightClaimId) {
+      const candidate = await requireCandidate(userId);
+      if (leftClaimId === rightClaimId) {
+        return { result: 'no_merge', reason: 'same_claim' };
+      }
+      const [left, right] = await Promise.all([
+        requireClaim(candidate.candidateId, leftClaimId),
+        requireClaim(candidate.candidateId, rightClaimId)
+      ]);
+      if (left.supersededByClaimId !== null || right.supersededByClaimId !== null) {
+        return { result: 'no_merge', reason: 'superseded_claim' };
+      }
+      const [leftCandidate, rightCandidate] = await toMergeCandidates(
+        candidate.candidateId,
+        [left, right]
+      );
+      if (!leftCandidate || !rightCandidate) {
+        return { result: 'no_merge', reason: 'rejected_claim' };
+      }
+      const plan = buildAutoAcceptMergePlan(leftCandidate, rightCandidate);
+      if (plan.result !== 'ready') {
+        return plan as AutoAcceptMergeResult;
+      }
+      const result = await repository.autoAcceptMergeClaims({
+        candidateId: candidate.candidateId,
+        survivor: plan.survivor,
+        duplicate: plan.duplicate,
+        values: plan.values,
+        ...(plan.current !== undefined ? { current: plan.current } : {}),
+        messages: plan.messages
+      });
+      switch (result.status) {
+        case 'saved':
+          return {
+            result: 'auto_accepted',
+            survivor: result.survivor,
+            duplicate: result.duplicate,
+            noticeId: result.notice.noticeId
+          };
+        case 'conflict':
+          throw new VersionConflictError('Claims', result.current);
+        case 'not_eligible':
+          return { result: 'candidate_review_required' };
+        case 'missing':
+          throw new RecordNotFoundError('Claim pair');
+      }
+    },
+
+    async autoAcceptHighConfidenceDuplicates(userId) {
+      const candidate = await requireCandidate(userId);
+      const candidateId = candidate.candidateId;
+      const claims = await repository.listClaims(candidateId, {
+        status: ['pending', 'accepted', 'auto_accepted']
+      });
+      const byType = new Map<string, ClaimRecord[]>();
+      for (const claim of claims) {
+        const group = byType.get(claim.claimType) ?? [];
+        group.push(claim);
+        byType.set(claim.claimType, group);
+      }
+      let applied = 0;
+      let skipped = 0;
+      const touched = new Set<string>();
+      for (const group of byType.values()) {
+        for (let i = 0; i < group.length; i++) {
+          for (let j = i + 1; j < group.length; j++) {
+            const left = group[i];
+            const right = group[j];
+            if (touched.has(left.claimId) || touched.has(right.claimId)) {
+              skipped += 1;
+              continue;
+            }
+            const [leftCandidate, rightCandidate] = await toMergeCandidates(
+              candidateId,
+              [left, right]
+            );
+            if (!leftCandidate || !rightCandidate) {
+              skipped += 1;
+              continue;
+            }
+            const plan = buildAutoAcceptMergePlan(leftCandidate, rightCandidate);
+            if (plan.result !== 'ready') {
+              skipped += 1;
+              continue;
+            }
+            let result: Awaited<
+              ReturnType<typeof repository.autoAcceptMergeClaims>
+            >;
+            try {
+              result = await repository.autoAcceptMergeClaims({
+                candidateId,
+                survivor: plan.survivor,
+                duplicate: plan.duplicate,
+                values: plan.values,
+                ...(plan.current !== undefined ? { current: plan.current } : {}),
+                messages: plan.messages
+              });
+            } catch {
+              // Version conflict or overlap: leave for the Issues UI.
+              skipped += 1;
+              continue;
+            }
+            if (result.status === 'saved') {
+              touched.add(result.survivor.claimId);
+              touched.add(result.duplicate.claimId);
+              applied += 1;
+            } else {
+              skipped += 1;
+            }
+          }
+        }
+      }
+      return { applied, skipped };
+    },
+
+    async acknowledgeAutoMerge(userId, claimId, expectedVersion) {
+      const candidate = await requireCandidate(userId);
+      const claim = await requireClaim(candidate.candidateId, claimId);
+      if (expectedVersion !== undefined && claim.version !== expectedVersion) {
+        throw new VersionConflictError('Claim', claim);
+      }
+      const acknowledged = await repository.acknowledgeAutoMergeNotices(
+        candidate.candidateId,
+        claimId
+      );
+      const remaining = await repository.countOpenAutoMergeNotices(
+        candidate.candidateId,
+        claimId
+      );
+      let status = claim.status;
+      if (claim.status === 'auto_accepted' && remaining === 0) {
+        const updated = await repository.setClaimStatus(
+          candidate.candidateId,
+          claimId,
+          'accepted',
+          claim.version
+        );
+        if (updated) {
+          status = updated.status;
+        }
+      }
+      return { status, acknowledged };
     },
 
     async mergeConfirmedClaims(userId, input) {
@@ -1128,7 +1341,9 @@ export function createCandidatesService({
       const candidate = await requireCandidate(userId);
       const [email, acceptedClaims] = await Promise.all([
         getEmail(userId),
-        repository.listClaims(candidate.candidateId, { status: 'accepted' })
+        repository.listClaims(candidate.candidateId, {
+          status: ['accepted', 'auto_accepted']
+        })
       ]);
       const occurrences = await repository.listClaimSourceOccurrences(
         candidate.candidateId,

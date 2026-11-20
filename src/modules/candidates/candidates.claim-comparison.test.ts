@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAutomaticCoalescePlan,
+  buildAutoAcceptMergePlan,
   buildClaimMergeProposal,
   buildConfirmedClaimMergePlan,
   compareClaimIdentity,
@@ -1448,7 +1449,8 @@ describe('automatic claim coalesce plan', () => {
         location: 'Amman',
         startDate: '2020-03'
       },
-      current: true
+      current: true,
+      messages: ['Added location', 'More precise start date']
     });
   });
 
@@ -1473,6 +1475,42 @@ describe('automatic claim coalesce plan', () => {
     expect(
       buildAutomaticCoalescePlan(mergeCandidate(), mergeCandidate())
     ).toEqual({ result: 'no_merge', reason: 'same_claim' });
+  });
+});
+
+describe('automatic accepted-claim merge plan', () => {
+  it('keeps an accepted survivor, publishes it for acknowledgment, and explains an exact merge', () => {
+    expect(
+      buildAutoAcceptMergePlan(
+        mergeCandidate({
+          status: 'accepted',
+          origin: 'manual',
+          createdAt: new Date('2026-01-01T00:00:00.000Z')
+        }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          createdAt: new Date('2026-02-01T00:00:00.000Z')
+        })
+      )
+    ).toMatchObject({
+      result: 'ready',
+      survivor: { claimId: '11111111-1111-4111-8111-111111111111' },
+      duplicate: { claimId: '22222222-2222-4222-8222-222222222222' },
+      status: 'auto_accepted',
+      messages: ['Combined sources']
+    });
+  });
+
+  it('does not merge a candidate-edited pending claim into an accepted claim', () => {
+    expect(
+      buildAutoAcceptMergePlan(
+        mergeCandidate({ status: 'accepted', origin: 'manual' }),
+        mergeCandidate({
+          claimId: '22222222-2222-4222-8222-222222222222',
+          candidateEdited: true
+        })
+      )
+    ).toEqual({ result: 'candidate_review_required' });
   });
 });
 

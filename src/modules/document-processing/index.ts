@@ -7,7 +7,10 @@ import {
   createLlmRepository,
   createLlmService
 } from '../../infrastructure/llm/index.js';
-import { createCandidateExtractionWriter } from '../candidates/index.js';
+import {
+  createCandidateAutoMergeRunner,
+  createCandidateExtractionWriter
+} from '../candidates/index.js';
 import {
   createCandidateExtractionService,
   createExtractionReviewRepository,
@@ -77,6 +80,12 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
       extractionPersistenceCoordinator,
       processingService: service,
       claimNormalizer: fastify.normalizationService,
+      autoMergeRunner: createCandidateAutoMergeRunner(
+        fastify.database,
+        fastify.usersService,
+        fastify.normalizationService,
+        fastify.log
+      ),
       logger: fastify.log,
       unitOfWork
     })
@@ -87,7 +96,7 @@ export const documentProcessingModule = fastifyPlugin(
   registerDocumentProcessing,
   {
     name: 'document-processing',
-    dependencies: ['database', 'messaging', 'documents', 'parsing', 'normalization']
+    dependencies: ['database', 'messaging', 'documents', 'parsing', 'normalization', 'users']
   }
 );
 

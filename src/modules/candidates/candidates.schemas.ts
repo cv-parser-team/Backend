@@ -446,6 +446,16 @@ export const reviewClaimBodySchema = {
 
 export type ReviewClaimBody = FromSchema<typeof reviewClaimBodySchema>;
 
+// Acknowledging an auto-merge carries no body: the claim id is in the path.
+export const acknowledgeAutoMergeBodySchema = {
+  type: 'object',
+  additionalProperties: false
+} as const;
+
+export type AcknowledgeAutoMergeBody = FromSchema<
+  typeof acknowledgeAutoMergeBodySchema
+>;
+
 export const listClaimsQuerySchema = {
   type: 'object',
   properties: {

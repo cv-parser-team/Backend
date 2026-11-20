@@ -134,12 +134,13 @@ and always act on the authenticated user's own profile:
 - `POST /api/candidates/me` (create the profile)
 - `GET /api/candidates/me`
 - `PATCH /api/candidates/me`
-- `GET /api/candidates/me/profile` (structured JSON with accepted claims only)
+- `GET /api/candidates/me/profile` (structured JSON with accepted and auto-accepted claims)
 - `POST /api/candidates/me/claims` (add a manual claim)
 - `GET /api/candidates/me/claims` (optional `type` and `status` filters)
 - `GET /api/candidates/me/claims/merge-candidates` (read-only duplicate discovery)
 - `GET /api/candidates/me/claims/merge-proposal` (`leftClaimId` and `rightClaimId`; read-only)
 - `POST /api/candidates/me/claims/coalesce` (safe pending duplicates remain staged)
+- `POST /api/candidates/me/claims/:claimId/acknowledge-auto-merge` (acknowledge auto-merge notices on a published claim)
 - `POST /api/candidates/me/claims/different` (suppress an unchanged reviewed pair)
 - `POST /api/candidates/me/claims/merge` (candidate confirmation accepts and exports the survivor)
 - `POST /api/candidates/me/claims/resolve-batch` (1–100 independent accept, pair-merge, or atomic group-merge actions)

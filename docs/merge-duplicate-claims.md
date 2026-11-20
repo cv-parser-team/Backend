@@ -1,8 +1,7 @@
 # Merge duplicate claims and resolve related conflicts
 
-> **Status: MVP design; not implemented.** This document narrows the first
-> delivery to claim-to-claim comparison and merge. Extraction review items are
-> deliberately out of scope.
+> **Status: implemented behavior.** Claim-to-claim comparison and merge are
+> available; extraction review items remain deliberately separate.
 
 ## 1. Goal
 
@@ -44,9 +43,12 @@ resolution creates a claim, a later claim comparison may include it.
 2. **Resolution is approval.** When the candidate explicitly confirms the
    final values of a duplicate or conflict, the surviving claim becomes
    `accepted` and is exported. A second approval step is not required.
-3. **Automatic work stays staged.** Detection, proposed values, and automatic
-   coalescing never count as approval. An automatically coalesced extracted
-   claim remains `pending`.
+3. **Safe automatic work is published with an acknowledgment.** Equivalent
+   pairs with no unresolved fields can auto-merge when both are unedited
+   pending extracted claims, or when an accepted/auto-accepted survivor can
+   safely absorb an unedited pending enrichment. The survivor becomes
+   `auto_accepted`, is exported, and receives a durable merge notice. All
+   uncertain work stays staged.
 4. **Candidate decisions have precedence.** Candidate-entered and
    candidate-edited values are authoritative over extracted values.
 5. **Completeness is only a tie-breaker.** A populated optional field or a
@@ -109,8 +111,8 @@ The survivor is selected independently from individual field values:
 
 | Pair | Survivor and status |
 | --- | --- |
-| Pending + pending | Oldest claim is the stable survivor and remains `pending` |
-| Accepted + pending | Accepted claim survives; it is not changed until confirmation |
+| Pending + pending | Oldest claim is the stable survivor and becomes `auto_accepted` when safely auto-merged |
+| Accepted + pending | Accepted claim survives; safe unedited enrichments become `auto_accepted` |
 | Accepted + accepted | Candidate chooses the survivor; no automatic retirement |
 | Candidate-authoritative + extracted | Candidate-authoritative claim survives |
 
@@ -153,11 +155,11 @@ authoritative decision and extraction must not silently restore it.
 
 ### Pending + pending
 
-When identity is strong and there are no conflicting fields, the service may
-coalesce the claims automatically. It keeps the oldest claim, writes the
-merged compatible values, combines source occurrences without duplicates,
-and retires the other claim. The survivor remains `pending`, so it is still not
-exported.
+When identity is strong and there are no unresolved fields, the service
+auto-merges unedited extracted claims. It keeps the oldest claim, writes the
+merged compatible values, combines source occurrences without duplicates, and
+retires the other claim. The survivor becomes `auto_accepted`, is exported,
+and carries a pending auto-merge notice until the candidate acknowledges it.
 
 If identity is uncertain or any field conflicts, both claims remain unchanged
 and the candidate receives a merge proposal with the conflicting fields. When
@@ -167,9 +169,11 @@ survivor becomes `accepted` and is exported immediately.
 ### Accepted + pending
 
 The accepted claim remains the exported profile value while the pending claim
-is a staged proposal. Compatible optional values and precision improvements
-may be preselected in the proposal, but they are not written to the accepted
-claim until the candidate confirms.
+is a staged proposal. When the pair is equivalent, has no unresolved fields,
+and the pending claim was not candidate-edited, compatible optional values and
+precision improvements are applied automatically. The accepted survivor becomes
+`auto_accepted` and receives a merge notice; the candidate acknowledges it to
+return the status to `accepted`. Other proposals still require confirmation.
 
 On confirmation, the service updates the accepted survivor, archives its
 previous values as a revision, attaches the accepted source occurrences, and

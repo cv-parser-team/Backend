@@ -135,7 +135,12 @@ function createRepositoryDouble(
     updateClaimValues: vi
       .fn()
       .mockResolvedValue({ status: 'saved', record: claimRecord() }),
-    deleteClaim: vi.fn().mockResolvedValue({ status: 'deleted' })
+    deleteClaim: vi.fn().mockResolvedValue({ status: 'deleted' }),
+    autoAcceptMergeClaims: vi.fn().mockResolvedValue({ status: 'missing' }),
+    acknowledgeAutoMergeNotices: vi.fn().mockResolvedValue(0),
+    countOpenAutoMergeNotices: vi.fn().mockResolvedValue(0),
+    listOpenAutoMergeNotices: vi.fn().mockResolvedValue([]),
+    setClaimStatus: vi.fn().mockResolvedValue(null)
   };
 }
 
@@ -186,7 +191,7 @@ describe('candidates tables', () => {
       'project'
     ]);
     expect(claimOrigin.enumValues).toEqual(['manual', 'extracted']);
-    expect(claimStatus.enumValues).toEqual(['pending', 'accepted', 'rejected']);
+    expect(claimStatus.enumValues).toEqual(['pending', 'accepted', 'auto_accepted', 'rejected']);
   });
 
   it('versions profiles and claims, starting at 1', () => {
@@ -840,7 +845,7 @@ describe('candidates service', () => {
     const result = await service.exportProfile(userId);
 
     expect(repository.listClaims).toHaveBeenCalledWith(candidateId, {
-      status: 'accepted'
+      status: ['accepted', 'auto_accepted']
     });
     expect(result.personalInfo).toEqual({
       fullName: 'Example Candidate',
@@ -1320,7 +1325,8 @@ describe('automatic claim coalesce service', () => {
       candidateId,
       survivor: { claimId, expectedVersion: 2 },
       duplicate: { claimId: otherClaimId, expectedVersion: 4 },
-      values: { name: 'TypeScript' }
+      values: { name: 'TypeScript' },
+      messages: ['Combined sources']
     });
   });
 
@@ -1834,7 +1840,10 @@ function createServiceDouble(): CandidatesService {
     updateClaim: vi.fn().mockResolvedValue(claimRecord()),
     reviewClaim: vi.fn().mockResolvedValue(extractedClaim('accepted', 2)),
     deleteClaim: vi.fn().mockResolvedValue(undefined),
-    exportProfile: vi.fn()
+    exportProfile: vi.fn(),
+    autoAcceptMergeClaims: vi.fn(),
+    autoAcceptHighConfidenceDuplicates: vi.fn(),
+    acknowledgeAutoMerge: vi.fn()
   };
 }
 

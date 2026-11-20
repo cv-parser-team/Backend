@@ -161,6 +161,17 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    CLAIM_AUTO_MERGE_NOTICES {
+        uuid notice_id PK
+        uuid candidate_id FK
+        uuid survivor_claim_id FK
+        uuid[] superseded_claim_ids
+        text[] messages
+        claim_auto_merge_notice_status status
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz acknowledged_at "nullable"
+    }
     DOCUMENTS {
         uuid document_id PK
         uuid owner_user_id FK
@@ -249,6 +260,8 @@ erDiagram
     CLAIMS ||--o{ CLAIM_REVISIONS : archives
     CANDIDATES ||--o{ CLAIM_PAIR_DECISIONS : decides
     CLAIMS ||--o{ CLAIM_PAIR_DECISIONS : "compared in"
+    CANDIDATES ||--o{ CLAIM_AUTO_MERGE_NOTICES : receives
+    CLAIMS ||--o{ CLAIM_AUTO_MERGE_NOTICES : survives in
     CLAIMS ||--o{ NORMALIZATION_DECISIONS : "normalized in"
     CANONICAL_TERMS ||--o{ ALIASES : "written as"
     CANONICAL_TERMS ||--o{ NORMALIZATION_DECISIONS : "chosen in"
@@ -324,8 +337,10 @@ Owned by the `candidates` module.
 
 A claim is one piece of profile information: a skill, an employment record,
 an education record, a certification, a language, or a project. Claims entered
-by the candidate are stored as `manual` and `accepted`. Only accepted claims
-appear in the exported profile; pending and rejected claims are excluded.
+by the candidate are stored as `manual` and `accepted`. `auto_accepted` claims
+are published by a safe automatic duplicate merge and remain visible in the
+profile until the candidate acknowledges the merge notice. Pending and
+rejected claims are excluded.
 Claims cascade on profile deletion.
 
 Creating a claim and its type-specific details is atomic. The candidates
@@ -340,7 +355,7 @@ transient-failure retries.
 | `candidate_id` | UUID | Required, candidate FK, cascade delete, indexed | Claim owner |
 | `claim_type` | `claim_type` | Required | Kind of profile information |
 | `origin` | `claim_origin` | Required | Whether the candidate entered or extraction produced the claim |
-| `status` | `claim_status` | Required, defaults to `pending` | Review state; only `accepted` is exported |
+| `status` | `claim_status` | Required, defaults to `pending` | Review state; `accepted` and `auto_accepted` are exported |
 | `extraction_invocation_id` | UUID | Required for extracted claims; null for manual claims | LLM invocation that produced the draft |
 | `extraction_document_id` | UUID | Required on new extracted claims; nullable for legacy rows; null for manual claims | Source document that produced the draft |
 | `extraction_raw_values` | JSONB | Required for extracted claims; null for manual claims | Original wording for normalized fields |
@@ -353,6 +368,28 @@ transient-failure retries.
 `extraction_document_id` is intentionally not a foreign key until document
 deletion semantics for reviewed claims are defined. New application writes
 always provide it; older extracted claims remain readable with a null value.
+
+## Claim auto-merge notices
+
+Owned by the `candidates` module and defined in
+`src/modules/candidates/candidates.table.ts`.
+
+`claim_auto_merge_notices` provides an audit trail and candidate-facing
+acknowledgment state for each safe automatic merge. A survivor can have more
+than one pending notice. Acknowledging a claim closes all of its open notices;
+when it is `auto_accepted` and none remain, its status becomes `accepted`.
+
+| Column | Type | Constraints | Purpose |
+| --- | --- | --- | --- |
+| `notice_id` | UUID | Primary key, generated | Stable auto-merge event identifier |
+| `candidate_id` | UUID | Required, candidate FK, cascade delete, indexed | Notice owner |
+| `survivor_claim_id` | UUID | Required, claim FK, cascade delete, indexed with status | Published claim carrying the notice |
+| `superseded_claim_ids` | UUID array | Required, nonempty | Claims retired by this merge |
+| `messages` | Text array | Required, nonempty | Candidate-facing summary of merged fields or sources |
+| `status` | `claim_auto_merge_notice_status` | Required, defaults to `pending` | Acknowledgment lifecycle |
+| `created_at` | Timestamp with time zone | Required, generated | Merge time |
+| `updated_at` | Timestamp with time zone | Required, generated | Most recent notice update |
+| `acknowledged_at` | Timestamp with time zone | Nullable | Time the candidate acknowledged the notice |
 
 ## Claim pair decisions
 

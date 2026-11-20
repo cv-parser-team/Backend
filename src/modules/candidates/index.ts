@@ -1,5 +1,6 @@
-import { FastifyPluginAsync } from 'fastify';
+import { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
+import type { UsersService } from '../users/users.service.js';
 import {
   createCandidateExtractionWriter as createWriter,
   type CandidateExtractionWriter,
@@ -50,6 +51,27 @@ export function createCandidateEntityMatcher(
     repository: createCandidatesRepository(database),
     ...(termLookup ? { termLookup } : {})
   });
+}
+
+// Background processing needs only the safe post-extraction duplicate scan,
+// not the HTTP plugin. Keep that composition inside this module so workers do
+// not need to register candidate routes to access it.
+export function createCandidateAutoMergeRunner(
+  database: AppDatabase,
+  usersService: Pick<UsersService, 'getUserById'>,
+  normalizer: Parameters<typeof createCandidatesService>[0]['normalizer'],
+  logger: Pick<FastifyBaseLogger, 'warn'>
+): Pick<ReturnType<typeof createCandidatesService>, 'autoAcceptHighConfidenceDuplicates'> {
+  const service = createCandidatesService({
+    repository: createCandidatesRepository(database),
+    usersService,
+    normalizer,
+    logger
+  });
+  return {
+    autoAcceptHighConfidenceDuplicates:
+      service.autoAcceptHighConfidenceDuplicates
+  };
 }
 
 export type {

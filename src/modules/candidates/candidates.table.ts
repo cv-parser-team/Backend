@@ -74,8 +74,18 @@ export const claimOrigin = pgEnum('claim_origin', ['manual', 'extracted']);
 export const claimStatus = pgEnum('claim_status', [
   'pending',
   'accepted',
+  // Published like `accepted`, but produced or updated by an automatic
+  // duplicate merge and still awaiting the candidate's acknowledgment. On
+  // acknowledge it flips to `accepted`. Profile export treats it like
+  // `accepted`.
+  'auto_accepted',
   'rejected'
 ]);
+
+export const claimAutoMergeNoticeStatus = pgEnum(
+  'claim_auto_merge_notice_status',
+  ['pending', 'acknowledged']
+);
 
 export const claimDatePrecision = pgEnum('claim_date_precision', [
   'year',
@@ -195,6 +205,62 @@ export const claims = pgTable(
         and ${table.extractionFieldSources} is not null
         and ${table.extractionCurrent} is not null
       )`
+    )
+  ]
+);
+
+// One row per automatic duplicate-merge event on the surviving claim. Holds
+// human-readable messages, the ids of the superseded duplicate claims, and the
+// acknowledgment lifecycle so the candidate can review what the system merged.
+export const claimAutoMergeNotices = pgTable(
+  'claim_auto_merge_notices',
+  {
+    noticeId: uuid('notice_id').primaryKey().defaultRandom().notNull(),
+    candidateId: uuid('candidate_id')
+      .notNull()
+      .references(() => candidates.candidateId, { onDelete: 'cascade' }),
+    survivorClaimId: uuid('survivor_claim_id')
+      .notNull()
+      .references(() => claims.claimId, { onDelete: 'cascade' }),
+    // The claim(s) retired by this auto-merge; never empty so every notice
+    // documents at least one duplicate.
+    supersededClaimIds: uuid('superseded_claim_ids').array().notNull(),
+    // Short, human-readable copy derived from the compared field differences.
+    messages: text('messages').array().notNull(),
+    status: claimAutoMergeNoticeStatus('status')
+      .default('pending')
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+    acknowledgedAt: timestamp('acknowledged_at', {
+      withTimezone: true,
+      mode: 'date'
+    })
+  },
+  (table) => [
+    index('claim_auto_merge_notices_survivor_status_idx').on(
+      table.survivorClaimId,
+      table.status
+    ),
+    index('claim_auto_merge_notices_candidate_id_idx').on(table.candidateId),
+    check(
+      'claim_auto_merge_notices_superseded_not_empty',
+      sql`cardinality(${table.supersededClaimIds}) > 0`
+    ),
+    check(
+      'claim_auto_merge_notices_messages_not_empty',
+      sql`cardinality(${table.messages}) > 0`
     )
   ]
 );
@@ -453,3 +519,6 @@ export const claimRevisions = pgTable(
   },
   (table) => [index('claim_revisions_claim_id_idx').on(table.claimId)]
 );
+
+export type ClaimAutoMergeNoticeRecord = typeof claimAutoMergeNotices.$inferSelect;
+export type NewClaimAutoMergeNotice = typeof claimAutoMergeNotices.$inferInsert;

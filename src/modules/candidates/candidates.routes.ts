@@ -24,6 +24,8 @@ import {
   resolveClaimBatchBodySchema,
   ReviewClaimBody,
   reviewClaimBodySchema,
+  AcknowledgeAutoMergeBody,
+  acknowledgeAutoMergeBodySchema,
   UpdateCandidateBody,
   updateCandidateBodySchema
 } from './candidates.schemas.js';
@@ -601,6 +603,43 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
         parseIfMatchVersion(request.headers['if-match'])
       );
       return reply.status(204).send();
+    }
+  );
+
+  fastify.post<{ Params: ClaimParams; Body: AcknowledgeAutoMergeBody }>(
+    '/me/claims/:claimId/acknowledge-auto-merge',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Acknowledge an auto-merged claim',
+        description:
+          'Marks open auto-merge notices for the claim as acknowledged. When the claim is auto_accepted and no pending notices remain, its status flips to accepted.',
+        security: candidateSecurity,
+        headers: ifMatchHeadersSchema,
+        params: claimParamsSchema,
+        body: acknowledgeAutoMergeBodySchema,
+        response: {
+          200: documentedResponse('Acknowledge result'),
+          400: documentedResponse('Invalid claim ID'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Claim not found'),
+          409: documentedResponse('Claim version conflict')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.acknowledgeAutoMerge(
+        request.auth.userId,
+        request.params.claimId,
+        parseIfMatchVersion(request.headers['if-match'])
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+      return response;
     }
   );
 };
