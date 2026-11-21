@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { LlmError } from '../../infrastructure/llm/llm.errors.js';
 import type { LlmService } from '../../infrastructure/llm/llm.service.js';
 import type { MergeCandidateClaim } from './candidates.claim-comparison.js';
 import {
   createDuplicateJudge,
+  DUPLICATE_JUDGMENT_RETRY_DELAYS_MS,
   DUPLICATE_JUDGMENT_TASK,
   haveCloseDateRanges
 } from './candidates.duplicate-ai.js';
@@ -94,6 +96,77 @@ describe('close claim date ranges', () => {
       haveCloseDateRanges(base, claim(base.values, { claimType: 'project' }))
     ).toBe(false);
   });
+
+  it('treats a current role as running until its source date or now', () => {
+    const asOf = new Date('2026-11-15T00:00:00.000Z');
+    const current = claim(
+      { employer: 'Northstar Labs', jobTitle: 'Backend Engineer', startDate: '2022-01' },
+      { current: true }
+    );
+    const otherCurrent = claim(
+      { employer: 'Northstar Labs', jobTitle: 'Server-Side Engineer', startDate: '2022-02' },
+      { claimId: '33333333-3333-4333-8333-333333333333', current: true }
+    );
+    const endedRecently = claim(
+      {
+        employer: 'Northstar Labs',
+        jobTitle: 'Backend Engineer',
+        startDate: '2022-01',
+        endDate: '2026-06'
+      },
+      { claimId: '33333333-3333-4333-8333-333333333333' }
+    );
+    const endedLongAgo = claim(
+      {
+        employer: 'Northstar Labs',
+        jobTitle: 'Backend Engineer',
+        startDate: '2022-01',
+        endDate: '2023-01'
+      },
+      { claimId: '33333333-3333-4333-8333-333333333333' }
+    );
+
+    expect(haveCloseDateRanges(current, otherCurrent, asOf)).toBe(true);
+    expect(haveCloseDateRanges(current, endedRecently, asOf)).toBe(true);
+    expect(haveCloseDateRanges(current, endedLongAgo, asOf)).toBe(false);
+    expect(
+      haveCloseDateRanges(
+        { ...current, currentAsOf: '2023-01' },
+        endedLongAgo,
+        asOf
+      )
+    ).toBe(true);
+  });
+
+  it('compares education by the graduation date when neither gives a start', () => {
+    const graduated = claim(
+      { institution: 'UC Berkeley', degree: 'BSc', endDate: '2020-05' },
+      { claimType: 'education' }
+    );
+    const graduatedSoonAfter = claim(
+      { institution: 'University of California, Berkeley', degree: 'BSc', endDate: '2020-09' },
+      { claimId: '33333333-3333-4333-8333-333333333333', claimType: 'education' }
+    );
+    const graduatedLater = claim(
+      { institution: 'UC Berkeley', degree: 'BSc', endDate: '2023-05' },
+      { claimId: '33333333-3333-4333-8333-333333333333', claimType: 'education' }
+    );
+    const withStart = claim(
+      { institution: 'UC Berkeley', degree: 'BSc', startDate: '2016-09', endDate: '2020-05' },
+      { claimId: '33333333-3333-4333-8333-333333333333', claimType: 'education' }
+    );
+    const undated = claim(
+      { institution: 'UC Berkeley', degree: 'BSc' },
+      { claimId: '33333333-3333-4333-8333-333333333333', claimType: 'education' }
+    );
+
+    expect(haveCloseDateRanges(graduated, graduatedSoonAfter)).toBe(true);
+    expect(haveCloseDateRanges(graduated, graduatedLater)).toBe(false);
+    // A start date only one record gives leaves the ranges incomparable.
+    expect(haveCloseDateRanges(graduated, withStart)).toBe(false);
+    // Records without any date have no range to compare.
+    expect(haveCloseDateRanges(undated, { ...undated })).toBe(false);
+  });
 });
 
 describe('AI duplicate judge', () => {
@@ -166,6 +239,65 @@ describe('AI duplicate judge', () => {
     await expect(uncertain.judge.judge(left, right)).resolves.toEqual({
       status: 'uncertain',
       reason: 'The evidence is ambiguous.'
+    });
+  });
+
+  describe('retries', () => {
+    const answer = {
+      invocationId: '44444444-4444-4444-8444-444444444444',
+      output: { canMerge: true, confidence: 0.9, reason: 'The same role.' }
+    };
+    const judgeWithFailures = (generate: ReturnType<typeof vi.fn<LlmService['generate']>>) => {
+      const sleep = vi.fn<(milliseconds: number) => Promise<void>>().mockResolvedValue();
+      return {
+        sleep,
+        judge: createDuplicateJudge({
+          llmService: { generate },
+          provider: 'gemini',
+          model: 'flash-lite',
+          timeoutMs: 1_000,
+          sleep
+        })
+      };
+    };
+
+    it.each(['provider_unavailable', 'rate_limited', 'timeout'] as const)(
+      'asks again after a temporary %s failure',
+      async (category) => {
+        const generate = vi
+          .fn<LlmService['generate']>()
+          .mockRejectedValueOnce(new LlmError('Model unavailable', category))
+          .mockRejectedValueOnce(new LlmError('Model unavailable', category))
+          .mockResolvedValue(answer);
+        const { judge, sleep } = judgeWithFailures(generate);
+
+        await expect(judge.judge(left, right)).resolves.toMatchObject({
+          status: 'merge_candidate'
+        });
+        expect(generate).toHaveBeenCalledTimes(3);
+        expect(sleep.mock.calls).toEqual(
+          DUPLICATE_JUDGMENT_RETRY_DELAYS_MS.map((delay) => [delay])
+        );
+      }
+    );
+
+    it('gives up after the last retry', async () => {
+      const failure = new LlmError('Model unavailable', 'provider_unavailable');
+      const generate = vi.fn<LlmService['generate']>().mockRejectedValue(failure);
+      const { judge } = judgeWithFailures(generate);
+
+      await expect(judge.judge(left, right)).rejects.toBe(failure);
+      expect(generate).toHaveBeenCalledTimes(DUPLICATE_JUDGMENT_RETRY_DELAYS_MS.length + 1);
+    });
+
+    it('does not retry failures that will not pass with time', async () => {
+      const failure = new LlmError('Bad key', 'authentication');
+      const generate = vi.fn<LlmService['generate']>().mockRejectedValue(failure);
+      const { judge, sleep } = judgeWithFailures(generate);
+
+      await expect(judge.judge(left, right)).rejects.toBe(failure);
+      expect(generate).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
     });
   });
 });

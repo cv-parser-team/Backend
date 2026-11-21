@@ -60,6 +60,8 @@ export const config = {
   nodeEnv,
   isDev: nodeEnv === 'development',
   isProd: nodeEnv === 'production',
+  // The public URL of the API, listed in the OpenAPI document.
+  publicApiUrl: process.env.PUBLIC_API_URL || 'http://localhost:4000',
   db: {
     url: extractOrThrow('DATABASE_URL')
   },

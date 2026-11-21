@@ -44,6 +44,7 @@ import {
 import { ClaimAutoMergeNoticeRecord, ClaimSourceAnchor, ProfileLink } from './candidates.table.js';
 import {
   type DuplicateJudge,
+  type DuplicateJudgment,
   haveCloseDateRanges
 } from './candidates.duplicate-ai.js';
 
@@ -387,22 +388,18 @@ export function createCandidatesService({
   logger,
   duplicateJudge
 }: CandidatesServiceDependencies): CandidatesService {
-  const duplicateJudgmentCache = new Map<string, Promise<boolean>>();
+  // The AI verdict for each pair of claim versions. A failed judgment, such as
+  // a rate-limited provider, is not kept, so the next listing asks again.
+  const duplicateJudgmentCache = new Map<
+    string,
+    Promise<DuplicateJudgment['status'] | 'failed'>
+  >();
 
-  async function aiAllowsCloseDateProposal(
+  function judgeDuplicate(
     left: MergeCandidateClaim,
     right: MergeCandidateClaim,
-    proposal: ClaimMergeProposalResult
-  ): Promise<boolean> {
-    if (
-      proposal.result !== 'proposal' ||
-      proposal.identity !== 'suspected_duplicate' ||
-      !duplicateJudge ||
-      !haveCloseDateRanges(left, right)
-    ) {
-      return proposal.result === 'proposal';
-    }
-
+    judge: DuplicateJudge
+  ): Promise<DuplicateJudgment['status'] | 'failed'> {
     const key = claimPairVersionKey(
       left.claimId,
       left.version,
@@ -411,19 +408,47 @@ export function createCandidatesService({
     );
     let judgment = duplicateJudgmentCache.get(key);
     if (!judgment) {
-      judgment = duplicateJudge
+      judgment = judge
         .judge(left, right)
-        .then((result) => result.status !== 'different')
+        .then((result) => result.status)
         .catch((error: unknown) => {
+          duplicateJudgmentCache.delete(key);
           logger.warn(
             { err: error, leftClaimId: left.claimId, rightClaimId: right.claimId },
-            'AI duplicate judgment failed; retaining candidate review'
+            'AI duplicate judgment failed'
           );
-          return true;
+          return 'failed' as const;
         });
       duplicateJudgmentCache.set(key, judgment);
     }
     return judgment;
+  }
+
+  // Records whose names differ are offered only when AI finds them the same.
+  // Records with similar names are offered unless AI finds them different;
+  // either way the candidate makes the final decision.
+  async function aiAllowsCloseDateProposal(
+    left: MergeCandidateClaim,
+    right: MergeCandidateClaim,
+    proposal: ClaimMergeProposalResult
+  ): Promise<boolean> {
+    if (proposal.result !== 'proposal') {
+      return false;
+    }
+    if (proposal.identity === 'possible_duplicate') {
+      return (
+        duplicateJudge !== undefined &&
+        (await judgeDuplicate(left, right, duplicateJudge)) === 'merge_candidate'
+      );
+    }
+    if (
+      proposal.identity !== 'suspected_duplicate' ||
+      !duplicateJudge ||
+      !haveCloseDateRanges(left, right)
+    ) {
+      return true;
+    }
+    return (await judgeDuplicate(left, right, duplicateJudge)) !== 'different';
   }
   // The claim is already saved. If normalization fails, the claim stays
   // without a decision and is treated as unmatched; it can be normalized again.

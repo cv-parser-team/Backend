@@ -293,18 +293,60 @@ describe('claim identity comparison', () => {
     });
   });
 
-  it('keeps employment with different employer or title distinct', () => {
+  it('keeps employment with different employer or title distinct when dates are distant', () => {
     const base = {
       employer: 'Example Labs',
       jobTitle: 'Backend Engineer',
-      startDate: '2020'
+      startDate: '2020-01',
+      endDate: '2021-01'
     };
+    const later = { startDate: '2022-06', endDate: '2024-01' };
 
     expect(
-      compareClaimIdentity(claim(base), claim({ ...base, employer: 'Other Labs' }))
+      compareClaimIdentity(claim(base), claim({ ...base, ...later, employer: 'Other Labs' }))
     ).toEqual({ result: 'different' });
     expect(
-      compareClaimIdentity(claim(base), claim({ ...base, jobTitle: 'Designer' }))
+      compareClaimIdentity(claim(base), claim({ ...base, ...later, jobTitle: 'Designer' }))
+    ).toEqual({ result: 'different' });
+    // Without comparable dates, names alone decide.
+    expect(
+      compareClaimIdentity(
+        claim({ employer: 'Example Labs', jobTitle: 'Backend Engineer' }),
+        claim({ employer: 'Example Labs', jobTitle: 'Designer' })
+      )
+    ).toEqual({ result: 'different' });
+  });
+
+  it('leaves employment with different names but close dates for AI to judge', () => {
+    const base = {
+      employer: 'Arowwai Industries',
+      jobTitle: 'Administrative Employee',
+      startDate: '2023-10'
+    };
+
+    // A reworded job title of the same role.
+    expect(
+      compareClaimIdentity(
+        claim(base, { current: true }),
+        claim(
+          { ...base, jobTitle: 'Administrative Operations Specialist' },
+          { current: true }
+        )
+      )
+    ).toEqual({ result: 'possible_duplicate' });
+    // A renamed employer.
+    expect(
+      compareClaimIdentity(
+        claim({ employer: 'Facebook', jobTitle: 'Engineer', startDate: '2019-03', endDate: '2022-01' }),
+        claim({ employer: 'Meta', jobTitle: 'Engineer', startDate: '2019-04', endDate: '2022-02' })
+      )
+    ).toEqual({ result: 'possible_duplicate' });
+    // Consecutive roles at one employer share only a boundary.
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, jobTitle: 'Office Coordinator', startDate: '2020-10', endDate: '2021-10' }),
+        claim({ ...base, jobTitle: 'HR & Employee Support', startDate: '2021-10', endDate: '2023-10' })
+      )
     ).toEqual({ result: 'different' });
   });
 
@@ -382,17 +424,51 @@ describe('claim identity comparison', () => {
       compareClaimIdentity(
         claim(base, { claimType: 'education' }),
         claim(
-          { ...base, institution: 'Other University' },
+          { ...base, institution: 'Other University', startDate: '2023' },
           { claimType: 'education' }
         )
       )
     ).toEqual({ result: 'different' });
+    // The same dates leave a differently named institution for AI to judge.
+    expect(
+      compareClaimIdentity(
+        claim(base, { claimType: 'education' }),
+        claim(
+          { ...base, institution: 'Other University' },
+          { claimType: 'education' }
+        )
+      )
+    ).toEqual({ result: 'possible_duplicate' });
+    expect(
+      compareClaimIdentity(
+        claim(base, { claimType: 'education' }),
+        claim({ ...base, degree: 'MSc', startDate: '2023' }, { claimType: 'education' })
+      )
+    ).toEqual({ result: 'different' });
+    // A degree written differently with the same dates is left for AI.
     expect(
       compareClaimIdentity(
         claim(base, { claimType: 'education' }),
         claim({ ...base, degree: 'MSc' }, { claimType: 'education' })
       )
-    ).toEqual({ result: 'different' });
+    ).toEqual({ result: 'possible_duplicate' });
+  });
+
+  it('leaves a shortened degree with the same dates for AI to judge', () => {
+    const dates = { startDate: '2018-01', endDate: '2018-12' };
+
+    expect(
+      compareClaimIdentity(
+        claim(
+          { ...dates, degree: 'Foundation in Business Administration', institution: 'Borcelle University' },
+          { claimType: 'education' }
+        ),
+        claim(
+          { ...dates, degree: 'Foundation', institution: 'Borcelle Univ.' },
+          { claimType: 'education' }
+        )
+      )
+    ).toEqual({ result: 'possible_duplicate' });
   });
 
   it('identifies projects with matching names and URLs', () => {
@@ -551,12 +627,26 @@ describe('claim identity comparison', () => {
           { claimType: 'education' }
         )
       )
+    ).toEqual({ result: 'possible_duplicate' });
+    expect(
+      compareClaimIdentity(
+        claim({ ...base, institution: 'Jordan University' }, { claimType: 'education' }),
+        claim(
+          { ...base, institution: 'Jordan University of Science and Technology', endDate: '2023' },
+          { claimType: 'education' }
+        )
+      )
     ).toEqual({ result: 'different' });
     expect(
       compareClaimIdentity(
         claim({ ...base, institution: 'University of Jordan' }, { claimType: 'education' }),
         claim(
-          { ...base, institution: 'University of Jordan', degree: 'Master of Science' },
+          {
+            ...base,
+            institution: 'University of Jordan',
+            degree: 'Master of Science',
+            endDate: '2023'
+          },
           { claimType: 'education' }
         )
       )

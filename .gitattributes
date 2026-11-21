@@ -1,3 +1,6 @@
 # Never convert line endings in documents; PDFs store byte offsets.
 *.pdf binary
 *.docx binary
+
+# Shell scripts run on Linux servers.
+*.sh text eol=lf

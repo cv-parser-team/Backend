@@ -1041,6 +1041,165 @@ describe('claim merge candidate discovery service', () => {
     expect(judge).toHaveBeenCalledOnce();
   });
 
+  describe('records named differently with close dates', () => {
+    const rightClaimId = '44444444-4444-4444-8444-444444444444';
+    const rewordedRoles = () => [
+      claimRecord({
+        claimType: 'employment',
+        origin: 'extracted',
+        status: 'pending',
+        current: true,
+        values: {
+          employer: 'Arowwai Industries',
+          jobTitle: 'Administrative Employee',
+          startDate: '2023-10'
+        }
+      }),
+      claimRecord({
+        claimId: rightClaimId,
+        claimType: 'employment',
+        origin: 'extracted',
+        status: 'pending',
+        current: true,
+        values: {
+          employer: 'Arowwai Industries',
+          jobTitle: 'Administrative Operations Specialist',
+          startDate: '2023-10'
+        }
+      })
+    ];
+
+    it('offers them to the candidate when AI finds them the same', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.listClaims).mockResolvedValue(rewordedRoles());
+      const judge = vi.fn<DuplicateJudge['judge']>().mockResolvedValue({
+        status: 'merge_candidate',
+        confidence: 0.92,
+        reason: 'The same role described with a reworded title.'
+      });
+      const service = createService(
+        repository,
+        createNormalizerDouble(),
+        { warn: vi.fn() },
+        { judge }
+      );
+
+      await expect(service.listClaimMergeCandidates(userId)).resolves.toMatchObject([
+        {
+          result: 'proposal',
+          identity: 'possible_duplicate',
+          recommendedAction: 'candidate_review',
+          unresolvedFields: ['jobTitle']
+        }
+      ]);
+      vi.mocked(repository.findClaim).mockImplementation(async (_, id) =>
+        rewordedRoles().find((claim) => claim.claimId === id) ?? null
+      );
+      await expect(
+        service.getClaimMergeProposal(userId, claimId, rightClaimId)
+      ).resolves.toMatchObject({ result: 'proposal', identity: 'possible_duplicate' });
+      // The verdict is cached for the same claim versions.
+      expect(judge).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ['finds them different', { status: 'different', confidence: 0.9, reason: 'Two roles.' }],
+      ['is uncertain', { status: 'uncertain', reason: 'Not enough evidence.' }]
+    ] as const)('does not offer them when AI %s', async (_, judgment) => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.listClaims).mockResolvedValue(rewordedRoles());
+      const judge = vi.fn<DuplicateJudge['judge']>().mockResolvedValue(judgment);
+
+      await expect(
+        createService(
+          repository,
+          createNormalizerDouble(),
+          { warn: vi.fn() },
+          { judge }
+        ).listClaimMergeCandidates(userId)
+      ).resolves.toEqual([]);
+    });
+
+    it('does not offer them when AI fails or is not configured', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.listClaims).mockResolvedValue(rewordedRoles());
+      const logger = { warn: vi.fn() };
+      const judge = vi
+        .fn<DuplicateJudge['judge']>()
+        .mockRejectedValue(new Error('provider unavailable'));
+
+      await expect(
+        createService(repository, createNormalizerDouble(), logger, {
+          judge
+        }).listClaimMergeCandidates(userId)
+      ).resolves.toEqual([]);
+      expect(logger.warn).toHaveBeenCalledOnce();
+      await expect(
+        createService(repository).listClaimMergeCandidates(userId)
+      ).resolves.toEqual([]);
+    });
+
+    it('asks AI again after a failed judgment', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.listClaims).mockResolvedValue(rewordedRoles());
+      const judge = vi
+        .fn<DuplicateJudge['judge']>()
+        .mockRejectedValueOnce(new Error('rate limited'))
+        .mockResolvedValue({
+          status: 'merge_candidate',
+          confidence: 0.95,
+          reason: 'The same role.'
+        });
+      const service = createService(
+        repository,
+        createNormalizerDouble(),
+        { warn: vi.fn() },
+        { judge }
+      );
+
+      await expect(service.listClaimMergeCandidates(userId)).resolves.toEqual([]);
+      await expect(service.listClaimMergeCandidates(userId)).resolves.toHaveLength(1);
+      await expect(service.listClaimMergeCandidates(userId)).resolves.toHaveLength(1);
+      expect(judge).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not ask AI about consecutive roles at one employer', async () => {
+      const repository = createRepositoryDouble();
+      vi.mocked(repository.listClaims).mockResolvedValue([
+        claimRecord({
+          claimType: 'employment',
+          values: {
+            employer: 'Arowwai Industries',
+            jobTitle: 'Office Coordinator',
+            startDate: '2020-10',
+            endDate: '2021-10'
+          }
+        }),
+        claimRecord({
+          claimId: rightClaimId,
+          claimType: 'employment',
+          values: {
+            employer: 'Arowwai Industries',
+            jobTitle: 'HR & Employee Support',
+            startDate: '2021-10',
+            endDate: '2023-10'
+          }
+        })
+      ]);
+      const judge = vi.fn<DuplicateJudge['judge']>();
+
+      await expect(
+        createService(
+          repository,
+          createNormalizerDouble(),
+          { warn: vi.fn() },
+          { judge }
+        ).listClaimMergeCandidates(userId)
+      ).resolves.toEqual([]);
+      expect(judge).not.toHaveBeenCalled();
+    });
+  });
+
   it('retains close education ranges approved or left uncertain by AI', async () => {
     const repository = createRepositoryDouble();
     vi.mocked(repository.listClaims).mockResolvedValue([

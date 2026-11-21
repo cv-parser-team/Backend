@@ -1,0 +1,10 @@
+# Used together with compose.production.yml on a single server that also
+# serves the frontend. Caddy serves the built frontend and sends /api and
+# /docs to the API; see docs/deployment-single-host.md.
+services:
+  caddy:
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./Caddyfile.single-host:/etc/caddy/Caddyfile:ro
+      - ${FRONTEND_DIST:-/srv/luminacv/frontend-dist}:/srv/frontend:ro

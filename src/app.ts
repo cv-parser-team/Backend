@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import swagger from '@fastify/swagger';
 import swaggerUI from '@fastify/swagger-ui';
 
+import { config } from './config/config.js';
 import { databasePlugin } from './infrastructure/database/database.plugin.js';
 import { AppDatabase } from './infrastructure/database/database.js';
 import { errorHandlerPlugin } from './infrastructure/http/error-handler.plugin.js';
@@ -49,7 +50,10 @@ export async function createApp(
         version: '1.0.0'
       },
       servers: [
-        { url: 'http://localhost:4000', description: 'Local development' }
+        {
+          url: config.publicApiUrl,
+          description: config.isProd ? 'Production' : 'Local development'
+        }
       ],
       tags: [
         { name: 'Auth', description: 'Registration and access-token lifecycle' },

@@ -62,6 +62,8 @@ export type ClaimIdentityComparisonResult =
     }
   | { result: 'equivalent' }
   | { result: 'suspected_duplicate' }
+  // Names differ but the dates are close; only AI may offer it as a merge.
+  | { result: 'possible_duplicate' }
   | { result: 'different' }
   | { result: 'unsupported_type' };
 
@@ -148,7 +150,7 @@ export type ClaimMergeProposalResult =
       result: 'proposal';
       // Both claims have this type, so clients can label the proposal.
       claimType: ClaimType;
-      identity: 'equivalent' | 'suspected_duplicate';
+      identity: 'equivalent' | 'suspected_duplicate' | 'possible_duplicate';
       left: { claimId: string; version: number };
       right: { claimId: string; version: number };
       survivorClaimId: string | null;
@@ -1113,6 +1115,95 @@ export function compareClaims(
     : { result: 'different' };
 }
 
+// Two date boundaries are close when they differ by at most this many months.
+export const CLOSE_DATE_RANGE_MONTHS = 12;
+
+interface DateInterval {
+  lower: number;
+  upper: number;
+}
+
+function dateInterval(value: unknown): DateInterval | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})(?:-(0[1-9]|1[0-2]))?$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = match[2] ? Number(match[2]) : null;
+  return {
+    lower: year * 12 + (month ?? 1),
+    upper: year * 12 + (month ?? 12)
+  };
+}
+
+function intervalDistance(left: DateInterval, right: DateInterval): number {
+  if (left.upper < right.lower) return right.lower - left.upper;
+  if (right.upper < left.lower) return left.lower - right.upper;
+  return 0;
+}
+
+function monthInterval(date: Date): DateInterval {
+  const month = date.getUTCFullYear() * 12 + date.getUTCMonth() + 1;
+  return { lower: month, upper: month };
+}
+
+// A current role or study runs until its reliable source date, or until now
+// when the source date is unknown.
+function endInterval(claim: ComparableClaim, asOf: Date): DateInterval | null {
+  if (claim.current) {
+    return dateInterval(claim.currentAsOf) ?? monthInterval(asOf);
+  }
+  return dateInterval(claim.values.endDate);
+}
+
+// A boundary both claims state must be close. A boundary neither states is
+// not compared, as when two CVs give only a graduation date. A boundary only
+// one claim states leaves the ranges incomparable.
+type BoundaryComparison = 'close' | 'distant' | 'absent' | 'one_sided';
+
+function compareBoundary(
+  left: DateInterval | null,
+  right: DateInterval | null
+): BoundaryComparison {
+  if (!left && !right) return 'absent';
+  if (!left || !right) return 'one_sided';
+  return intervalDistance(left, right) <= CLOSE_DATE_RANGE_MONTHS ? 'close' : 'distant';
+}
+
+// Only employment and education records with close date ranges go to AI.
+// Distant or incomparable ranges stay with the name comparison.
+export function haveCloseDateRanges(
+  left: ComparableClaim,
+  right: ComparableClaim,
+  asOf: Date = new Date()
+): boolean {
+  if (
+    left.claimType !== right.claimType ||
+    (left.claimType !== 'employment' && left.claimType !== 'education')
+  ) {
+    return false;
+  }
+  const boundaries = [
+    compareBoundary(dateInterval(left.values.startDate), dateInterval(right.values.startDate)),
+    compareBoundary(endInterval(left, asOf), endInterval(right, asOf))
+  ];
+  return (
+    boundaries.includes('close') &&
+    boundaries.every((boundary) => boundary === 'close' || boundary === 'absent')
+  );
+}
+
+// A CV may name the same role or study differently: a reworded job title, or
+// an employer renamed from Facebook to Meta. Names alone cannot tell, so
+// records with close dates stay possible duplicates for AI to judge.
+function differentNamesIdentity(
+  left: ComparableClaim,
+  right: ComparableClaim
+): Extract<ClaimIdentityComparisonResult, { result: 'possible_duplicate' | 'different' }> {
+  return haveCloseDateRanges(left, right)
+    ? { result: 'possible_duplicate' }
+    : { result: 'different' };
+}
+
 export function compareClaimIdentity(
   left: ComparableClaim,
   right: ComparableClaim
@@ -1127,7 +1218,7 @@ export function compareClaimIdentity(
   if (left.claimType === 'employment') {
     const names = compareIdentityNames(left, right, ['employer', 'jobTitle']);
     if (names === 'different') {
-      return { result: 'different' };
+      return differentNamesIdentity(left, right);
     }
     return names === 'similar'
       ? { result: 'suspected_duplicate' }
@@ -1136,16 +1227,23 @@ export function compareClaimIdentity(
 
   if (left.claimType === 'education') {
     // Degrees are not compared by spelling: "BSc" and "MSc" look alike but
-    // differ. Only the same text or the same canonical term matches.
+    // differ. Only the same text or the same canonical term matches. Two
+    // different canonical terms are known to be different degrees. Otherwise a
+    // degree written differently with close dates, such as a shortened
+    // "Foundation", is left for AI, which keeps different levels and fields apart.
     if (
       !haveSameNormalizedTerm(left, right, 'degree') &&
       !requiredTextFieldsMatch(left.values, right.values, ['degree'])
     ) {
-      return { result: 'different' };
+      const leftTerm = left.normalizedTerms?.degree;
+      const rightTerm = right.normalizedTerms?.degree;
+      return leftTerm !== undefined && rightTerm !== undefined
+        ? { result: 'different' }
+        : differentNamesIdentity(left, right);
     }
     const institution = compareIdentityNames(left, right, ['institution']);
     if (institution === 'different') {
-      return { result: 'different' };
+      return differentNamesIdentity(left, right);
     }
     if (institution === 'similar') {
       return { result: 'suspected_duplicate' };

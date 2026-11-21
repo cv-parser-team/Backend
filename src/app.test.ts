@@ -149,7 +149,7 @@ describe('application', () => {
             security: [{ bearerAuth: [] }]
           }
         },
-        '/api/candidates/me/documents': {
+        '/api/candidates/me/documents/': {
           post: {
             tags: ['Documents'],
             summary: 'Upload candidate documents',
@@ -164,7 +164,7 @@ describe('application', () => {
         '/api/candidates/me/documents/{documentId}/content': {
           get: { summary: 'Download document content' }
         },
-        '/api/users': {
+        '/api/users/': {
           get: {
             tags: ['Users'],
             summary: 'List users',
@@ -174,7 +174,7 @@ describe('application', () => {
         '/api/users/{id}': {
           get: { summary: 'Get a user' }
         },
-        '/api/candidates/me/extraction-review-items': {
+        '/api/candidates/me/extraction-review-items/': {
           get: {
             tags: ['Extraction'],
             summary: 'List extraction review items'
