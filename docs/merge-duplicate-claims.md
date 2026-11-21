@@ -97,6 +97,14 @@ A missing optional field neither proves nor disproves identity. A mismatch in
 an identifying field produces a suspected duplicate rather than an automatic
 merge unless an approved normalization establishes equivalence.
 
+For employment and education, suspected duplicates whose start and end
+boundaries are each within 12 months receive a bounded AI identity check. The
+AI sees only the two structured claims and decides whether they may remain a
+merge candidate. A confident negative suppresses the suggestion; a positive,
+uncertain, invalid, or unavailable AI result never auto-merges claims and
+leaves the final decision with the candidate. Results are cached by claim
+version for the lifetime of the API process to avoid repeated model calls.
+
 ## 5. Authority and survivor selection
 
 Value precedence is:
@@ -160,6 +168,11 @@ auto-merges unedited extracted claims. It keeps the oldest claim, writes the
 merged compatible values, combines source occurrences without duplicates, and
 retires the other claim. The survivor becomes `auto_accepted`, is exported,
 and carries a pending auto-merge notice until the candidate acknowledges it.
+The notice stores the pre-merge claim values and physical source evidence so
+the review drawer can name and preview every original source. Before
+acknowledgment, the candidate may instead keep the claims separate; that
+restores the snapshots atomically and records the unchanged pairs as
+different so they are not immediately suggested again.
 
 If identity is uncertain or any field conflicts, both claims remain unchanged
 and the candidate receives a merge proposal with the conflicting fields. When

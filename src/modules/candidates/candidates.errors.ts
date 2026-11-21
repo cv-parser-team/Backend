@@ -55,6 +55,15 @@ export class ClaimNotReviewableError extends AppError {
   }
 }
 
+export class AutoMergeCannotBeRevertedError extends AppError {
+  readonly statusCode = 409;
+  readonly code = 'AUTO_MERGE_NOT_REVERSIBLE';
+
+  constructor(current: unknown) {
+    super('This automatic merge can no longer be kept separate', { current });
+  }
+}
+
 export class OverlappingBatchClaimsError extends AppError {
   readonly statusCode = 400;
   readonly code = 'OVERLAPPING_BATCH_CLAIMS';

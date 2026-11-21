@@ -201,6 +201,8 @@ creation but preserves the complete recognized claim as a review item.
 | --- | --- |
 | Valid item with every field at or above `0.95` confidence | An accepted extracted claim draft |
 | Valid item below `0.95` confidence | A pending extracted claim draft |
+| Education degree written as `Bachelor of Arts in Accounting` without a separate field | `degree: Bachelor of Arts`, `fieldOfStudy: Accounting` |
+| Skill value written as `React, TypeScript, Node.js` | One skill claim per comma-separated item |
 | Value with low confidence | Kept, with its confidence, so the candidate can review it |
 | Required field missing | No canonical claim; structured review item with `missing_<field>`, such as `missing_start_date` |
 | Required field invalid, such as a start date of `2021-13` or an empty name | No canonical claim; structured review item with `invalid_date` or `invalid_value` |

@@ -1,5 +1,11 @@
 import { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
+import { config } from '../../config/config.js';
 import type { AppDatabase } from '../../infrastructure/database/database.js';
+import {
+  createGeminiLlmClient,
+  createLlmRepository,
+  createLlmService
+} from '../../infrastructure/llm/index.js';
 import type { UsersService } from '../users/users.service.js';
 import {
   createCandidateExtractionWriter as createWriter,
@@ -13,14 +19,35 @@ import {
 import { createCandidatesRepository } from './candidates.repository.js';
 import { candidatesRoutes } from './candidates.routes.js';
 import { createCandidatesService } from './candidates.service.js';
+import { createDuplicateJudge, type DuplicateJudge } from './candidates.duplicate-ai.js';
 
 export const candidatesModule: FastifyPluginAsync = async (fastify) => {
   const repository = createCandidatesRepository(fastify.database);
+  const aiEnabled = config.candidates.duplicateAiEnabled && Boolean(config.llm.apiKey);
+  let duplicateJudge: DuplicateJudge | undefined;
+  const lazyDuplicateJudge: DuplicateJudge = {
+    judge(left, right) {
+      duplicateJudge ??= createDuplicateJudge({
+        llmService: createLlmService(
+          createGeminiLlmClient({
+            apiKey: config.llm.apiKey,
+            maximumInputCharacters: config.llm.maximumInputCharacters
+          }),
+          createLlmRepository(fastify.database)
+        ),
+        provider: config.llm.provider,
+        model: config.llm.model,
+        timeoutMs: config.llm.timeoutMs
+      });
+      return duplicateJudge.judge(left, right);
+    }
+  };
   const service = createCandidatesService({
     repository,
     usersService: fastify.usersService,
     normalizer: fastify.normalizationService,
-    logger: fastify.log
+    logger: fastify.log,
+    ...(aiEnabled ? { duplicateJudge: lazyDuplicateJudge } : {})
   });
 
   await fastify.register(candidatesRoutes, {

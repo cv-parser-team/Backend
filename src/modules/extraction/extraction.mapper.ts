@@ -250,6 +250,98 @@ interface ClaimMapping {
   reviewItems: ExtractionReviewItemDraft[];
 }
 
+const DEGREE_ABBREVIATIONS = new Set([
+  'aa', 'as', 'ba', 'bas', 'bba', 'beng', 'bfa', 'bs', 'bsc',
+  'edd', 'jd', 'ma', 'mba', 'meng', 'mfa', 'ms', 'msc', 'phd'
+]);
+
+function isRecognizedDegreePrefix(value: string): boolean {
+  const words = value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[’']/gu, '')
+    .trim();
+  if (/^(associate|bachelor|bachelors|master|masters|doctor|doctorate|diploma)\b/u.test(words)) {
+    return true;
+  }
+  return DEGREE_ABBREVIATIONS.has(words.replace(/[^a-z]/gu, ''));
+}
+
+// Providers sometimes keep an explicitly written discipline inside the degree
+// even though the contract has a separate field. Only split the unambiguous
+// "recognized degree in discipline" form; broader guesses belong in review.
+function separateEducationFieldOfStudy(claim: ExtractedClaim): ExtractedClaim {
+  if (claim.type !== 'education' || claim.fields.fieldOfStudy) {
+    return claim;
+  }
+  const degree = claim.fields.degree;
+  if (!degree || typeof degree.value !== 'string') {
+    return claim;
+  }
+  const match = /^(.*?)\s+in\s+(.+)$/iu.exec(degree.value.trim());
+  if (!match) {
+    return claim;
+  }
+  const degreeValue = match[1]?.trim() ?? '';
+  const fieldOfStudy = match[2]?.trim() ?? '';
+  if (!degreeValue || !fieldOfStudy || !isRecognizedDegreePrefix(degreeValue)) {
+    return claim;
+  }
+  return {
+    ...claim,
+    fields: {
+      ...claim.fields,
+      degree: { ...degree, value: degreeValue, raw: degreeValue },
+      fieldOfStudy: {
+        value: fieldOfStudy,
+        raw: fieldOfStudy,
+        confidence: degree.confidence,
+        sources: degree.sources
+      }
+    }
+  };
+}
+
+// A skill claim represents one skill. Preserve the same physical evidence for
+// every explicitly comma-delimited item while keeping each item independent.
+function separateCommaDelimitedSkills(claim: ExtractedClaim): ExtractedClaim[] {
+  if (claim.type !== 'skill') {
+    return [claim];
+  }
+  const name = claim.fields.name;
+  if (!name) {
+    return [claim];
+  }
+  const written = typeof name.value === 'string' ? [name.value] : name.value;
+  if (
+    !written ||
+    (written.length === 1 && !written[0]?.includes(','))
+  ) {
+    return [claim];
+  }
+  const seen = new Set<string>();
+  const names = written
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter((value) => {
+      const key = value.toLocaleLowerCase();
+      if (!value || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return names.map((value) => ({
+    ...claim,
+    fields: {
+      ...claim.fields,
+      name: { ...name, value, raw: value }
+    }
+  }));
+}
+
+function separateCombinedClaimValues(claim: ExtractedClaim): ExtractedClaim[] {
+  return separateCommaDelimitedSkills(separateEducationFieldOfStudy(claim));
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(',')}]`;
@@ -524,14 +616,16 @@ export function mapAiOutput(
       }
       continue;
     }
-    const { draft, reviewItems: claimReviewItems } = mapClaim(
-      item as ExtractedClaim,
-      availableSources
-    );
-    if (draft) {
-      claims.push(draft);
+    for (const separated of separateCombinedClaimValues(item as ExtractedClaim)) {
+      const { draft, reviewItems: claimReviewItems } = mapClaim(
+        separated,
+        availableSources
+      );
+      if (draft) {
+        claims.push(draft);
+      }
+      reviewItems.push(...claimReviewItems);
     }
-    reviewItems.push(...claimReviewItems);
   }
 
   for (const item of (output.unmapped ?? []) as unknown[]) {

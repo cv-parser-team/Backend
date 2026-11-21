@@ -9,6 +9,7 @@ import {
   certificationDetails,
   claimAutoMergeNotices,
   claimPairDecisions,
+  type AutoMergeClaimSnapshot,
   type ClaimAutoMergeNoticeRecord,
   type ClaimDatePrecision,
   ClaimExtractionMetadata,
@@ -98,6 +99,11 @@ export type AutoAcceptMergeClaimsResult =
       duplicate: ClaimRecord;
       notice: ClaimAutoMergeNoticeRecord;
     }
+  | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
+  | { status: 'missing' };
+
+export type KeepAutoMergedClaimsSeparateResult =
+  | { status: 'saved'; claims: ClaimRecord[] }
   | { status: 'conflict' | 'not_eligible'; current: ClaimRecord[] }
   | { status: 'missing' };
 
@@ -242,6 +248,11 @@ export interface CandidatesRepository {
     candidateId: string,
     survivorClaimId: string
   ): Promise<number>;
+  keepAutoMergedClaimsSeparate(
+    candidateId: string,
+    survivorClaimId: string,
+    expectedVersion?: number
+  ): Promise<KeepAutoMergedClaimsSeparateResult>;
   countOpenAutoMergeNotices(candidateId: string, survivorClaimId: string): Promise<number>;
   listOpenAutoMergeNotices(
     candidateId: string,
@@ -859,6 +870,48 @@ async function transferClaimSourceOccurrences(
   return { moved: moved.length, skipped: duplicateOccurrenceIds.length };
 }
 
+async function snapshotAutoMergeClaims(
+  transaction: DatabaseExecutor,
+  records: ClaimRecord[]
+): Promise<AutoMergeClaimSnapshot[]> {
+  const claimIds = records.map(({ claimId }) => claimId);
+  const occurrences = claimIds.length > 0
+    ? await transaction
+        .select({
+          occurrenceId: sourceOccurrences.occurrenceId,
+          claimId: sourceOccurrences.claimId,
+          documentId: sourceOccurrences.documentId,
+          anchorKey: sourceOccurrences.anchorKey,
+          sourceReferences: sourceOccurrences.sourceReferences,
+          fieldNames: sourceOccurrences.fieldNames,
+          anchor: sourceOccurrences.anchor
+        })
+        .from(sourceOccurrences)
+        .where(inArray(sourceOccurrences.claimId, claimIds))
+    : [];
+
+  return records.map((record) => ({
+    claimId: record.claimId,
+    claimType: record.claimType,
+    origin: record.origin,
+    status: record.status,
+    current: record.current,
+    values: record.values,
+    version: record.version,
+    sourceDocumentId: record.extraction?.sourceDocumentId ?? null,
+    sources: occurrences
+      .filter(({ claimId }) => claimId === record.claimId)
+      .sort((left, right) => left.anchorKey.localeCompare(right.anchorKey))
+      .map(({ documentId, anchorKey, sourceReferences, fieldNames, anchor }) => ({
+        documentId,
+        anchorKey,
+        sourceReferences,
+        fieldNames,
+        anchor
+      }))
+  }));
+}
+
 export function createCandidatesRepository(
   database: AppDatabase
 ): CandidatesRepository {
@@ -1040,6 +1093,11 @@ export function createCandidatesRepository(
                 return { status: 'not_eligible', current };
               }
 
+              const claimsBefore = await snapshotAutoMergeClaims(transaction, [
+                survivor,
+                duplicate
+              ]);
+
               const mergedCurrent = input.current ?? survivor.current;
               const valuesChanged = !haveSameClaimValues(
                 survivor.values,
@@ -1076,6 +1134,7 @@ export function createCandidatesRepository(
                 survivorClaimId: survivor.claimId,
                 supersededClaimIds: [duplicate.claimId],
                 messages: input.messages,
+                claimsBefore,
                 status: 'pending'
               });
               await transferClaimSourceOccurrences(
@@ -1178,6 +1237,11 @@ export function createCandidatesRepository(
                 return { status: 'not_eligible', current };
               }
 
+              const claimsBefore = await snapshotAutoMergeClaims(transaction, [
+                survivor,
+                duplicate
+              ]);
+
               const mergedCurrent = input.current ?? survivor.current;
               const valuesChanged = !haveSameClaimValues(
                 survivor.values,
@@ -1214,6 +1278,7 @@ export function createCandidatesRepository(
                 survivorClaimId: survivor.claimId,
                 supersededClaimIds: [duplicate.claimId],
                 messages: input.messages,
+                claimsBefore,
                 status: 'pending'
               });
               await transferClaimSourceOccurrences(
@@ -1324,6 +1389,228 @@ export function createCandidatesRepository(
           )
           .orderBy(desc(claimAutoMergeNotices.createdAt));
       });
+    },
+
+    async keepAutoMergedClaimsSeparate(
+      candidateId,
+      survivorClaimId,
+      expectedVersion
+    ) {
+      return withTransientRetry(() =>
+        withDbErrors('Claims', () =>
+          database.db.transaction(
+            async (transaction): Promise<KeepAutoMergedClaimsSeparateResult> => {
+              const notices = await transaction
+                .select()
+                .from(claimAutoMergeNotices)
+                .where(
+                  and(
+                    eq(claimAutoMergeNotices.candidateId, candidateId),
+                    eq(claimAutoMergeNotices.survivorClaimId, survivorClaimId),
+                    eq(claimAutoMergeNotices.status, 'pending')
+                  )
+                )
+                .orderBy(asc(claimAutoMergeNotices.createdAt))
+                .for('update');
+              if (notices.length === 0) {
+                const current = await selectClaims(
+                  transaction,
+                  and(
+                    eq(claims.candidateId, candidateId),
+                    eq(claims.claimId, survivorClaimId)
+                  )
+                );
+                return current.length === 0
+                  ? { status: 'missing' }
+                  : { status: 'not_eligible', current };
+              }
+              if (notices.some(({ claimsBefore }) => !claimsBefore)) {
+                const current = await selectClaims(
+                  transaction,
+                  and(
+                    eq(claims.candidateId, candidateId),
+                    eq(claims.claimId, survivorClaimId)
+                  )
+                );
+                return { status: 'not_eligible', current };
+              }
+
+              // The first snapshot for a claim is its state before this chain
+              // of automatic merges. Later survivor snapshots include earlier
+              // enrichments and therefore must not replace it.
+              const snapshots = new Map<string, AutoMergeClaimSnapshot>();
+              for (const notice of notices) {
+                for (const snapshot of notice.claimsBefore ?? []) {
+                  if (!snapshots.has(snapshot.claimId)) {
+                    snapshots.set(snapshot.claimId, snapshot);
+                  }
+                }
+              }
+              const survivorSnapshot = snapshots.get(survivorClaimId);
+              if (!survivorSnapshot || snapshots.size < 2) {
+                return { status: 'not_eligible', current: [] };
+              }
+
+              const claimIds = [...snapshots.keys()].sort();
+              const locked = await transaction
+                .select({ claimId: claims.claimId })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.candidateId, candidateId),
+                    inArray(claims.claimId, claimIds)
+                  )
+                )
+                .orderBy(asc(claims.claimId))
+                .for('update');
+              if (locked.length !== claimIds.length) {
+                return { status: 'missing' };
+              }
+
+              const current = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const currentById = new Map(
+                current.map((claim) => [claim.claimId, claim])
+              );
+              const survivor = currentById.get(survivorClaimId);
+              if (!survivor) {
+                return { status: 'missing' };
+              }
+              if (
+                expectedVersion !== undefined &&
+                survivor.version !== expectedVersion
+              ) {
+                return { status: 'conflict', current };
+              }
+              const eligible =
+                survivor.status === 'auto_accepted' &&
+                survivor.supersededByClaimId === null &&
+                claimIds.every((claimId) => {
+                  const claim = currentById.get(claimId);
+                  const snapshot = snapshots.get(claimId);
+                  return Boolean(
+                    claim &&
+                      snapshot &&
+                      claim.claimType === snapshot.claimType &&
+                      (claimId === survivorClaimId ||
+                        claim.supersededByClaimId === survivorClaimId)
+                  );
+                });
+              if (!eligible) {
+                return { status: 'not_eligible', current };
+              }
+
+              const updatedAt = new Date();
+              for (const snapshot of snapshots.values()) {
+                const claim = currentById.get(snapshot.claimId)!;
+                if (
+                  !haveSameClaimValues(claim.values, snapshot.values) ||
+                  claim.current !== snapshot.current
+                ) {
+                  await transaction.insert(claimRevisions).values({
+                    claimId: claim.claimId,
+                    previousValues: claim.values,
+                    previousCurrent: claim.current
+                  });
+                }
+                if (!haveSameClaimValues(claim.values, snapshot.values)) {
+                  await updateDetails(
+                    transaction,
+                    claim.claimId,
+                    claim.claimType,
+                    snapshot.values
+                  );
+                }
+                await transaction
+                  .update(claims)
+                  .set({
+                    status: snapshot.status,
+                    current: snapshot.current,
+                    supersededByClaimId: null,
+                    updatedAt,
+                    version: sql`${claims.version} + 1`
+                  })
+                  .where(eq(claims.claimId, claim.claimId));
+              }
+
+              await transaction
+                .delete(sourceOccurrences)
+                .where(inArray(sourceOccurrences.claimId, claimIds));
+              const restoredSources = [...snapshots.values()].flatMap(
+                (snapshot) =>
+                  snapshot.sources.map((source) => ({
+                    claimId: snapshot.claimId,
+                    documentId: source.documentId,
+                    anchorKey: source.anchorKey,
+                    sourceReferences: source.sourceReferences,
+                    fieldNames: source.fieldNames,
+                    anchor: source.anchor
+                  }))
+              );
+              if (restoredSources.length > 0) {
+                await transaction.insert(sourceOccurrences).values(restoredSources);
+              }
+
+              await transaction
+                .update(claimAutoMergeNotices)
+                .set({ status: 'reverted', updatedAt })
+                .where(
+                  inArray(
+                    claimAutoMergeNotices.noticeId,
+                    notices.map(({ noticeId }) => noticeId)
+                  )
+                );
+
+              const saved = await selectClaims(
+                transaction,
+                and(
+                  eq(claims.candidateId, candidateId),
+                  inArray(claims.claimId, claimIds)
+                )
+              );
+              const savedById = new Map(saved.map((claim) => [claim.claimId, claim]));
+              for (const duplicateId of claimIds.filter(
+                (claimId) => claimId !== survivorClaimId
+              )) {
+                const pair = [survivorClaimId, duplicateId].sort();
+                const left = savedById.get(pair[0]!);
+                const right = savedById.get(pair[1]!);
+                if (!left || !right) continue;
+                await transaction
+                  .insert(claimPairDecisions)
+                  .values({
+                    candidateId,
+                    leftClaimId: left.claimId,
+                    rightClaimId: right.claimId,
+                    leftVersion: left.version,
+                    rightVersion: right.version,
+                    decision: 'different',
+                    updatedAt
+                  })
+                  .onConflictDoUpdate({
+                    target: [
+                      claimPairDecisions.candidateId,
+                      claimPairDecisions.leftClaimId,
+                      claimPairDecisions.rightClaimId
+                    ],
+                    set: {
+                      leftVersion: left.version,
+                      rightVersion: right.version,
+                      decision: 'different',
+                      updatedAt
+                    }
+                  });
+              }
+              return { status: 'saved', claims: saved };
+            }
+          )
+        )
+      );
     },
 
     async mergeConfirmedClaims(input) {

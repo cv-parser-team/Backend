@@ -183,6 +183,13 @@
       "when": 1795190000000,
       "tag": "0025_auto_accepted_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795244913681,
+      "tag": "0026_auto_merge_review",
+      "breakpoints": true
     }
   ]
 }

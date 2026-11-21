@@ -3,6 +3,7 @@ import { UniqueConstraintViolationError } from '../../infrastructure/database/da
 import { AppError, RecordNotFoundError } from '../../shared/errors/app.error.js';
 import { UsersService } from '../users/users.service.js';
 import {
+  AutoMergeCannotBeRevertedError,
   CandidateProfileExistsError,
   ClaimNotReviewableError,
   ClaimTypeMismatchError,
@@ -41,6 +42,10 @@ import {
   UpdateCandidateBody
 } from './candidates.schemas.js';
 import { ClaimAutoMergeNoticeRecord, ClaimSourceAnchor, ProfileLink } from './candidates.table.js';
+import {
+  type DuplicateJudge,
+  haveCloseDateRanges
+} from './candidates.duplicate-ai.js';
 
 export interface CandidateProfile {
   candidateId: string;
@@ -241,6 +246,11 @@ export interface CandidatesService {
     status: ClaimRecord['status'];
     acknowledged: number;
   }>;
+  keepAutoMergedClaimsSeparate(
+    userId: string,
+    claimId: string,
+    expectedVersion?: number
+  ): Promise<{ claims: ClaimRecord[] }>;
   mergeConfirmedClaims(
     userId: string,
     input: ConfirmClaimMergeInput
@@ -302,6 +312,7 @@ export interface CandidatesServiceDependencies {
   usersService: Pick<UsersService, 'getUserById'>;
   normalizer: ClaimNormalizer;
   logger: Pick<FastifyBaseLogger, 'warn'>;
+  duplicateJudge?: DuplicateJudge;
 }
 
 function trimOptional(value: string | null | undefined): string | null {
@@ -373,8 +384,47 @@ export function createCandidatesService({
   repository,
   usersService,
   normalizer,
-  logger
+  logger,
+  duplicateJudge
 }: CandidatesServiceDependencies): CandidatesService {
+  const duplicateJudgmentCache = new Map<string, Promise<boolean>>();
+
+  async function aiAllowsCloseDateProposal(
+    left: MergeCandidateClaim,
+    right: MergeCandidateClaim,
+    proposal: ClaimMergeProposalResult
+  ): Promise<boolean> {
+    if (
+      proposal.result !== 'proposal' ||
+      proposal.identity !== 'suspected_duplicate' ||
+      !duplicateJudge ||
+      !haveCloseDateRanges(left, right)
+    ) {
+      return proposal.result === 'proposal';
+    }
+
+    const key = claimPairVersionKey(
+      left.claimId,
+      left.version,
+      right.claimId,
+      right.version
+    );
+    let judgment = duplicateJudgmentCache.get(key);
+    if (!judgment) {
+      judgment = duplicateJudge
+        .judge(left, right)
+        .then((result) => result.status !== 'different')
+        .catch((error: unknown) => {
+          logger.warn(
+            { err: error, leftClaimId: left.claimId, rightClaimId: right.claimId },
+            'AI duplicate judgment failed; retaining candidate review'
+          );
+          return true;
+        });
+      duplicateJudgmentCache.set(key, judgment);
+    }
+    return judgment;
+  }
   // The claim is already saved. If normalization fails, the claim stays
   // without a decision and is treated as unmatched; it can be normalized again.
   async function normalize(claim: ClaimRecord): Promise<void> {
@@ -606,7 +656,10 @@ export function createCandidatesService({
       if (!leftCandidate || !rightCandidate) {
         return { result: 'no_proposal', reason: 'rejected_claim' };
       }
-      return buildClaimMergeProposal(leftCandidate, rightCandidate);
+      const proposal = buildClaimMergeProposal(leftCandidate, rightCandidate);
+      return (await aiAllowsCloseDateProposal(leftCandidate, rightCandidate, proposal))
+        ? proposal
+        : { result: 'no_proposal', reason: 'different_identity' };
     },
 
     async listClaimMergeCandidates(userId) {
@@ -665,7 +718,10 @@ export function createCandidatesService({
             continue;
           }
           const proposal = buildClaimMergeProposal(left, right);
-          if (proposal.result === 'proposal') {
+          if (
+            proposal.result === 'proposal' &&
+            (await aiAllowsCloseDateProposal(left, right, proposal))
+          ) {
             proposals.push(proposal);
           }
         }
@@ -920,6 +976,28 @@ export function createCandidatesService({
         }
       }
       return { status, acknowledged };
+    },
+
+    async keepAutoMergedClaimsSeparate(userId, claimId, expectedVersion) {
+      const candidate = await requireCandidate(userId);
+      const result = await repository.keepAutoMergedClaimsSeparate(
+        candidate.candidateId,
+        claimId,
+        expectedVersion
+      );
+      if (result.status === 'missing') {
+        throw new RecordNotFoundError('Claim', claimId);
+      }
+      if (result.status === 'conflict') {
+        throw new VersionConflictError('Claim', result.current);
+      }
+      if (result.status === 'not_eligible') {
+        throw new AutoMergeCannotBeRevertedError(result.current);
+      }
+      if (result.status === 'saved') {
+        return { claims: result.claims };
+      }
+      throw new Error('Unexpected auto-merge reversal result');
     },
 
     async mergeConfirmedClaims(userId, input) {

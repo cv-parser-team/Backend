@@ -9,7 +9,7 @@ import {
   aiGenerationSchema
 } from './extraction.schemas.js';
 
-export const EXTRACTION_PROMPT_VERSION = 'candidate-extraction-v5';
+export const EXTRACTION_PROMPT_VERSION = 'candidate-extraction-v6';
 
 export const EXTRACTION_PROMPT = `Extract candidate information from the supplied CV text.
 Use only explicitly stated information and never infer missing values or source references.
@@ -33,6 +33,10 @@ Claim fields by type:
 - certification: title, issuer, and issueDate are required; expiryDate and credentialId are optional
 - language: name, proficiency
 - project: name is required; description, role, url, startDate, endDate, and skills are optional
+
+Separate values that the CV writes together when their roles are explicit:
+- Education: split a combined credential such as "Bachelor of Arts in Accounting" into degree "Bachelor of Arts" and fieldOfStudy "Accounting". Do not keep the field of study inside degree, and do not infer a field when the text does not state one.
+- Skills: when a skills line contains comma-separated skills such as "React, TypeScript, Node.js", emit one skill claim per item. Never emit the whole comma-separated list as one skill name. Do not split commas outside an explicit skills list or split a multi-word skill.
 
 "Required" describes downstream completeness; it is not permission to guess, copy, or repurpose a value. If a required field lacks explicit support, omit it and emit the partial claim for review. The field lists above are closed allowlists: never emit another field for that claim type.
 

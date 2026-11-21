@@ -849,6 +849,24 @@ describe('atomic claim merging', () => {
       previousValues: { name: 'TypeScript' },
       previousCurrent: false
     });
+    expect(context.inserted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        survivorClaimId: claimId,
+        supersededClaimIds: [duplicateClaimId],
+        claimsBefore: [
+          expect.objectContaining({
+            claimId,
+            values: { name: 'TypeScript' },
+            sourceDocumentId: '55555555-5555-4555-8555-555555555555'
+          }),
+          expect.objectContaining({
+            claimId: duplicateClaimId,
+            values: { name: 'typescript' },
+            sourceDocumentId: '55555555-5555-4555-8555-555555555555'
+          })
+        ]
+      })
+    );
     expect(context.detailUpdates).toContainEqual({
       name: 'TypeScript and Node.js'
     });

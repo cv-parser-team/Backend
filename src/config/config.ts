@@ -87,6 +87,10 @@ export const config = {
     ),
     aiBatchSize: extractPositiveIntegerOrDefault('NORMALIZATION_AI_BATCH_SIZE', 10)
   },
+  candidates: {
+    // Close employment/education date ranges use a bounded AI identity check.
+    duplicateAiEnabled: process.env.DUPLICATE_AI_ENABLED !== 'false'
+  },
   auth: {
     jwtSecret,
     issuer: extractOrThrow('JWT_ISSUER'),

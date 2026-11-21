@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec > >(tee /var/log/luminacv-bootstrap.log | logger -t luminacv-bootstrap -s 2>/dev/console) 2>&1
+
+aws_region='${aws_region}'
+data_volume_id='${data_volume_id}'
+repository_ssh_url='${repository_ssh_url}'
+application_root=/srv/luminacv
+
+dnf install -y docker git jq
+systemctl enable --now docker amazon-ssm-agent
+
+compose_version=v2.40.3
+curl --fail --silent --show-error --location \
+  "https://github.com/docker/compose/releases/download/$${compose_version}/docker-compose-linux-x86_64" \
+  --output /usr/local/lib/docker/cli-plugins/docker-compose
+chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+
+normalized_volume_id=$${data_volume_id//-/}
+data_device=''
+for _ in {1..60}; do
+  for candidate in /dev/nvme*n1; do
+    [[ -b "$${candidate}" ]] || continue
+    if /sbin/ebsnvme-id "$${candidate}" 2>/dev/null | grep -q "$${normalized_volume_id}"; then
+      data_device=$${candidate}
+      break 2
+    fi
+  done
+
+  if [[ -b /dev/xvdf ]]; then
+    data_device=/dev/xvdf
+    break
+  fi
+  sleep 5
+done
+
+[[ -n "$${data_device}" ]] || { echo "Persistent EBS data volume was not attached" >&2; exit 1; }
+
+if ! blkid "$${data_device}" >/dev/null 2>&1; then
+  mkfs.ext4 "$${data_device}"
+fi
+
+mkdir -p "$${application_root}"
+volume_uuid=$(blkid -s UUID -o value "$${data_device}")
+if ! grep -q "UUID=$${volume_uuid}" /etc/fstab; then
+  echo "UUID=$${volume_uuid} $${application_root} ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+mount "$${application_root}"
+
+mkdir -p "$${application_root}/docker" "$${application_root}/shared" "$${application_root}/checkout"
+chmod 0700 "$${application_root}/shared"
+
+cat > /etc/docker/daemon.json <<EOF
+{
+  "data-root": "$${application_root}/docker",
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+EOF
+systemctl restart docker
+
+cat > /usr/local/bin/luminacv-deploy <<'DEPLOY_SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+revision=$${1:-}
+[[ "$${revision}" =~ ^[0-9a-f]{7,40}$ ]] || {
+  echo "Usage: luminacv-deploy <git-commit-sha>" >&2
+  exit 2
+}
+
+exec 9>/run/luminacv-deploy.lock
+flock -n 9 || { echo "Another deployment is already running" >&2; exit 1; }
+
+aws_region='${aws_region}'
+repository_ssh_url='${repository_ssh_url}'
+application_root=/srv/luminacv
+checkout="$${application_root}/checkout"
+shared="$${application_root}/shared"
+env_file="$${shared}/app.env"
+deploy_key="$${shared}/github_deploy_key"
+
+umask 077
+aws --region "$${aws_region}" ssm get-parameter \
+  --name /luminacv/production/env --with-decryption --output json \
+  | jq -r '.Parameter.Value' > "$${env_file}"
+aws --region "$${aws_region}" ssm get-parameter \
+  --name /luminacv/production/github-deploy-key --with-decryption --output json \
+  | jq -r '.Parameter.Value' > "$${deploy_key}"
+chmod 0600 "$${env_file}" "$${deploy_key}"
+
+export GIT_SSH_COMMAND="ssh -i $${deploy_key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+if [[ ! -d "$${checkout}/.git" ]]; then
+  git clone --no-checkout "$${repository_ssh_url}" "$${checkout}"
+fi
+
+git -C "$${checkout}" remote set-url origin "$${repository_ssh_url}"
+git -C "$${checkout}" fetch --depth 1 origin "$${revision}"
+git -C "$${checkout}" reset --hard FETCH_HEAD
+git -C "$${checkout}" clean -fdx
+
+export APP_ENV_FILE="$${env_file}"
+export IMAGE_TAG="$${revision}"
+compose=(docker compose --env-file "$${env_file}" --project-directory "$${checkout}/deploy" -f "$${checkout}/deploy/compose.production.yml")
+
+"$${compose[@]}" build api worker migrate
+"$${compose[@]}" up -d --wait --wait-timeout 180 postgres rabbitmq
+"$${compose[@]}" run --rm migrate
+"$${compose[@]}" up -d --remove-orphans --wait --wait-timeout 180
+docker image prune -f --filter "until=168h"
+
+echo "Deployed LuminaCV revision $${revision}"
+DEPLOY_SCRIPT
+
+chmod 0755 /usr/local/bin/luminacv-deploy
+
+cat > /etc/luminacv-instance <<EOF
+AWS_REGION=$${aws_region}
+DATA_VOLUME_ID=$${data_volume_id}
+REPOSITORY=$${repository_ssh_url}
+EOF
+
+echo "LuminaCV host bootstrap complete; waiting for the first GitHub Actions deployment."

@@ -1,0 +1,79 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: luminacv-production-backend
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy through Systems Manager
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          instance_id=$(aws ec2 describe-instances \
+            --filters \
+              Name=tag:Name,Values=luminacv-application \
+              Name=instance-state-name,Values=running \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+          if [[ "$instance_id" == "None" || -z "$instance_id" ]]; then
+            echo "No running LuminaCV application instance was found." >&2
+            exit 1
+          fi
+
+          command_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy LuminaCV $REVISION" \
+            --parameters "commands=/usr/local/bin/luminacv-deploy $REVISION" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          if ! aws ssm wait command-executed \
+            --command-id "$command_id" \
+            --instance-id "$instance_id"; then
+            aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "$instance_id" \
+              --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}'
+            exit 1
+          fi
+
+          aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --query '{Status:Status,Output:StandardOutputContent}'

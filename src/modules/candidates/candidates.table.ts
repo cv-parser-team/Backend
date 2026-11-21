@@ -60,6 +60,26 @@ export type ClaimSourceAnchor =
     cells: string[];
   };
 
+export interface AutoMergeClaimSourceSnapshot {
+  documentId: string;
+  anchorKey: string;
+  sourceReferences: string[];
+  fieldNames: string[];
+  anchor: ClaimSourceAnchor;
+}
+
+export interface AutoMergeClaimSnapshot {
+  claimId: string;
+  claimType: (typeof claimType.enumValues)[number];
+  origin: (typeof claimOrigin.enumValues)[number];
+  status: (typeof claimStatus.enumValues)[number];
+  current: boolean;
+  values: ClaimSnapshot;
+  version: number;
+  sourceDocumentId: string | null;
+  sources: AutoMergeClaimSourceSnapshot[];
+}
+
 export const claimType = pgEnum('claim_type', [
   'skill',
   'employment',
@@ -84,7 +104,7 @@ export const claimStatus = pgEnum('claim_status', [
 
 export const claimAutoMergeNoticeStatus = pgEnum(
   'claim_auto_merge_notice_status',
-  ['pending', 'acknowledged']
+  ['pending', 'acknowledged', 'reverted']
 );
 
 export const claimDatePrecision = pgEnum('claim_date_precision', [
@@ -227,6 +247,9 @@ export const claimAutoMergeNotices = pgTable(
     supersededClaimIds: uuid('superseded_claim_ids').array().notNull(),
     // Short, human-readable copy derived from the compared field differences.
     messages: text('messages').array().notNull(),
+    // Exact pre-merge values and physical evidence make the automatic action
+    // explainable and safely reversible. Null is retained for legacy notices.
+    claimsBefore: jsonb('claims_before').$type<AutoMergeClaimSnapshot[]>(),
     status: claimAutoMergeNoticeStatus('status')
       .default('pending')
       .notNull(),

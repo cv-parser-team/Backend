@@ -1,0 +1,12 @@
+aws_region                = "us-east-1"
+root_domain_name          = "example.com"
+route53_zone_id           = "Z00000000000000000000"
+github_backend_repository = "your-github-user/luminaCV"
+github_frontend_repository = "your-github-user/Frontend"
+backend_branch            = "main"
+frontend_branch           = "main"
+budget_alert_email        = "ops@example.com"
+monthly_budget_usd        = 50
+
+# Set this only when the account already has the GitHub Actions OIDC provider.
+# github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"

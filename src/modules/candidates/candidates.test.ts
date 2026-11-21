@@ -31,6 +31,7 @@ import {
   ClaimNormalizer,
   createCandidatesService
 } from './candidates.service.js';
+import type { DuplicateJudge } from './candidates.duplicate-ai.js';
 import {
   candidates,
   certificationDetails,
@@ -138,6 +139,7 @@ function createRepositoryDouble(
     deleteClaim: vi.fn().mockResolvedValue({ status: 'deleted' }),
     autoAcceptMergeClaims: vi.fn().mockResolvedValue({ status: 'missing' }),
     acknowledgeAutoMergeNotices: vi.fn().mockResolvedValue(0),
+    keepAutoMergedClaimsSeparate: vi.fn().mockResolvedValue({ status: 'missing' }),
     countOpenAutoMergeNotices: vi.fn().mockResolvedValue(0),
     listOpenAutoMergeNotices: vi.fn().mockResolvedValue([]),
     setClaimStatus: vi.fn().mockResolvedValue(null)
@@ -170,13 +172,15 @@ function createNormalizerDouble(): ClaimNormalizer {
 function createService(
   repository: CandidatesRepository,
   normalizer: ClaimNormalizer = createNormalizerDouble(),
-  logger = { warn: vi.fn() }
+  logger = { warn: vi.fn() },
+  duplicateJudge?: DuplicateJudge
 ): CandidatesService {
   return createCandidatesService({
     repository,
     usersService: createUsersServiceDouble(),
     normalizer,
-    logger
+    logger,
+    ...(duplicateJudge ? { duplicateJudge } : {})
   });
 }
 
@@ -997,6 +1001,87 @@ describe('claim merge proposal service', () => {
 });
 
 describe('claim merge candidate discovery service', () => {
+  it('uses AI to suppress close employment date ranges judged to be separate', async () => {
+    const repository = createRepositoryDouble();
+    const rightClaimId = '44444444-4444-4444-8444-444444444444';
+    vi.mocked(repository.listClaims).mockResolvedValue([
+      claimRecord({
+        claimType: 'employment',
+        values: {
+          employer: 'Example Labs',
+          jobTitle: 'Engineer',
+          startDate: '2020-01',
+          endDate: '2024-01'
+        }
+      }),
+      claimRecord({
+        claimId: rightClaimId,
+        claimType: 'employment',
+        values: {
+          employer: 'Example Labs',
+          jobTitle: 'Engineer',
+          startDate: '2020-02',
+          endDate: '2024-02'
+        }
+      })
+    ]);
+    const judge = vi.fn<DuplicateJudge['judge']>().mockResolvedValue({
+      status: 'different',
+      confidence: 0.94,
+      reason: 'These are separate roles.'
+    });
+    const service = createService(
+      repository,
+      createNormalizerDouble(),
+      { warn: vi.fn() },
+      { judge }
+    );
+
+    await expect(service.listClaimMergeCandidates(userId)).resolves.toEqual([]);
+    expect(judge).toHaveBeenCalledOnce();
+  });
+
+  it('retains close education ranges approved or left uncertain by AI', async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.listClaims).mockResolvedValue([
+      claimRecord({
+        claimType: 'education',
+        values: {
+          institution: 'Example University',
+          degree: 'BSc',
+          startDate: '2020-09',
+          endDate: '2024-06'
+        }
+      }),
+      claimRecord({
+        claimId: '44444444-4444-4444-8444-444444444444',
+        claimType: 'education',
+        values: {
+          institution: 'Example University',
+          degree: 'BSc',
+          startDate: '2021-01',
+          endDate: '2024-08'
+        }
+      })
+    ]);
+    const judge = vi.fn<DuplicateJudge['judge']>().mockResolvedValue({
+      status: 'merge_candidate',
+      confidence: 0.9,
+      reason: 'The dates plausibly describe the same program.'
+    });
+
+    await expect(
+      createService(
+        repository,
+        createNormalizerDouble(),
+        { warn: vi.fn() },
+        { judge }
+      ).listClaimMergeCandidates(userId)
+    ).resolves.toMatchObject([
+      { result: 'proposal', identity: 'suspected_duplicate' }
+    ]);
+  });
+
   it('returns each active same-type duplicate pair once in stable order', async () => {
     const repository = createRepositoryDouble();
     const rightClaimId = '44444444-4444-4444-8444-444444444444';
@@ -1786,6 +1871,49 @@ describe('claim batch resolution service', () => {
   });
 });
 
+describe('keeping automatic merges separate', () => {
+  it('restores the original claims through the repository', async () => {
+    const repository = createRepositoryDouble();
+    const restored = [
+      claimRecord({ status: 'pending', version: 3 }),
+      claimRecord({
+        claimId: '44444444-4444-4444-8444-444444444444',
+        status: 'pending',
+        version: 2
+      })
+    ];
+    vi.mocked(repository.keepAutoMergedClaimsSeparate).mockResolvedValue({
+      status: 'saved',
+      claims: restored
+    });
+
+    await expect(
+      createService(repository).keepAutoMergedClaimsSeparate(userId, claimId, 2)
+    ).resolves.toEqual({ claims: restored });
+    expect(repository.keepAutoMergedClaimsSeparate).toHaveBeenCalledWith(
+      candidateId,
+      claimId,
+      2
+    );
+  });
+
+  it('reports a stale survivor as a version conflict', async () => {
+    const repository = createRepositoryDouble();
+    const current = [claimRecord({ status: 'auto_accepted', version: 4 })];
+    vi.mocked(repository.keepAutoMergedClaimsSeparate).mockResolvedValue({
+      status: 'conflict',
+      current
+    });
+
+    await expect(
+      createService(repository).keepAutoMergedClaimsSeparate(userId, claimId, 2)
+    ).rejects.toMatchObject({
+      code: 'VERSION_CONFLICT',
+      details: { current }
+    });
+  });
+});
+
 function createAuthRepositoryDouble(role: UserRole): AuthRepository {
   const state = { userId, role, accountStatus: 'active' as const, tokenVersion: 0 };
 
@@ -1843,7 +1971,8 @@ function createServiceDouble(): CandidatesService {
     exportProfile: vi.fn(),
     autoAcceptMergeClaims: vi.fn(),
     autoAcceptHighConfidenceDuplicates: vi.fn(),
-    acknowledgeAutoMerge: vi.fn()
+    acknowledgeAutoMerge: vi.fn(),
+    keepAutoMergedClaimsSeparate: vi.fn()
   };
 }
 
@@ -1880,6 +2009,32 @@ describe('candidates routes', () => {
     const response = await app.inject({ method: 'GET', url: '/api/candidates/me' });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it('keeps an automatic merge separate with optimistic concurrency', async () => {
+    const service = createServiceDouble();
+    const restored = [claimRecord({ status: 'pending', version: 3 })];
+    vi.mocked(service.keepAutoMergedClaimsSeparate).mockResolvedValue({
+      claims: restored
+    });
+    app = await createCandidatesApp(service);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/candidates/me/claims/${claimId}/keep-auto-merge-separate`,
+      headers: { ...authorization, 'if-match': '"2"' },
+      payload: {}
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: { claims: [{ claimId, status: 'pending', version: 3 }] }
+    });
+    expect(service.keepAutoMergedClaimsSeparate).toHaveBeenCalledWith(
+      userId,
+      claimId,
+      2
+    );
   });
 
   it('allows only candidates to manage profiles', async () => {

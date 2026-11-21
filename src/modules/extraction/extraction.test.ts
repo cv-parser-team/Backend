@@ -242,6 +242,68 @@ describe('AI output mapping', () => {
     ]);
   });
 
+  it('separates an explicitly combined degree and field of study', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'education',
+          fields: {
+            institution: field('Borcelle University', ['L20']),
+            degree: field('Bachelor of Arts in Accounting', ['L21']),
+            startDate: field('2023', ['L22']),
+            endDate: field('2026', ['L22'])
+          }
+        }
+      ])
+    );
+
+    expect(result.reviewItems).toEqual([]);
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0]).toMatchObject({
+      type: 'education',
+      values: {
+        institution: 'Borcelle University',
+        degree: 'Bachelor of Arts',
+        fieldOfStudy: 'Accounting',
+        startDate: '2023',
+        endDate: '2026'
+      },
+      rawValues: {
+        degree: 'Bachelor of Arts',
+        fieldOfStudy: 'Accounting'
+      },
+      fieldSources: {
+        degree: ['L21'],
+        fieldOfStudy: ['L21']
+      }
+    });
+  });
+
+  it('turns comma-separated or array skill values into individual claims', () => {
+    const result = mapAiOutput(
+      output([
+        {
+          type: 'skill',
+          fields: { name: field('React, TypeScript, Node.js', ['L30'], undefined, 0.96) }
+        },
+        {
+          type: 'skill',
+          fields: { name: field(['SQL', 'PostgreSQL'], ['L31'], undefined, 0.97) }
+        }
+      ])
+    );
+
+    expect(result.reviewItems).toEqual([]);
+    expect(result.claims.map((claim) => claim.values.name)).toEqual([
+      'React',
+      'TypeScript',
+      'Node.js',
+      'SQL',
+      'PostgreSQL'
+    ]);
+    expect(result.claims.every((claim) => claim.status === 'accepted')).toBe(true);
+  });
+
   it('keeps a doubtful value and gives the claim its lowest field confidence', () => {
     const result = mapAiOutput(
       output([

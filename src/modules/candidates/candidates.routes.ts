@@ -642,4 +642,41 @@ export const candidatesRoutes: FastifyPluginAsync<CandidatesRoutesOptions> = asy
       return response;
     }
   );
+
+  fastify.post<{ Params: ClaimParams; Body: AcknowledgeAutoMergeBody }>(
+    '/me/claims/:claimId/keep-auto-merge-separate',
+    {
+      schema: {
+        tags: ['Candidates'],
+        summary: 'Keep automatically merged claims separate',
+        description:
+          'Restores the pre-merge claims and their source evidence, then suppresses the unchanged duplicate pairs.',
+        security: candidateSecurity,
+        headers: ifMatchHeadersSchema,
+        params: claimParamsSchema,
+        body: acknowledgeAutoMergeBodySchema,
+        response: {
+          200: documentedResponse('Restored claims'),
+          400: documentedResponse('Invalid claim ID'),
+          ...candidateAccessResponses,
+          404: documentedResponse('Claim not found'),
+          409: documentedResponse('Claim version conflict or merge cannot be reversed')
+        }
+      },
+      preHandler: candidateOnly
+    },
+    async (request) => {
+      const data = await service.keepAutoMergedClaimsSeparate(
+        request.auth.userId,
+        request.params.claimId,
+        parseIfMatchVersion(request.headers['if-match'])
+      );
+      const response: ApiResponse<typeof data> = {
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+      };
+      return response;
+    }
+  );
 };

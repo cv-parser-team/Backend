@@ -141,6 +141,7 @@ and always act on the authenticated user's own profile:
 - `GET /api/candidates/me/claims/merge-proposal` (`leftClaimId` and `rightClaimId`; read-only)
 - `POST /api/candidates/me/claims/coalesce` (safe pending duplicates remain staged)
 - `POST /api/candidates/me/claims/:claimId/acknowledge-auto-merge` (acknowledge auto-merge notices on a published claim)
+- `POST /api/candidates/me/claims/:claimId/keep-auto-merge-separate` (restore the original claims and source evidence)
 - `POST /api/candidates/me/claims/different` (suppress an unchanged reviewed pair)
 - `POST /api/candidates/me/claims/merge` (candidate confirmation accepts and exports the survivor)
 - `POST /api/candidates/me/claims/resolve-batch` (1–100 independent accept, pair-merge, or atomic group-merge actions)
@@ -213,6 +214,14 @@ Features follow `routes -> services -> repositories -> database`. See
 rules, [Adding a module](docs/adding-a-module.md) for the feature checklist, and
 [Functional requirements](docs/requirements.md) for the versioned product
 behavior.
+
+## AWS deployment
+
+The production deployment runs the API, worker, PostgreSQL, RabbitMQ, and Caddy
+on one EC2 instance, with the Vite frontend hosted by Amplify. See the
+[AWS deployment guide](docs/deployment-aws.md) for Terraform, secrets, CI/CD,
+cost, operations, and cleanup instructions. Terraform does not provision
+anything until an operator explicitly runs `terraform apply`.
 
 ## Database schema
 
