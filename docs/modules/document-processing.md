@@ -220,6 +220,11 @@ retry logic, while every lease recovery adds an attempt. A job claimed with an
 attempt count above three is failed with `MAX_ATTEMPTS_EXCEEDED` before the
 document is read again.
 
+**Owner without a candidate profile.** Extracted claims are saved to the
+owner's candidate profile, so a job whose owner has none can never succeed. It
+is failed with `CANDIDATE_PROFILE_REQUIRED`, without retry, before the
+document is read or the AI is called.
+
 | Outcome | Meaning | Message |
 | --- | --- | --- |
 | `processed` | Extraction saved, job completed, document ready | Acknowledged |

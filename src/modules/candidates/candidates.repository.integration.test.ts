@@ -536,4 +536,54 @@ describeWithDatabase('candidates repository database integration', () => {
       await database.db.delete(users).where(eq(users.userId, otherUserId));
     }
   });
+
+  it('deletes a merged claim together with the duplicates it absorbed', async () => {
+    const repository = createCandidatesRepository(database);
+    const [survivor, duplicate] = await database.db.transaction((transaction) =>
+      repository.createClaims(
+        [
+          {
+            candidateId,
+            claimType: 'skill',
+            origin: 'manual',
+            status: 'accepted',
+            values: { name: 'TypeScript' }
+          },
+          {
+            candidateId,
+            claimType: 'skill',
+            origin: 'manual',
+            status: 'accepted',
+            values: { name: 'typescript' }
+          }
+        ],
+        transaction
+      )
+    );
+    if (!survivor || !duplicate) {
+      throw new Error('Claims were not created');
+    }
+    await expect(
+      repository.mergeConfirmedClaims({
+        candidateId,
+        survivor: { claimId: survivor.claimId, expectedVersion: survivor.version },
+        duplicate: {
+          claimId: duplicate.claimId,
+          expectedVersion: duplicate.version
+        },
+        values: { name: 'TypeScript' }
+      })
+    ).resolves.toMatchObject({ status: 'saved' });
+
+    await expect(
+      repository.deleteClaim(candidateId, survivor.claimId)
+    ).resolves.toEqual({ status: 'deleted' });
+
+    await expect(
+      database.db
+        .select({ claimId: claims.claimId })
+        .from(claims)
+        .where(inArray(claims.claimId, [survivor.claimId, duplicate.claimId]))
+    ).resolves.toEqual([]);
+  });
 });

@@ -363,6 +363,11 @@ function claimPairVersionKey(
   return `${leftClaimId}:${leftVersion}:${rightClaimId}:${rightVersion}`;
 }
 
+// The same key for a pair in either order.
+function claimPairKey(leftClaimId: string, rightClaimId: string): string {
+  return [leftClaimId, rightClaimId].sort().join(':');
+}
+
 function toSourceReference(
   occurrence: ClaimSourceOccurrenceRecord
 ): ClaimSourceReference {
@@ -714,7 +719,11 @@ export function createCandidatesService({
             .sort((left, right) => left.claimId.localeCompare(right.claimId))
         )
       ).filter((claim) => claim !== null);
-      const proposals: ClaimMergeCandidate[] = [];
+      const pairs: Array<{
+        left: MergeCandidateClaim;
+        right: MergeCandidateClaim;
+        proposal: ClaimMergeCandidate;
+      }> = [];
 
       for (let leftIndex = 0; leftIndex < activeClaims.length; leftIndex += 1) {
         const left = activeClaims[leftIndex];
@@ -743,13 +752,28 @@ export function createCandidatesService({
             continue;
           }
           const proposal = buildClaimMergeProposal(left, right);
-          if (
-            proposal.result === 'proposal' &&
-            (await aiAllowsCloseDateProposal(left, right, proposal))
-          ) {
-            proposals.push(proposal);
+          if (proposal.result === 'proposal') {
+            pairs.push({ left, right, proposal });
           }
         }
+      }
+
+      // AI judgments run a few at a time rather than one after another, so a
+      // profile with many similar records is listed without a long wait.
+      const proposals: ClaimMergeCandidate[] = [];
+      const concurrency = 4;
+      for (let offset = 0; offset < pairs.length; offset += concurrency) {
+        const chunk = pairs.slice(offset, offset + concurrency);
+        const allowed = await Promise.all(
+          chunk.map(({ left, right, proposal }) =>
+            aiAllowsCloseDateProposal(left, right, proposal)
+          )
+        );
+        chunk.forEach(({ proposal }, index) => {
+          if (allowed[index]) {
+            proposals.push(proposal);
+          }
+        });
       }
 
       return proposals;
@@ -910,11 +934,27 @@ export function createCandidatesService({
     async autoAcceptHighConfidenceDuplicates(userId) {
       const candidate = await requireCandidate(userId);
       const candidateId = candidate.candidateId;
-      const claims = await repository.listClaims(candidateId, {
-        status: ['pending', 'accepted', 'auto_accepted']
-      });
-      const byType = new Map<string, ClaimRecord[]>();
-      for (const claim of claims) {
+      const [claims, decisions] = await Promise.all([
+        repository.listClaims(candidateId, {
+          status: ['pending', 'accepted', 'auto_accepted']
+        }),
+        repository.listClaimPairDecisions(candidateId)
+      ]);
+      // A pair the candidate called different is never merged without them,
+      // even after either claim changed: unlike a listed proposal, an
+      // automatic merge is not shown to the candidate before it happens.
+      const decidedPairs = new Set(
+        decisions.map((decision) =>
+          claimPairKey(decision.leftClaimId, decision.rightClaimId)
+        )
+      );
+      // Terms are loaded once for all claims rather than once per pair.
+      const mergeCandidates = await toMergeCandidates(candidateId, claims);
+      const byType = new Map<string, MergeCandidateClaim[]>();
+      for (const claim of mergeCandidates) {
+        if (!claim) {
+          continue;
+        }
         const group = byType.get(claim.claimType) ?? [];
         group.push(claim);
         byType.set(claim.claimType, group);
@@ -927,19 +967,17 @@ export function createCandidatesService({
           for (let j = i + 1; j < group.length; j++) {
             const left = group[i];
             const right = group[j];
-            if (touched.has(left.claimId) || touched.has(right.claimId)) {
+            if (
+              !left ||
+              !right ||
+              touched.has(left.claimId) ||
+              touched.has(right.claimId) ||
+              decidedPairs.has(claimPairKey(left.claimId, right.claimId))
+            ) {
               skipped += 1;
               continue;
             }
-            const [leftCandidate, rightCandidate] = await toMergeCandidates(
-              candidateId,
-              [left, right]
-            );
-            if (!leftCandidate || !rightCandidate) {
-              skipped += 1;
-              continue;
-            }
-            const plan = buildAutoAcceptMergePlan(leftCandidate, rightCandidate);
+            const plan = buildAutoAcceptMergePlan(left, right);
             if (plan.result !== 'ready') {
               skipped += 1;
               continue;

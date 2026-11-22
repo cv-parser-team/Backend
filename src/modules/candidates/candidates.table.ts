@@ -174,9 +174,11 @@ export const claims = pgTable(
       withTimezone: true,
       mode: 'date'
     }),
+    // A merged duplicate is hidden evidence of its survivor: deleting the
+    // survivor deletes the claims it absorbed, through any chain of merges.
     supersededByClaimId: uuid('superseded_by_claim_id').references(
       (): AnyPgColumn => claims.claimId,
-      { onDelete: 'restrict' }
+      { onDelete: 'cascade' }
     ),
     // Original AI evidence stays separate from the reviewed claim values.
     extractionInvocationId: uuid('extraction_invocation_id'),

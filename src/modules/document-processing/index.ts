@@ -9,7 +9,8 @@ import {
 } from '../../infrastructure/llm/index.js';
 import {
   createCandidateAutoMergeRunner,
-  createCandidateExtractionWriter
+  createCandidateExtractionWriter,
+  createCandidateProfileLookup
 } from '../candidates/index.js';
 import {
   createCandidateExtractionService,
@@ -86,6 +87,7 @@ const registerDocumentProcessing: FastifyPluginAsync = async (fastify) => {
         fastify.normalizationService,
         fastify.log
       ),
+      candidateProfiles: createCandidateProfileLookup(fastify.database),
       logger: fastify.log,
       unitOfWork
     })

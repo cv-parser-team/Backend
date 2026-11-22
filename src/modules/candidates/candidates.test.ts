@@ -237,6 +237,15 @@ describe('candidates tables', () => {
     ).toBe(true);
   });
 
+  it('deletes merged duplicates with the survivor that absorbed them', () => {
+    const supersededBy = getTableConfig(claims).foreignKeys.find((foreignKey) =>
+      foreignKey
+        .reference()
+        .columns.some((column) => column.name === 'superseded_by_claim_id')
+    );
+    expect(supersededBy?.onDelete).toBe('cascade');
+  });
+
   it('stores one details row per claim in the table of its type', () => {
     for (const table of [
       skillDetails,
@@ -1610,6 +1619,81 @@ describe('automatic claim coalesce service', () => {
         otherClaimId
       )
     ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
+});
+
+describe('automatic duplicate merge after extraction', () => {
+  const otherClaimId = '44444444-4444-4444-8444-444444444444';
+
+  function equivalentPendingPair(): ClaimRecord[] {
+    return [
+      { ...extractedClaim('pending', 2), values: { name: 'TypeScript' } },
+      {
+        ...extractedClaim('pending', 4),
+        claimId: otherClaimId,
+        values: { name: ' typescript ' }
+      }
+    ];
+  }
+
+  it('merges a safe pair and loads normalized terms once for all claims', async () => {
+    const repository = createRepositoryDouble();
+    const normalizer = createNormalizerDouble();
+    const pair = equivalentPendingPair();
+    vi.mocked(repository.listClaims).mockResolvedValue(pair);
+    vi.mocked(repository.autoAcceptMergeClaims).mockResolvedValue({
+      status: 'saved',
+      survivor: { ...pair[0]!, status: 'auto_accepted', version: 3 },
+      duplicate: { ...pair[1]!, supersededByClaimId: claimId, version: 5 },
+      notice: {
+        noticeId: '66666666-6666-4666-8666-666666666666',
+        candidateId,
+        survivorClaimId: claimId,
+        supersededClaimIds: [otherClaimId],
+        messages: ['Combined sources'],
+        claimsBefore: [],
+        status: 'pending',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        acknowledgedAt: null
+      }
+    });
+
+    await expect(
+      createService(repository, normalizer).autoAcceptHighConfidenceDuplicates(userId)
+    ).resolves.toEqual({ applied: 1, skipped: 0 });
+    expect(normalizer.findNormalizedTerms).toHaveBeenCalledTimes(1);
+    expect(normalizer.findNormalizedTerms).toHaveBeenCalledWith(pair);
+    expect(repository.autoAcceptMergeClaims).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId,
+        survivor: { claimId, expectedVersion: 2 },
+        duplicate: { claimId: otherClaimId, expectedVersion: 4 }
+      })
+    );
+  });
+
+  it('never merges a pair the candidate called different, even after either changed', async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.listClaims).mockResolvedValue(equivalentPendingPair());
+    vi.mocked(repository.listClaimPairDecisions).mockResolvedValue([
+      {
+        decisionId: '55555555-5555-4555-8555-555555555555',
+        candidateId,
+        leftClaimId: otherClaimId,
+        rightClaimId: claimId,
+        leftVersion: 1,
+        rightVersion: 1,
+        decision: 'different',
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+    ]);
+
+    await expect(
+      createService(repository).autoAcceptHighConfidenceDuplicates(userId)
+    ).resolves.toEqual({ applied: 0, skipped: 1 });
+    expect(repository.autoAcceptMergeClaims).not.toHaveBeenCalled();
   });
 });
 

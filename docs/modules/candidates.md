@@ -56,7 +56,12 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     two unedited pending extracted claims, or a safe pending enrichment of an
     accepted claim. The survivor becomes `auto_accepted` and gets an
     acknowledgment notice; all uncertain work remains staged for candidate
-    review. Candidate-confirmed merges preserve source provenance. See
+    review. A pair the candidate declared different, directly or by keeping
+    an automatic merge separate, is never auto-merged again, even after either
+    claim changes. Editing an `auto_accepted` claim acknowledges its notices
+    and makes it `accepted`. Deleting a merge survivor also deletes the
+    duplicates it absorbed. Candidate-confirmed merges preserve source
+    provenance. See
     [Merge duplicate claims and resolve related conflicts](../merge-duplicate-claims.md).
 
 `GET /api/candidates/me/claims/:claimId` reads one ownership-scoped claim and
@@ -144,7 +149,7 @@ stateDiagram-v2
     [*] --> pending: Extracted from a document
     pending --> accepted: Candidate accepts
     pending --> auto_accepted: Safe automatic duplicate merge
-    auto_accepted --> accepted: Candidate acknowledges merge notice
+    auto_accepted --> accepted: Candidate acknowledges merge notice or edits the claim
     pending --> rejected: Candidate rejects
     accepted --> Exported: GET /api/candidates/me/profile
     note right of Exported

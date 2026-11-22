@@ -101,6 +101,19 @@ export function createCandidateAutoMergeRunner(
   };
 }
 
+// Document processing saves extracted claims to the owner's profile, so it
+// checks that the profile exists before spending a parse and an AI call.
+export function createCandidateProfileLookup(database: AppDatabase): {
+  hasCandidateProfile(userId: string): Promise<boolean>;
+} {
+  const repository = createCandidatesRepository(database);
+  return {
+    async hasCandidateProfile(userId) {
+      return (await repository.findCandidateByUserId(userId)) !== null;
+    }
+  };
+}
+
 export type {
   CandidateEntityMatcher,
   SameEntityMatches,

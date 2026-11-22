@@ -192,6 +192,7 @@ type OptionalHandlerDependency =
   | 'extractionPersistenceCoordinator'
   | 'claimNormalizer'
   | 'autoMergeRunner'
+  | 'candidateProfiles'
   | 'logger';
 
 type HandlerDependencies = Omit<
@@ -210,6 +211,9 @@ function createParseDocumentHandler(
         applied: 0,
         skipped: 0
       })
+    },
+    candidateProfiles = {
+      hasCandidateProfile: vi.fn().mockResolvedValue(true)
     },
     logger = { warn: vi.fn() },
     candidateExtractionService = {
@@ -231,6 +235,7 @@ function createParseDocumentHandler(
     extractionPersistenceCoordinator,
     claimNormalizer,
     autoMergeRunner,
+    candidateProfiles,
     logger
   });
 }
@@ -322,6 +327,71 @@ describe('parse document handler', () => {
     );
     expect(processingService.lockClaim).toHaveBeenCalledWith(claimedJob, transaction);
     expect(processingService.complete).toHaveBeenCalledWith(claimedJob, transaction);
+  });
+
+  it('fails the job and document for good when the owner has no candidate profile', async () => {
+    const claimedJob = createProcessingJob();
+    const failedJob = createProcessingJob('failed');
+    const processingService = createProcessingService(claimedJob);
+    processingService.fail = vi.fn().mockResolvedValue(failedJob);
+    const documentsService = createDocumentsService();
+    const parsingService = createParsingService();
+    const candidateExtractionService = {
+      extract: vi.fn<CandidateExtractionService['extract']>()
+    };
+    const hasCandidateProfile = vi.fn().mockResolvedValue(false);
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService,
+      candidateExtractionService,
+      processingService,
+      candidateProfiles: { hasCandidateProfile },
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).resolves.toEqual({
+      outcome: 'failed',
+      processingJob: failedJob
+    });
+    expect(hasCandidateProfile).toHaveBeenCalledWith(
+      createDocument('processing').ownerUserId
+    );
+    expect(processingService.fail).toHaveBeenCalledWith(
+      claimedJob,
+      'CANDIDATE_PROFILE_REQUIRED',
+      transaction
+    );
+    expect(documentsService.markDocumentFailed).toHaveBeenCalledWith(
+      job.documentId,
+      'CANDIDATE_PROFILE_REQUIRED',
+      transaction
+    );
+    expect(documentsService.openDocumentForProcessing).not.toHaveBeenCalled();
+    expect(parsingService.parse).not.toHaveBeenCalled();
+    expect(candidateExtractionService.extract).not.toHaveBeenCalled();
+    expect(processingService.retry).not.toHaveBeenCalled();
+  });
+
+  it('cancels instead of failing when a document without a profile owner was deleted', async () => {
+    const processingService = createProcessingService();
+    const documentsService = createDocumentsService({
+      lockDocumentForProcessing: vi.fn().mockResolvedValue(null)
+    });
+    const handler = createParseDocumentHandler({
+      documentsService,
+      parsingService: createParsingService(),
+      processingService,
+      candidateProfiles: { hasCandidateProfile: vi.fn().mockResolvedValue(false) },
+      unitOfWork: createUnitOfWork()
+    });
+
+    await expect(handler.handle(job)).resolves.toMatchObject({ outcome: 'cancelled' });
+    expect(processingService.fail).toHaveBeenCalledWith(
+      expect.anything(),
+      'DOCUMENT_DELETED',
+      transaction
+    );
+    expect(documentsService.markDocumentFailed).not.toHaveBeenCalled();
   });
 
   it('completes a partial extraction', async () => {

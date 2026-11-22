@@ -26,6 +26,7 @@ const INVALID_EXTRACTION_PROVENANCE_FAILURE_CODE =
   'INVALID_EXTRACTION_PROVENANCE';
 const DOCUMENT_DELETED_FAILURE_CODE = 'DOCUMENT_DELETED';
 const MAX_ATTEMPTS_FAILURE_CODE = 'MAX_ATTEMPTS_EXCEEDED';
+const CANDIDATE_PROFILE_REQUIRED_FAILURE_CODE = 'CANDIDATE_PROFILE_REQUIRED';
 const MAX_PROCESSING_ATTEMPTS = 3;
 
 // `stale`: the lease expired and another worker claimed the job, so this
@@ -64,6 +65,11 @@ export interface ParseDocumentHandlerDependencies {
   autoMergeRunner: {
     autoAcceptHighConfidenceDuplicates(userId: string): Promise<unknown>;
   };
+  // Extracted claims are saved to the owner's candidate profile. Without one,
+  // the job can never succeed, so it is failed before any parsing or AI call.
+  candidateProfiles: {
+    hasCandidateProfile(userId: string): Promise<boolean>;
+  };
   logger: Pick<FastifyBaseLogger, 'warn'>;
   unitOfWork: UnitOfWork;
 }
@@ -100,6 +106,7 @@ export function createParseDocumentHandler({
   processingService,
   claimNormalizer,
   autoMergeRunner,
+  candidateProfiles,
   logger,
   unitOfWork
 }: ParseDocumentHandlerDependencies): ParseDocumentHandler {
@@ -269,11 +276,12 @@ export function createParseDocumentHandler({
     return { outcome: 'failed', processingJob: failedJob };
   }
 
-  // A worker that keeps crashing never reaches the retry logic, while every
-  // lease recovery adds an attempt. Such a job is failed before the document
-  // is read again.
-  async function failExhausted(
-    processingJob: ProcessingJobRecord
+  // Ends a job that cannot succeed by retrying, before the document is read:
+  // a worker that keeps crashing (every lease recovery adds an attempt), or an
+  // owner without a candidate profile.
+  async function failPermanently(
+    processingJob: ProcessingJobRecord,
+    failureCode: string
   ): Promise<ParseDocumentHandlerResult> {
     return unitOfWork.run(async (transaction) => {
       if (!(await processingService.lockClaim(processingJob, transaction))) {
@@ -285,11 +293,7 @@ export function createParseDocumentHandler({
         return cancelled;
       }
 
-      return failJobAndDocument(
-        processingJob,
-        MAX_ATTEMPTS_FAILURE_CODE,
-        transaction
-      );
+      return failJobAndDocument(processingJob, failureCode, transaction);
     });
   }
 
@@ -410,7 +414,18 @@ export function createParseDocumentHandler({
       }
 
       if (processingJob.attemptCount > MAX_PROCESSING_ATTEMPTS) {
-        return failExhausted(processingJob);
+        return failPermanently(processingJob, MAX_ATTEMPTS_FAILURE_CODE);
+      }
+
+      if (
+        !(await candidateProfiles.hasCandidateProfile(
+          processingDocument.ownerUserId
+        ))
+      ) {
+        return failPermanently(
+          processingJob,
+          CANDIDATE_PROFILE_REQUIRED_FAILURE_CODE
+        );
       }
 
       let extraction: ExtractionResult;

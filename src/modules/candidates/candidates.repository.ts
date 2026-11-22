@@ -2011,7 +2011,10 @@ export function createCandidatesRepository(
               eq(claims.candidateId, candidateId),
               eq(claims.origin, 'extracted'),
               eq(claims.status, 'pending'),
-              eq(claims.extractionDocumentId, documentId)
+              eq(claims.extractionDocumentId, documentId),
+              // A pending claim the candidate edited holds their decision and
+              // is kept; the new extraction matches it like any active claim.
+              isNull(claims.candidateEditedAt)
             )
           )
           .returning({ claimId: claims.claimId });
@@ -2054,6 +2057,8 @@ export function createCandidatesRepository(
               eq(claims.claimId, claimId),
               eq(claims.origin, 'extracted'),
               eq(claims.status, 'pending'),
+              // A merged duplicate is hidden evidence, not a reviewable claim.
+              isNull(claims.supersededByClaimId),
               expectedVersion === undefined
                 ? undefined
                 : eq(claims.version, expectedVersion)
@@ -2191,16 +2196,38 @@ export function createCandidatesRepository(
               current.claimType,
               input.values
             );
+            // Editing the result of an automatic merge approves it: its notices
+            // are acknowledged and it becomes accepted, so a later "keep
+            // separate" cannot restore pre-merge values over this edit.
+            const approvesAutoMerge = current.status === 'auto_accepted';
+            const updatedAt = new Date();
             await transaction
               .update(claims)
               .set({
-                updatedAt: new Date(),
+                updatedAt,
                 version: sql`${claims.version} + 1`,
                 ...(current.origin === 'extracted'
-                  ? { candidateEditedAt: new Date() }
-                  : {})
+                  ? { candidateEditedAt: updatedAt }
+                  : {}),
+                ...(approvesAutoMerge ? { status: 'accepted' as const } : {})
               })
               .where(ownedClaim);
+            if (approvesAutoMerge) {
+              await transaction
+                .update(claimAutoMergeNotices)
+                .set({
+                  status: 'acknowledged',
+                  acknowledgedAt: updatedAt,
+                  updatedAt
+                })
+                .where(
+                  and(
+                    eq(claimAutoMergeNotices.candidateId, input.candidateId),
+                    eq(claimAutoMergeNotices.survivorClaimId, current.claimId),
+                    eq(claimAutoMergeNotices.status, 'pending')
+                  )
+                );
+            }
 
             const [updated] = await selectClaims(transaction, ownedClaim);
             if (!updated) {

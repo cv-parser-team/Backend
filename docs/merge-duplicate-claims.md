@@ -255,7 +255,9 @@ one type, include its survivor, and be connected by current pair proposals.
 
 Declaring the claims different records that decision for the pair so unchanged
 claims are not repeatedly suggested. A material value or normalization change
-may cause detection to run again.
+may cause detection to run again. Automatic merging after extraction never
+merges a pair with a recorded decision, whatever the claims' versions, because
+the candidate does not see it before it happens.
 
 ## 9. Persistence and audit direction
 

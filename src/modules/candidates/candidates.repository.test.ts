@@ -9,6 +9,7 @@ import {
   createCandidatesRepository
 } from './candidates.repository.js';
 import {
+  claimAutoMergeNotices,
   claimPairDecisions,
   claimRevisions,
   claims,
@@ -184,6 +185,39 @@ describe('editing a claim', () => {
     });
 
     expect(tx.claimUpdates[0]?.candidateEditedAt).toBeInstanceOf(Date);
+  });
+
+  it('approves an automatic merge when its result is edited', async () => {
+    const beforeRow = claimRow(1);
+    const before = {
+      ...beforeRow,
+      claim: { ...beforeRow.claim, status: 'auto_accepted' as const }
+    };
+    const tx = createClaimTransaction(
+      [{ claimId }],
+      [[before], [claimRow(2, 'Node.js')]]
+    );
+    const repository = createCandidatesRepository(databaseWith(tx.transaction));
+
+    await expect(repository.updateClaimValues(edit(1))).resolves.toMatchObject({
+      status: 'saved'
+    });
+
+    expect(tx.claimUpdates[0]).toMatchObject({ status: 'accepted' });
+    expect(tx.update).toHaveBeenCalledWith(claimAutoMergeNotices);
+  });
+
+  it('leaves the status and merge notices of other claims alone', async () => {
+    const tx = createClaimTransaction(
+      [{ claimId }],
+      [[claimRow(1)], [claimRow(2, 'Node.js')]]
+    );
+    const repository = createCandidatesRepository(databaseWith(tx.transaction));
+
+    await repository.updateClaimValues(edit(1));
+
+    expect(tx.claimUpdates[0]).not.toHaveProperty('status');
+    expect(tx.update).not.toHaveBeenCalledWith(claimAutoMergeNotices);
   });
 
   it('refuses an edit based on an older version and writes nothing', async () => {
@@ -1206,6 +1240,7 @@ describe('replacing pending extracted claims', () => {
     expect(query?.sql).toContain('"claims"."origin" = $2');
     expect(query?.sql).toContain('"claims"."status" = $3');
     expect(query?.sql).toContain('"claims"."extraction_document_id" = $4');
+    expect(query?.sql).toContain('"claims"."candidate_edited_at" is null');
     expect(query?.params).toEqual([
       candidateId,
       'extracted',
@@ -1306,5 +1341,6 @@ describe('reviewing an extracted claim', () => {
       'pending',
       1
     ]);
+    expect(query?.sql).toContain('"claims"."superseded_by_claim_id" is null');
   });
 });

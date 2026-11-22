@@ -361,6 +361,7 @@ transient-failure retries.
 | `extraction_raw_values` | JSONB | Required for extracted claims; null for manual claims | Original wording for normalized fields |
 | `extraction_field_sources` | JSONB | Required for extracted claims; null for manual claims | AI-input references supporting each field |
 | `extraction_current` | Boolean | Required for extracted claims; null for manual claims | Whether the source explicitly described the claim as current |
+| `superseded_by_claim_id` | UUID | Nullable, self FK, cascade delete, indexed | Survivor that absorbed this duplicate in a merge; deleting the survivor deletes the duplicates it absorbed |
 | `version` | Integer | Required, defaults to `1` | Increases on every value change; an edit or delete sent with an older version in `If-Match` is refused |
 | `created_at` | Timestamp with time zone | Required, generated | Creation time |
 | `updated_at` | Timestamp with time zone | Required, generated | Last value change |
@@ -378,6 +379,8 @@ Owned by the `candidates` module and defined in
 acknowledgment state for each safe automatic merge. A survivor can have more
 than one pending notice. Acknowledging a claim closes all of its open notices;
 when it is `auto_accepted` and none remain, its status becomes `accepted`.
+Editing an `auto_accepted` claim approves its merge in the same way, so a
+later "keep separate" cannot overwrite the edit with pre-merge values.
 
 | Column | Type | Constraints | Purpose |
 | --- | --- | --- | --- |

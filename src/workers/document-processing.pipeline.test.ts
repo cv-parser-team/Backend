@@ -234,6 +234,9 @@ describe('document processing pipeline', () => {
           skipped: 0
         })
       },
+      candidateProfiles: {
+        hasCandidateProfile: vi.fn().mockResolvedValue(true)
+      },
       logger: { warn: vi.fn() },
       unitOfWork: { run: (work) => work(transaction) }
     });
