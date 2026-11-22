@@ -25,6 +25,8 @@ docker compose \
 
 bash -n "$repository_root/scripts/aws/put-secrets.sh"
 bash -n "$repository_root/infra/terraform/user-data.sh.tftpl"
+bash -n "$repository_root/scripts/deploy/single-host/setup.sh"
+bash -n "$repository_root/scripts/deploy/single-host/update.sh"
 
 if command -v terraform >/dev/null 2>&1; then
   terraform -chdir="$repository_root/infra/terraform" fmt -check -recursive

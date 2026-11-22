@@ -76,6 +76,9 @@ compose=(docker compose
 "${compose[@]}" up -d --wait --wait-timeout 180 postgres rabbitmq
 "${compose[@]}" run --rm migrate
 "${compose[@]}" up -d --remove-orphans --wait --wait-timeout 300
+# frontend-dist is atomically replaced above. Recreate Caddy so its bind mount
+# follows the new directory instead of retaining the deleted directory inode.
+"${compose[@]}" up -d --no-deps --force-recreate caddy
 docker image prune -f --filter "until=168h" >/dev/null
 
 echo
