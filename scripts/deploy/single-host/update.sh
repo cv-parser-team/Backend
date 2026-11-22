@@ -5,6 +5,11 @@ set -euo pipefail
 
 [[ $(id -u) -eq 0 ]] || { echo "Run as root: sudo bash $0" >&2; exit 1; }
 
+# Repository checkouts and built frontend assets are consumed by containers
+# whose users differ from root. Keep their normal read permissions even when
+# setup.sh created the root-only secret files with a restrictive umask.
+umask 022
+
 root=/srv/luminacv
 shared="$root/shared"
 env_file="$shared/app.env"
@@ -43,6 +48,7 @@ checkout() {
 echo "== Downloading the latest code ($BRANCH)"
 checkout "$BACKEND_REPO" "$root/backend"
 checkout "$FRONTEND_REPO" "$root/frontend"
+chmod -R a+rX "$root/backend" "$root/frontend"
 
 echo "== Building the frontend for https://$domain"
 docker run --rm \

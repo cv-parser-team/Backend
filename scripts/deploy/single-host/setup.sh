@@ -45,13 +45,14 @@ if [[ ! -f "$settings_file" ]]; then
   read -rp "Branch [$branch_default]: " branch
   read -rsp "GitHub token (leave empty for public repositories): " github_token
   echo
-  umask 077
+  (umask 077
   cat > "$settings_file" <<EOF
 BACKEND_REPO=${backend_repo:-$backend_repo_default}
 FRONTEND_REPO=${frontend_repo:-$frontend_repo_default}
 BRANCH=${branch:-$branch_default}
 GITHUB_TOKEN=${github_token}
 EOF
+  )
 fi
 
 # 4. Application settings. Passwords are generated once and kept, because the
@@ -70,7 +71,7 @@ if [[ ! -f "$env_file" ]]; then
   rabbitmq_password=$(openssl rand -hex 24)
   jwt_secret=$(openssl rand -hex 48)
 
-  umask 077
+  (umask 077
   cat > "$env_file" <<EOF
 APP_DOMAIN=$domain
 API_DOMAIN=$domain
@@ -107,6 +108,7 @@ DOCUMENT_MAX_UPLOAD_FILES=5
 DOCUMENT_STAGING_MAX_AGE_SECONDS=86400
 DOCUMENT_ORPHAN_GRACE_PERIOD_SECONDS=86400
 EOF
+  )
   echo "Saved settings to $env_file"
 fi
 
