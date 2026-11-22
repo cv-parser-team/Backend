@@ -537,6 +537,97 @@ describeWithDatabase('candidates repository database integration', () => {
     }
   });
 
+  it('deletes only the unreviewed suggestions a document alone supports', async () => {
+    const repository = createCandidatesRepository(database);
+    const [deletedDocumentId, otherDocumentId] = [randomUUID(), randomUUID()];
+    const documentRows: (typeof documents.$inferInsert)[] = [
+      deletedDocumentId,
+      otherDocumentId
+    ].map((documentId, index) => ({
+      documentId,
+      ownerUserId: userId,
+      purpose: 'source',
+      originalFilename: `cv-${index}.pdf`,
+      mediaType: 'application/pdf',
+      byteSize: 100,
+      sha256: String(index + 4).repeat(64),
+      storageKey: `integration/${documentId}`,
+      status: 'ready'
+    }));
+    await database.db.insert(documents).values(documentRows);
+    const extraction = {
+      invocationId: randomUUID(),
+      sourceDocumentId: deletedDocumentId,
+      rawValues: {},
+      fieldSources: { name: ['L1'] },
+      current: false
+    };
+    const pending = (name: string) => ({
+      candidateId,
+      claimType: 'skill' as const,
+      origin: 'extracted' as const,
+      status: 'pending' as const,
+      values: { name },
+      extraction
+    });
+    const [unreviewed, accepted, edited, alsoElsewhere] =
+      await database.db.transaction((transaction) =>
+        repository.createClaims(
+          [
+            pending('Unreviewed'),
+            { ...pending('Accepted'), status: 'accepted' },
+            pending('Edited'),
+            pending('Also in another CV')
+          ],
+          transaction
+        )
+      );
+    if (!unreviewed || !accepted || !edited || !alsoElsewhere) {
+      throw new Error('Claims were not created');
+    }
+    await expect(
+      repository.updateClaimValues({
+        candidateId,
+        claimId: edited.claimId,
+        values: { name: 'Edited by candidate' }
+      })
+    ).resolves.toMatchObject({ status: 'saved' });
+    await database.db.transaction((transaction) =>
+      repository.createClaimSourceOccurrences(
+        [
+          {
+            claimId: alsoElsewhere.claimId,
+            documentId: otherDocumentId,
+            anchorKey: 'pdf:1:01',
+            sourceReferences: ['L1'],
+            fieldNames: ['name'],
+            anchor: {
+              kind: 'pdf_line',
+              order: 1,
+              pageNumber: 1,
+              box: { x: 10, y: 10, width: 100, height: 12 },
+              text: 'Also in another CV',
+              links: []
+            }
+          }
+        ],
+        transaction
+      )
+    );
+
+    await expect(
+      repository.deleteUnreviewedExtractedClaims(candidateId, deletedDocumentId)
+    ).resolves.toBe(1);
+
+    const remaining = await database.db
+      .select({ claimId: claims.claimId })
+      .from(claims)
+      .where(eq(claims.candidateId, candidateId));
+    expect(remaining.map(({ claimId }) => claimId).sort()).toEqual(
+      [accepted.claimId, edited.claimId, alsoElsewhere.claimId].sort()
+    );
+  });
+
   it('deletes a merged claim together with the duplicates it absorbed', async () => {
     const repository = createCandidatesRepository(database);
     const [survivor, duplicate] = await database.db.transaction((transaction) =>

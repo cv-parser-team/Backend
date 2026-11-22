@@ -60,7 +60,8 @@ endpoints and the [Data model](../database/data-model.md) for the tables.
     an automatic merge separate, is never auto-merged again, even after either
     claim changes. Editing an `auto_accepted` claim acknowledges its notices
     and makes it `accepted`. Deleting a merge survivor also deletes the
-    duplicates it absorbed. Candidate-confirmed merges preserve source
+    duplicates it absorbed. Deleting a document deletes the unreviewed
+    pending claims only it supports. Candidate-confirmed merges preserve source
     provenance. See
     [Merge duplicate claims and resolve related conflicts](../merge-duplicate-claims.md).
 

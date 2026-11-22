@@ -206,6 +206,13 @@ requested at that moment waits for it. A document that is deleted or being
 deleted ends its processing job with `DOCUMENT_DELETED` instead of being
 retried.
 
+Once a document is `deleting`, the pending claims extracted from it that the
+candidate never edited or merged, and that no other document supports, are
+deleted with it, so the review list holds no suggestions without a source.
+Accepted and candidate-edited claims stay. Review items and source occurrences
+of the document cascade with its row. Cleanup of documents left in `deleting`
+repeats this step.
+
 ## Implementation
 
 ### Implemented

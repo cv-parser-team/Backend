@@ -566,6 +566,43 @@ describe('normalized terms for comparison', () => {
     });
   });
 
+  it('compares claims linked to merged terms by the active term', async () => {
+    const repository = repositoryWith(
+      dictionary([
+        term('t-old', 'skill', 'ReactJS', 't-react'),
+        term('t-react', 'skill', 'React')
+      ])
+    );
+    const service = createNormalizationService({ repository });
+    for (const [claimId, termId, originalValue] of [
+      ['c-1', 't-old', 'React.js'],
+      ['c-2', 't-react', 'React']
+    ] as const) {
+      await repository.saveDecision({
+        claimId,
+        termId,
+        originalValue,
+        method: 'alias',
+        confidenceScore: 1,
+        actorType: 'system',
+        ruleVersion: 'fuzzy-v1',
+        status: 'matched'
+      });
+    }
+
+    const terms = await service.findNormalizedTerms([
+      { claimId: 'c-1', claimType: 'skill', values: { name: 'React.js' } },
+      { claimId: 'c-2', claimType: 'skill', values: { name: 'React' } }
+    ]);
+
+    expect(terms).toEqual(
+      new Map([
+        ['c-1', { name: 't-react' }],
+        ['c-2', { name: 't-react' }]
+      ])
+    );
+  });
+
   it('ignores a decision made for an earlier value of the field', async () => {
     const { service } = serviceWith();
     await service.normalizeClaim({ claimId: 'c-1', claimType: 'skill', values: { name: 'JS' } });

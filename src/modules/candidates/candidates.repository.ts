@@ -1,5 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, isNull, sql, SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  ne,
+  notExists,
+  sql,
+  SQL
+} from 'drizzle-orm';
 import { AppDatabase } from '../../infrastructure/database/database.js';
 import { withDbErrors } from '../../infrastructure/database/database.errors.js';
 import { withTransientRetry } from '../../infrastructure/database/transient-retry.js';
@@ -272,6 +283,12 @@ export interface CandidatesRepository {
     candidateId: string,
     documentId: string,
     transaction: DatabaseExecutor
+  ): Promise<number>;
+  // When a document is deleted: its extracted claims the candidate never
+  // reviewed, edited, or merged, and that no other document supports.
+  deleteUnreviewedExtractedClaims(
+    candidateId: string,
+    documentId: string
   ): Promise<number>;
   listReviewedExtractedClaims(
     candidateId: string,
@@ -2015,6 +2032,38 @@ export function createCandidatesRepository(
               // A pending claim the candidate edited holds their decision and
               // is kept; the new extraction matches it like any active claim.
               isNull(claims.candidateEditedAt)
+            )
+          )
+          .returning({ claimId: claims.claimId });
+
+        return deleted.length;
+      });
+    },
+
+    async deleteUnreviewedExtractedClaims(candidateId, documentId) {
+      return withDbErrors('Claims', async () => {
+        const deleted = await database.db
+          .delete(claims)
+          .where(
+            and(
+              eq(claims.candidateId, candidateId),
+              eq(claims.origin, 'extracted'),
+              eq(claims.status, 'pending'),
+              eq(claims.extractionDocumentId, documentId),
+              isNull(claims.candidateEditedAt),
+              // A merged duplicate is evidence of its survivor, which keeps it.
+              isNull(claims.supersededByClaimId),
+              notExists(
+                database.db
+                  .select({ claimId: sourceOccurrences.claimId })
+                  .from(sourceOccurrences)
+                  .where(
+                    and(
+                      eq(sourceOccurrences.claimId, claims.claimId),
+                      ne(sourceOccurrences.documentId, documentId)
+                    )
+                  )
+              )
             )
           )
           .returning({ claimId: claims.claimId });

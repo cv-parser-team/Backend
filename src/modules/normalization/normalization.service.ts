@@ -117,7 +117,7 @@ export function createNormalizationService({
 
   // Follows merged terms to the active term they were merged into. A broken
   // or circular chain has no active term.
-  async function activeTermNames(termIds: string[]): Promise<Map<string, string>> {
+  async function activeTerms(termIds: string[]): Promise<Map<string, DictionaryTerm>> {
     const known = new Map<string, DictionaryTerm>();
     let missing = [...new Set(termIds)];
     for (let depth = 0; missing.length > 0 && depth <= MAXIMUM_MERGE_DEPTH; depth += 1) {
@@ -129,17 +129,17 @@ export function createNormalizationService({
         .filter((id): id is string => id !== null && !known.has(id));
     }
 
-    const names = new Map<string, string>();
+    const active = new Map<string, DictionaryTerm>();
     for (const termId of termIds) {
       let term = known.get(termId);
       for (let depth = 0; term?.status === 'merged' && depth < MAXIMUM_MERGE_DEPTH; depth += 1) {
         term = term.mergedIntoId ? known.get(term.mergedIntoId) : undefined;
       }
       if (term?.status === 'active') {
-        names.set(termId, term.canonicalName);
+        active.set(termId, term);
       }
     }
-    return names;
+    return active;
   }
 
   return {
@@ -184,21 +184,29 @@ export function createNormalizationService({
       return decision;
     },
 
+    // Linked to the active term, so claims linked to two terms that were
+    // merged compare as the same. A claim whose term has no active term is
+    // compared by its written value instead.
     async findNormalizedTerms(claims) {
+      const matches = await currentMatches(claims);
+      const active = await activeTerms(matches.map(({ decision }) => decision.termId));
       const terms = new Map<string, Record<string, string>>();
-      for (const { claim, field, decision } of await currentMatches(claims)) {
-        terms.set(claim.claimId, { [field]: decision.termId });
+      for (const { claim, field, decision } of matches) {
+        const term = active.get(decision.termId);
+        if (term) {
+          terms.set(claim.claimId, { [field]: term.termId });
+        }
       }
       return terms;
     },
 
     async describeNormalizedValues(claims) {
       const matches = await currentMatches(claims);
-      const names = await activeTermNames(matches.map(({ decision }) => decision.termId));
+      const active = await activeTerms(matches.map(({ decision }) => decision.termId));
       const described = new Map<string, Record<string, NormalizedValue>>();
 
       for (const { claim, field, decision } of matches) {
-        const name = names.get(decision.termId);
+        const name = active.get(decision.termId)?.canonicalName;
         if (name === undefined || name === decision.originalValue || decision.method === null) {
           continue;
         }

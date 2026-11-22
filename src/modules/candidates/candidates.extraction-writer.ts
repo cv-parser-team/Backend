@@ -422,19 +422,22 @@ export function createCandidateExtractionWriter({
         throw new RecordNotFoundError('Candidate profile');
       }
 
+      const values = prepareUnknownClaimValues(input.type, input.values);
       return repository.createClaim(
         {
           candidateId: candidate.candidateId,
           claimType: input.type,
           origin: 'extracted',
           status: 'accepted',
-          values: prepareUnknownClaimValues(input.type, input.values),
+          values,
           extraction: {
             invocationId: input.invocationId,
             sourceDocumentId: input.documentId,
             rawValues: input.rawValues,
             fieldSources: input.fieldSources,
-            current: input.current
+            // The candidate's resolved values decide: an end date they entered
+            // means the claim is not current, whatever the source said.
+            current: input.current && values.endDate === undefined
           }
         },
         transaction

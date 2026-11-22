@@ -913,4 +913,40 @@ describe('candidate extraction writer', () => {
     ).rejects.toMatchObject({ code: 'INVALID_CLAIM_VALUES' });
     expect(createClaim).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { endDate: '2025-06', current: false },
+    { endDate: undefined, current: true }
+  ])(
+    'keeps a current source current only without a resolved end date ($endDate)',
+    async ({ endDate, current }) => {
+      const { createClaim, writer } = dependencies(candidate);
+
+      await writer.saveResolvedClaim(
+        userId,
+        {
+          type: 'employment',
+          values: {
+            employer: 'Example Corp',
+            jobTitle: 'Engineer',
+            startDate: '2024',
+            ...(endDate ? { endDate } : {})
+          },
+          documentId,
+          invocationId,
+          rawValues: {},
+          fieldSources: {},
+          current: true
+        },
+        transaction
+      );
+
+      expect(createClaim).toHaveBeenCalledWith(
+        expect.objectContaining({
+          extraction: expect.objectContaining({ current })
+        }),
+        transaction
+      );
+    }
+  );
 });

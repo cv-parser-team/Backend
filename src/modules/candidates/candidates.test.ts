@@ -126,6 +126,7 @@ function createRepositoryDouble(
     recordClaimsDifferent: vi.fn().mockResolvedValue({ status: 'missing' }),
     listClaimPairDecisions: vi.fn().mockResolvedValue([]),
     deletePendingExtractedClaims: vi.fn().mockResolvedValue(0),
+    deleteUnreviewedExtractedClaims: vi.fn().mockResolvedValue(0),
     listReviewedExtractedClaims: vi.fn().mockResolvedValue([]),
     reviewExtractedClaim: vi
       .fn()

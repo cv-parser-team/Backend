@@ -228,6 +228,29 @@ describe('documents service', () => {
     );
   });
 
+  it('removes unreviewed suggestions again when cleaning up a deleting document', async () => {
+    const deletingDocument: DocumentRecord = {
+      ...documentRecord,
+      status: 'deleting'
+    };
+    const deleteUnreviewedFromDocument = vi.fn().mockResolvedValue(0);
+    const service = createDocumentsService({
+      repository: createRepository({
+        listDeletingDocuments: vi.fn().mockResolvedValue([deletingDocument])
+      }),
+      storage: createStorage(),
+      validator: createValidator(),
+      extractedClaims: { deleteUnreviewedFromDocument }
+    });
+
+    await service.cleanupDeletingDocuments();
+
+    expect(deleteUnreviewedFromDocument).toHaveBeenCalledWith(
+      deletingDocument.ownerUserId,
+      deletingDocument.documentId
+    );
+  });
+
   it('continues cleanup when one deleting document fails', async () => {
     const storageError = new Error('storage unavailable');
     const firstDocument: DocumentRecord = {
@@ -597,6 +620,52 @@ describe('documents service', () => {
       ownerUserId,
       documentId
     );
+  });
+
+  it('removes the unreviewed suggestions of a deleted document before its file', async () => {
+    const operations: string[] = [];
+    const repository = createRepository({
+      updateDocumentStatus: vi.fn(async () => {
+        operations.push('mark-deleting');
+        return documentRecord;
+      })
+    });
+    const storage = createStorage({
+      delete: vi.fn(async () => {
+        operations.push('delete-file');
+      })
+    });
+    const deleteUnreviewedFromDocument = vi.fn(async () => {
+      operations.push('delete-suggestions');
+      return 2;
+    });
+    const service = createDocumentsService({
+      repository,
+      storage,
+      validator: createValidator(),
+      extractedClaims: { deleteUnreviewedFromDocument }
+    });
+
+    await service.deleteDocument(ownerUserId, documentId);
+
+    expect(deleteUnreviewedFromDocument).toHaveBeenCalledWith(ownerUserId, documentId);
+    expect(operations).toEqual(['mark-deleting', 'delete-suggestions', 'delete-file']);
+  });
+
+  it('keeps suggestions when a concurrent delete already handled the document', async () => {
+    const deleteUnreviewedFromDocument = vi.fn().mockResolvedValue(0);
+    const service = createDocumentsService({
+      repository: createRepository({
+        updateDocumentStatus: vi.fn().mockResolvedValue(null)
+      }),
+      storage: createStorage(),
+      validator: createValidator(),
+      extractedClaims: { deleteUnreviewedFromDocument }
+    });
+
+    await service.deleteDocument(ownerUserId, documentId);
+
+    expect(deleteUnreviewedFromDocument).not.toHaveBeenCalled();
   });
 
   it('throws a typed not-found error when owned metadata is absent', async () => {

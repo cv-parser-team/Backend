@@ -2,6 +2,7 @@ import multipart from '@fastify/multipart';
 import type { FastifyPluginAsync } from 'fastify';
 import fastifyPlugin from 'fastify-plugin';
 import { config } from '../../config/config.js';
+import { createUnreviewedClaimCleaner } from '../candidates/index.js';
 import { createDocumentsRepository } from './documents.repository.js';
 import { documentsRoutes } from './documents.routes.js';
 import {
@@ -29,7 +30,12 @@ const registerDocuments: FastifyPluginAsync = async (fastify) => {
     maximumByteSize: config.documents.maximumUploadByteSize
   });
   const validator = createDocumentValidator();
-  const service = createDocumentsService({ repository, storage, validator });
+  const service = createDocumentsService({
+    repository,
+    storage,
+    validator,
+    extractedClaims: createUnreviewedClaimCleaner(fastify.database)
+  });
 
   fastify.decorate('processingDocumentsService', service);
   fastify.decorate('candidateDocumentsService', service);

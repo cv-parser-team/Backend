@@ -114,6 +114,22 @@ export function createCandidateProfileLookup(database: AppDatabase): {
   };
 }
 
+// Deleting a document removes the suggestions it alone produced that the
+// candidate never reviewed. Accepted, edited, or merged claims stay.
+export function createUnreviewedClaimCleaner(database: AppDatabase): {
+  deleteUnreviewedFromDocument(ownerUserId: string, documentId: string): Promise<number>;
+} {
+  const repository = createCandidatesRepository(database);
+  return {
+    async deleteUnreviewedFromDocument(ownerUserId, documentId) {
+      const candidate = await repository.findCandidateByUserId(ownerUserId);
+      return candidate
+        ? repository.deleteUnreviewedExtractedClaims(candidate.candidateId, documentId)
+        : 0;
+    }
+  };
+}
+
 export type {
   CandidateEntityMatcher,
   SameEntityMatches,

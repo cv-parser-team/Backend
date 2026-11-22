@@ -90,6 +90,12 @@ export interface DocumentsServiceDependencies {
   repository: DocumentsRepository;
   storage: DocumentStorage;
   validator: DocumentValidator;
+  // Removes the unreviewed suggestions a deleted document alone produced.
+  // Runs once the document is `deleting`, so no processing attempt can add
+  // more, and again on cleanup retries; it is safe to repeat.
+  extractedClaims?: {
+    deleteUnreviewedFromDocument(ownerUserId: string, documentId: string): Promise<number>;
+  };
 }
 
 // An identical upload returns the existing document, unless that document is
@@ -105,7 +111,8 @@ function deduplicatedUpload(document: DocumentRecord): UploadDocumentResult {
 export function createDocumentsService({
   repository,
   storage,
-  validator
+  validator,
+  extractedClaims
 }: DocumentsServiceDependencies): DocumentsService {
   return {
     async cleanupDeletingDocuments() {
@@ -115,6 +122,10 @@ export function createDocumentsService({
 
       for (const document of documents) {
         try {
+          await extractedClaims?.deleteUnreviewedFromDocument(
+            document.ownerUserId,
+            document.documentId
+          );
           await storage.delete(document.storageKey);
 
           const metadataDeleted = await repository.deleteDocument(
@@ -189,6 +200,7 @@ export function createDocumentsService({
         return;
       }
 
+      await extractedClaims?.deleteUnreviewedFromDocument(ownerUserId, documentId);
       await storage.delete(document.storageKey);
       await repository.deleteDocument(ownerUserId, documentId);
     },
